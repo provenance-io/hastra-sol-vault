@@ -76,6 +76,20 @@ fi
 export ANCHOR_PROVIDER_URL="$SOLANA_URL"
 export ANCHOR_WALLET="$KEYPAIR"
 
+get_pda() {
+  local program_id="$1"
+  local seed="$2"
+  local pda=$(yarn run --silent ts-node scripts/derive_address.ts --type pda --program_id "$program_id" --seed "$seed")
+  echo "$pda"
+}
+
+get_ata() {
+  local mint="$1"
+  local owner="$2"
+  local ata=$(yarn run --silent ts-node scripts/derive_address.ts --type ata --mint "$mint" --public_key "$owner")
+  echo "$ata"
+}
+
 create_mint_prog_mint_token() {
   echo "Creating Mint Program mint token..."
   echo $SOLANA_URL
@@ -190,6 +204,16 @@ deploy_program() {
   echo "Stake program deployed with ID: $VAULT_STAKE_PROGRAM_ID"
 }
 
+deploy_staking_program() {
+  echo "Deploying Staking Program..."
+
+  solana program deploy ../target/deploy/vault_stake.so \
+    --url "$SOLANA_URL" \
+    --keypair "$KEYPAIR" \
+    --config "$CONFIG_FILE"
+  echo "Stake program deployed with ID: $VAULT_STAKE_PROGRAM_ID"
+}
+
 build_and_deploy() {
   build_program
   deploy_program
@@ -220,15 +244,6 @@ initialize_mint_program() {
     --allow_mint_program_caller_id "$VAULT_STAKE_PROGRAM_ID")
 
   echo "$INITIALIZE"
-  MINT_PROG_CONFIG_PDA=$(echo $INITIALIZE | grep -oE 'Config PDA: ([A-Za-z0-9]+)' | awk '{print $NF}')
-  MINT_PROG_MINT_AUTHORITY_PDA=$(echo $INITIALIZE | grep -oE 'Mint Authority PDA: ([A-Za-z0-9]+)' | awk '{print $NF}')
-  MINT_PROG_FREEZE_AUTHORITY_PDA=$(echo $INITIALIZE | grep -oE 'Freeze Authority PDA: ([A-Za-z0-9]+)' | awk '{print $NF}')
-  MINT_PROG_REDEEM_VAULT_AUTHORITY_PDA=$(echo $INITIALIZE | grep -oE 'Redeem Vault Authority PDA: ([A-Za-z0-9]+)' | awk '{print $NF}')
-
-  update_history_var "MINT_PROG_CONFIG_PDA"
-  update_history_var "MINT_PROG_MINT_AUTHORITY_PDA"
-  update_history_var "MINT_PROG_FREEZE_AUTHORITY_PDA"
-  update_history_var "MINT_PROG_REDEEM_VAULT_AUTHORITY_PDA"
 }
 
 initialize_stake_program() {
@@ -257,15 +272,6 @@ initialize_stake_program() {
     --rewards_administrators "$REWARDS_ADMINISTRATORS")
 
   echo "$INITIALIZE"
-  STAKE_PROG_VAULT_AUTHORITY_PDA=$(echo $INITIALIZE | grep -oE 'Vault Authority PDA: ([A-Za-z0-9]+)' | awk '{print $NF}')
-  STAKE_PROG_CONFIG_PDA=$(echo $INITIALIZE | grep -oE 'Config PDA: ([A-Za-z0-9]+)' | awk '{print $NF}')
-  STAKE_PROG_MINT_AUTHORITY_PDA=$(echo $INITIALIZE | grep -oE 'Mint Authority PDA: ([A-Za-z0-9]+)' | awk '{print $NF}')
-  STAKE_PROG_FREEZE_AUTHORITY_PDA=$(echo $INITIALIZE | grep -oE 'Freeze Authority PDA: ([A-Za-z0-9]+)' | awk '{print $NF}')
-
-  update_history_var "STAKE_PROG_CONFIG_PDA"
-  update_history_var "STAKE_PROG_MINT_AUTHORITY_PDA"
-  update_history_var "STAKE_PROG_FREEZE_AUTHORITY_PDA"
-  update_history_var "STAKE_PROG_VAULT_AUTHORITY_PDA"
 }
 
 setup_metaplex() {
@@ -306,6 +312,9 @@ setup_metaplex() {
 }
 
 set_mint_prog_mint_and_freeze_authority() {
+  MINT_PROG_MINT_AUTHORITY_PDA=$(get_pda "$VAULT_MINT_PROGRAM_ID" "mint_authority")
+  MINT_PROG_FREEZE_AUTHORITY_PDA=$(get_pda "$VAULT_MINT_PROGRAM_ID" "freeze_authority")
+
   echo "Setting Mint Program mint authority to $MINT_PROG_MINT_AUTHORITY_PDA"
     spl-token authorize "$MINT_PROG_MINT_TOKEN" mint "$MINT_PROG_MINT_AUTHORITY_PDA" \
       --url "$SOLANA_URL" \
@@ -318,6 +327,9 @@ set_mint_prog_mint_and_freeze_authority() {
 }
 
 set_stake_prog_mint_and_freeze_authority() {
+  STAKE_PROG_MINT_AUTHORITY_PDA=$(get_pda "$VAULT_STAKE_PROGRAM_ID" "mint_authority")
+  STAKE_PROG_FREEZE_AUTHORITY_PDA=$(get_pda "$VAULT_STAKE_PROGRAM_ID" "freeze_authority")
+
   echo "Setting Stake Program mint authority to $STAKE_PROG_MINT_AUTHORITY_PDA"
     spl-token authorize "$STAKE_PROG_MINT_TOKEN" mint "$STAKE_PROG_MINT_AUTHORITY_PDA" \
       --url "$SOLANA_URL" \
@@ -337,13 +349,13 @@ show_accounts_and_pdas() {
   echo "Vault Token (accepted token, i.e. USDC):  $MINT_PROG_VAULT_MINT"
   echo "Mint Token (token minted, wYLDS):         $MINT_PROG_MINT_TOKEN"
   echo "Vault Token Account:                      $MINT_PROG_VAULT_TOKEN_ACCOUNT"
-  echo "Config PDA:                               $MING_PROG_CONFIG_PDA"
-  echo "Mint Authority PDA:                       $MINT_PROG_MINT_AUTHORITY_PDA"
-  echo "Freeze Authority PDA:                     $MINT_PROG_FREEZE_AUTHORITY_PDA"
+  echo "Config PDA:                               $(get_pda "$VAULT_MINT_PROGRAM_ID" "config")"
+  echo "Mint Authority PDA:                       $(get_pda "$VAULT_MINT_PROGRAM_ID" "mint_authority")"
+  echo "Freeze Authority PDA:                     $(get_pda "$VAULT_MINT_PROGRAM_ID" "freeze_authority")"
   echo "Freeze Administrators:                    $FREEZE_ADMINISTRATORS"
   echo "Rewards Administrators:                   $REWARDS_ADMINISTRATORS"
   echo "Redeem Vault Token Account:               $MINT_PROG_REDEEM_VAULT_TOKEN_ACCOUNT"
-  echo "Redeem Vault Authority PDA:               $MINT_PROG_REDEEM_VAULT_AUTHORITY_PDA"
+  echo "Redeem Vault Authority PDA:               $(get_pda "$VAULT_MINT_PROGRAM_ID" "redeem_vault_authority")"
   echo "Allow Mint Program Caller ID:             $VAULT_STAKE_PROGRAM_ID"
 
   echo ""
@@ -352,9 +364,9 @@ show_accounts_and_pdas() {
   echo "Vault Token (accepted token, i.e. wYLDS): $MINT_PROG_MINT_TOKEN"
   echo "Mint Token (token minted, PRIME):         $STAKE_PROG_MINT_TOKEN"
   echo "Vault Token Account:                      $STAKE_PROG_VAULT_TOKEN_ACCOUNT"
-  echo "Config PDA:                               $STAKE_PROG_CONFIG_PDA"
-  echo "Mint Authority PDA:                       $STAKE_PROG_MINT_AUTHORITY_PDA"
-  echo "Freeze Authority PDA:                     $STAKE_PROG_FREEZE_AUTHORITY_PDA"
+  echo "Config PDA:                               $(get_pda "$VAULT_STAKE_PROGRAM_ID" "stake_config")"
+  echo "Mint Authority PDA:                       $(get_pda "$VAULT_STAKE_PROGRAM_ID" "mint_authority")"
+  echo "Freeze Authority PDA:                     $(get_pda "$VAULT_STAKE_PROGRAM_ID" "freeze_authority")"
   echo "Freeze Administrators:                    $FREEZE_ADMINISTRATORS"
   echo "Rewards Administrators:                   $REWARDS_ADMINISTRATORS"
   echo "Unbonding Period (in seconds):            $UNBONDING_PERIOD"
@@ -393,6 +405,7 @@ while true; do
     "Create Stake Token" \
     "Create Mint Program Redeem Vault Token Account" \
     "Create Stake Program Vault Token Account" \
+    "Deploy Staking Program" \
     "Exit"
   do
     case $REPLY in
@@ -408,7 +421,8 @@ while true; do
       10) create_stake_prog_mint_token; break ;;
       11) create_mint_prog_redeem_vault_token_account; break ;;
       12) create_stake_prog_vault_token_account; break ;;
-      13) exit 0 ;;
+      13) deploy_staking_program; break ;;
+      14) exit 0 ;;
       *) echo "Invalid option"; break ;;
     esac
   done

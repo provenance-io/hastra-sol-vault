@@ -381,20 +381,18 @@ pub struct PublishRewards<'info> {
     /// CHECK: This is a PDA that acts as mint authority, validated by seeds constraint
     #[account(
         seeds = [b"mint_authority"],
+        seeds::program = mint_program.key(),
         bump,
-        constraint = rewards_mint_authority.key() == rewards_mint.mint_authority.unwrap() @ CustomErrorCode::InvalidMintAuthority,
-        constraint = rewards_mint_authority.owner.key() == mint_program.key() @ CustomErrorCode::InvalidMintProgramOwner
     )]
     pub rewards_mint_authority: UncheckedAccount<'info>,
 
     #[account(
         mut,
-        token::mint = stake_config.vault, 
+        token::mint = stake_config.vault,
         constraint = vault_token_account.mint == stake_config.vault @ CustomErrorCode::InvalidVaultMint,
         constraint = vault_token_account.owner == vault_authority.key() @ CustomErrorCode::InvalidVaultAuthority
     )]
-    // the vault token account holding the rewards to be distributed - rewards are in the vault token itself
-    pub vault_token_account: Account<'info, TokenAccount>, 
+    pub vault_token_account: Account<'info, TokenAccount>,
 
     /// CHECK: This is a PDA that acts as vault authority, validated by seeds constraint
     #[account(

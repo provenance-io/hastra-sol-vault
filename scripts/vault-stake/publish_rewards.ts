@@ -2,6 +2,7 @@ import * as anchor from "@coral-xyz/anchor";
 import {Program} from "@coral-xyz/anchor";
 import yargs from "yargs";
 import {VaultStake} from "../../target/types/vault_stake";
+import {getAccount, TOKEN_PROGRAM_ID} from "@solana/spl-token";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);

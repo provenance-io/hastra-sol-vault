@@ -2,6 +2,9 @@ import * as anchor from "@coral-xyz/anchor";
 import yargs from "yargs";
 import {Program} from "@coral-xyz/anchor";
 import {VaultMint} from "../../target/types/vault_mint";
+import {
+    getAssociatedTokenAddress,
+} from "@solana/spl-token";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
@@ -11,7 +14,12 @@ const program = anchor.workspace.VaultMint as Program<VaultMint>;
 const args = yargs(process.argv.slice(2))
     .option("mint", {
         type: "string",
-        description: "Token that will be minted (e.g. wYLDS) upon receipt of the vault token (e.g. USDC)",
+        description: "Token that will be minted (e.g. wYLDS)",
+        required: true,
+    })
+    .option("vault", {
+        type: "string",
+        description: "Token that will be vaulted (e.g. USDC)",
         required: true,
     })
     .option("amount", {
@@ -22,16 +30,6 @@ const args = yargs(process.argv.slice(2))
     .option("vault_token_account", {
         type: "string",
         description: "Vault Token Account that holds the Vault Token (e.g. USDC)",
-        required: true,
-    })
-    .option("user_vault_token_account", {
-        type: "string",
-        description: "User's vault token account address where the vaulted tokens will be taken from. Must be associated token account for the vault token (e.g. USDC)",
-        required: true,
-    })
-    .option("user_mint_token_account", {
-        type: "string",
-        description: "User's mint token account address where the minted tokens will be sent to. Must be associated token account for the mint token (e.g. wYLDS)",
         required: true,
     })
     .parseSync();
@@ -52,10 +50,11 @@ const main = async () => {
 
     // Program args
     const mint = new anchor.web3.PublicKey(args.mint);
+    const vault = new anchor.web3.PublicKey(args.vault);
     const amount = new anchor.BN(args.amount);
     const vaultTokenAccount = new anchor.web3.PublicKey(args.vault_token_account);
-    const userVaultTokenAccount = new anchor.web3.PublicKey(args.user_vault_token_account);
-    const userMintTokenAccount = new anchor.web3.PublicKey(args.user_mint_token_account);
+    const userMintTokenAccount = await getAssociatedTokenAddress(mint,signer)
+    const userVaultTokenAccount = await getAssociatedTokenAddress(vault,signer)
 
     console.log("Mint (token to be minted e.g. wYLDS)", mint.toBase58());
     console.log("Amount:", amount.toString());
