@@ -418,19 +418,31 @@ pub fn publish_rewards(
     );
     require!(amount > 0, CustomErrorCode::InvalidAmount);
 
+    // Prepare PDA signer for CPI call
+    // This PDA can only be signed by vault-stake program
+    let seeds: &[&[u8]] = &[
+        b"external_mint_authority",
+        &[ctx.bumps.external_mint_authority]
+    ];
+    let signer = &[&seeds[..]];
+    
     // at this point, use CPI to call the mint_to instruction on the hastra-vault-mint
     let cpi_program = ctx.accounts.mint_program.to_account_info();
-
     let cpi_accounts = vault_mint::cpi::accounts::ExternalProgramMint {
-        signer: ctx.accounts.admin.to_account_info(),
-        external_mint_program_caller: ctx.accounts.this_program.clone(),
         config: ctx.accounts.mint_config.to_account_info(),
+        external_mint_authority: ctx.accounts.external_mint_authority.to_account_info(),
         mint: ctx.accounts.rewards_mint.to_account_info(),
         mint_authority: ctx.accounts.rewards_mint_authority.to_account_info(),
+        admin: ctx.accounts.admin.to_account_info(),
         destination: ctx.accounts.vault_token_account.to_account_info(),
         token_program: ctx.accounts.token_program.to_account_info(),
     };
-    let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+    // Use new_with_signer to sign with the PDA
+    let cpi_ctx = CpiContext::new_with_signer(
+        cpi_program,
+        cpi_accounts,
+        signer  // Sign with vault-stake's PDA
+    );
     vault_mint::cpi::external_program_mint(cpi_ctx, amount)?;
     
     msg!("Emitting RewardsPublished");

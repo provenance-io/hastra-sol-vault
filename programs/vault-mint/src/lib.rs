@@ -55,7 +55,6 @@ pub mod vault_mint {
         freeze_administrators: Vec<Pubkey>,
         rewards_administrators: Vec<Pubkey>,
         allowed_external_mint_program: Pubkey,
-
     ) -> Result<()> {
         processor::initialize(
             ctx,
@@ -144,5 +143,11 @@ pub mod vault_mint {
     /// Allows an external authorized program to mint tokens to a specified account.
     pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> Result<()> {
         processor::external_program_mint(ctx, amount)
+    }
+
+    pub fn update_vault_token_account(
+        ctx: Context<UpdateVaultTokenAccount>,
+    ) -> Result<()> {
+        processor::update_vault_token_account(ctx)
     }
 }

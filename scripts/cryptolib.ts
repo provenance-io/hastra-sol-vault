@@ -4,7 +4,8 @@ import {PublicKey} from "@solana/web3.js";
 import {MerkleTree} from "merkletreejs";
 
 
-export const idl = require("../target/idl/hastra_sol_vault_mint.json");
+export const MINT_IDL = require("../target/idl/vault_mint.json");
+export const STAKE_IDL = require("../target/idl/vault_stake.json");
 export const ZERO32 = Buffer.alloc(0);
 export const sha256 = (x: Buffer) => createHash("sha256").update(x).digest();
 

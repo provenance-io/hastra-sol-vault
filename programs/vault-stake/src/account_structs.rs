@@ -362,10 +362,16 @@ pub struct PublishRewards<'info> {
     )]
     pub mint_config: Account<'info, vault_mint::state::Config>,
 
-    /// CHECK: This program's executable
-    #[account(executable)]
-    pub this_program: AccountInfo<'info>,
-
+    /// PDA that proves this call is from vault-stake
+    /// This PDA is signed during the CPI call to vault-mint
+    /// Only vault-stake can sign for this PDA
+    /// CHECK: This is a PDA derived from vault-stake program, validated by seeds
+    #[account(
+        seeds = [b"external_mint_authority"],
+        bump
+    )]
+    pub external_mint_authority: UncheckedAccount<'info>,
+    
     /// CHECK: hastra vault-mint program's executable
     pub mint_program: AccountInfo<'info>,
     

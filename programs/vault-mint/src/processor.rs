@@ -490,25 +490,20 @@ pub fn claim_rewards(ctx: Context<ClaimRewards>, amount: u64, proof: Vec<ProofNo
 pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> Result<()> {
     let config = &ctx.accounts.config;
 
-    // Ensure the signer is a rewards administrator
+    // Verify admin is a rewards administrator
+    // Note: admin is not a Signer here (it's just an AccountInfo whose pubkey we check)
+    // The PDA (external_mint_authority) is the actual signer of the CPI
     require!(
-        config.rewards_administrators.contains(&ctx.accounts.signer.key()),
+        config.rewards_administrators.contains(&ctx.accounts.admin.key()),
         CustomErrorCode::InvalidRewardsAdministrator
     );
 
-    // Verify that the caller is a program (not a regular account)
-    require!(
-        ctx.accounts.external_mint_program_caller.executable,
-        CustomErrorCode::InvalidMintProgramCaller
-    );
-    
-    // Ensure the caller is the allowed program
-    require_keys_eq!(
-        ctx.accounts.external_mint_program_caller.key(),
-        config.allowed_external_mint_program,
-        CustomErrorCode::InvalidMintProgramCaller
-    );
 
+    // The external_mint_authority PDA verification happens automatically
+    // via the seeds constraint. The constraint ensures:
+    // 1. The PDA address matches derivation from [b"external_mint_authority"] + allowed_external_mint_program
+    // 2. The PDA is properly signed (only possible if called via CPI from allowed_external_mint_program)
+    // Mint tokens using the mint_authority PDA
     let seeds: &[&[u8]] = &[b"mint_authority", &[ctx.bumps.mint_authority]];
     let signer = &[&seeds[..]];
     let cpi_accounts = MintTo {
@@ -527,8 +522,7 @@ pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> 
 
     msg!("Emitting ExternalProgramMintEvent");
     emit!(ExternalProgramMintEvent {
-        admin: ctx.accounts.signer.key(),
-        external_mint_program_caller: ctx.accounts.external_mint_program_caller.key(),
+        admin: ctx.accounts.admin.key(),
         destination: ctx.accounts.destination.key(),
         amount: amount,
         mint: ctx.accounts.mint.key(),
@@ -536,5 +530,19 @@ pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> 
     });
     msg!("Emitted ExternalProgramMintEvent");
 
+    Ok(())
+}
+
+// create a function called by program update authority to update the vault token account
+pub fn update_vault_token_account(
+    ctx: Context<UpdateVaultTokenAccount>,
+) -> Result<()> {   
+    // Validate that the signer is the program's update authority
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+
+    let config = &mut ctx.accounts.config;
+    config.vault_authority = ctx.accounts.vault_token_account.owner;
+
+    msg!("Vault token account updated to: {}", ctx.accounts.vault_token_account.key());
     Ok(())
 }

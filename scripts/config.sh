@@ -10,7 +10,7 @@ prompt_with_default_no_history() {
   fi
 }
 
-prompt_with_default_no_history SOLANA_NETWORK "Select Solana network (devnet, mainnet-beta, testnet)"
+prompt_with_default_no_history SOLANA_NETWORK "Select Solana network (localnet, devnet, mainnet-beta, testnet)"
 
 HISTORY_FILE="${SOLANA_NETWORK}_vault.history"
 
