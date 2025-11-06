@@ -28,7 +28,7 @@ pub fn initialize(
     require!(
         unbonding_period <= MAX_UNBONDING_PERIOD,
         CustomErrorCode::InvalidBondingPeriod
-    ); 
+    );
     require!(
         vault_token_mint != stake_mint,
         CustomErrorCode::VaultAndMintCannotBeSame
@@ -103,23 +103,33 @@ pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
 
     // calculate the amount of mint tokens to issue based on the current exchange rate
 
-    // get the current balance of the vault token account
+    // get the current balance of the vault token account (i.e. wYLDS)
     let vault_balance = ctx.accounts.vault_token_account.amount;
 
-    // get the current total supply of the mint tokens
+    // get the current total supply of the mint tokens (i.e. PRIME)
     let mint_supply = ctx.accounts.mint.supply;
 
-    // if vault is empty, 1:1 ratio
-    let mint_amount = if vault_balance == 0 || mint_supply == 0 {
-        amount
-    } else {
-        // mint_amount (prime) = deposit amount (wylds) * mint_supply (prime) / vault_balance (wylds)
-        amount
-            .checked_mul(mint_supply)
-            .unwrap()
-            .checked_div(vault_balance)
-            .unwrap()
-    };
+    // Calculate shares using virtual shares and virtual assets
+    // This prevents the first depositor from manipulating the share price
+    // Formula: shares = (amount * (supply + virtual_stake_offset)) / (vault_balance + virtual_vault_offset)
+    // This single formula works for ALL deposits, including the first one
+    let virtual_stake_offset: u64 = 10u64.pow(ctx.accounts.mint.decimals as u32); // i.e., 1 PRIME with correct decimals
+    let virtual_vault_offset: u64 = 10u64.pow(ctx.accounts.vault_mint.decimals as u32); //i.e., 1 wYLDS with correct decimals
+
+    let numerator = amount
+        .checked_mul(mint_supply.checked_add(virtual_stake_offset).unwrap())
+        .unwrap();
+
+    let denominator = vault_balance
+        .checked_add(virtual_vault_offset)  // Same value!
+        .unwrap();
+
+    let mint_amount = numerator
+        .checked_div(denominator)
+        .unwrap();
+
+    // Require that user receives at least some shares
+    require!(mint_amount > 0, CustomErrorCode::DepositTooSmall);
 
     let cpi_accounts = Transfer {
         from: ctx.accounts.user_vault_token_account.to_account_info(),
@@ -201,10 +211,10 @@ pub fn unbond(ctx: Context<Unbond>, amount: u64) -> Result<()> {
 //
 pub fn redeem(ctx: Context<Redeem>) -> Result<()> {
     require!(!ctx.accounts.stake_config.paused, CustomErrorCode::ProtocolPaused);
-    
+
     let now = Clock::get()?.unix_timestamp;
     let ticket = &ctx.accounts.ticket;
-    
+
     require_keys_eq!(
         ticket.owner,
         ctx.accounts.signer.key(),
@@ -227,20 +237,30 @@ pub fn redeem(ctx: Context<Redeem>) -> Result<()> {
         CustomErrorCode::InsufficientVaultBalance
     );
 
-    // calculate the amount of vault tokens to transfer based on the current exchange rate
+    // Calculate redemption amount using virtual offsets
+    // Formula: assets = (shares * (vault_balance + VIRTUAL_ASSETS_OFFSET)) / (supply + VIRTUAL_SHARES_OFFSET)
     let vault_balance = ctx.accounts.vault_token_account.amount;
     let mint_supply = ctx.accounts.mint.supply;
-    let redeem_vaulted_token_amount = requested_mint_token_to_redeem
-        .checked_mul(vault_balance)
-        .unwrap()
-        .checked_div(mint_supply)
+    let virtual_stake_offset: u64 = 10u64.pow(ctx.accounts.mint.decimals as u32); // i.e., 1 PRIME with correct decimals
+    let virtual_vault_offset: u64 = 10u64.pow(ctx.accounts.vault_mint.decimals as u32); //i.e., 1 wYLDS with correct decimals
+
+    let numerator = requested_mint_token_to_redeem
+        .checked_mul(vault_balance.checked_add(virtual_vault_offset).unwrap())
         .unwrap();
 
-    require!(
-        ctx.accounts.vault_token_account.amount >= redeem_vaulted_token_amount,
-        CustomErrorCode::InsufficientVaultBalance
-    );
+    let denominator = mint_supply
+        .checked_add(virtual_stake_offset)
+        .unwrap();
 
+    let redeem_vaulted_token_amount = numerator
+        .checked_div(denominator)
+        .ok_or(CustomErrorCode::DivisionByZero)?;
+
+    require!(
+      ctx.accounts.vault_token_account.amount >= redeem_vaulted_token_amount,
+      CustomErrorCode::InsufficientVaultBalance
+    );
+    
     let burn_accounts = Burn {
         mint: ctx.accounts.mint.to_account_info(),
         from: ctx.accounts.user_mint_token_account.to_account_info(),
@@ -278,7 +298,7 @@ pub fn redeem(ctx: Context<Redeem>) -> Result<()> {
         vault_balance: ctx.accounts.vault_token_account.amount,
     });
     msg!("Emitted RedeemEvent");
-    
+
     Ok(())
 }
 
@@ -425,7 +445,7 @@ pub fn publish_rewards(
         &[ctx.bumps.external_mint_authority]
     ];
     let signer = &[&seeds[..]];
-    
+
     // at this point, use CPI to call the mint_to instruction on the hastra-vault-mint
     let cpi_program = ctx.accounts.mint_program.to_account_info();
     let cpi_accounts = vault_mint::cpi::accounts::ExternalProgramMint {
@@ -441,10 +461,10 @@ pub fn publish_rewards(
     let cpi_ctx = CpiContext::new_with_signer(
         cpi_program,
         cpi_accounts,
-        signer  // Sign with vault-stake's PDA
+        signer,  // Sign with vault-stake's PDA
     );
     vault_mint::cpi::external_program_mint(cpi_ctx, amount)?;
-    
+
     msg!("Emitting RewardsPublished");
     emit!(RewardsPublished {
         admin: ctx.accounts.admin.key(),

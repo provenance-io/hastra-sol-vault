@@ -57,6 +57,10 @@ pub enum CustomErrorCode {
     #[msg("Invalid token owner")]
     InvalidTokenOwner = 29,
     #[msg("Invalid mint program owner")]
-    InvalidMintProgramOwner = 30
+    InvalidMintProgramOwner = 30,
+    #[msg("Deposit amount is too small - would not receive any stake tokens")]
+    DepositTooSmall = 31,
+    #[msg("Division by zero error")]
+    DivisionByZero = 32,
     
 }

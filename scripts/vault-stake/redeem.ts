@@ -14,7 +14,11 @@ const args = yargs(process.argv.slice(2))
         description: "The staking mint token that will be burned (e.g. PRIME) at redeem.",
         required: true,
     })
-
+    .option("vault_mint", {
+        type: "string",
+        description: "Vaulted mint token (e.g. wYLDS)",
+        required: true,
+    })
     .option("vault_token_account", {
         type: "string",
         description: "Vault Token Account that holds the Vault Token (e.g. wYLDS)",
@@ -54,6 +58,7 @@ const main = async () => {
 
     // Program args
     const mint = new anchor.web3.PublicKey(args.mint);
+    const vaultMint = new anchor.web3.PublicKey(args.vault_mint);
     const vaultTokenAccount = new anchor.web3.PublicKey(args.vault_token_account);
     const userVaultTokenAccount = new anchor.web3.PublicKey(args.user_vault_token_account);
     const userMintTokenAccount = new anchor.web3.PublicKey(args.user_mint_token_account);
@@ -76,6 +81,7 @@ const main = async () => {
             userVaultTokenAccount: userVaultTokenAccount,
             userMintTokenAccount: userMintTokenAccount,
             mint: mint,
+            vaultMint: vaultMint,
             tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
             ticket: ticketPda
         }).rpc();

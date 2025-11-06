@@ -120,6 +120,12 @@ pub struct Deposit<'info> {
     )]
     pub mint: Account<'info, Mint>,
 
+    #[account(
+        mut,
+        constraint = vault_mint.key() == stake_config.vault @ CustomErrorCode::InvalidVaultMint
+    )]
+    pub vault_mint: Account<'info, Mint>,
+
     /// CHECK: This is a PDA that acts as mint authority, validated by seeds constraint
     #[account(
         seeds = [b"mint_authority"],
@@ -241,6 +247,12 @@ pub struct Redeem<'info> {
         constraint = mint.key() == stake_config.mint @ CustomErrorCode::InvalidMint
     )]
     pub mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        constraint = vault_mint.key() == stake_config.vault @ CustomErrorCode::InvalidVaultMint
+    )]
+    pub vault_mint: Account<'info, Mint>,
 
     pub token_program: Program<'info, Token>,
 }
