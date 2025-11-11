@@ -59,7 +59,9 @@ describe("vault-stake", () => {
 
     const ONE_BIG_SHARE = createBigInt(1_000_000);
     const ONE_BIG_TOKEN = createBigInt(1_000_000);
+    const ONE_BIG_EXCHANGE_RATE = createBigInt(1_000_000_000);
     const BIG_ZERO = createBigInt(0);
+    const hundredBillsLarge = createBigInt("100000000000000000"); //100 billion with 6 decimals
 
     const BPF_LOADER_UPGRADEABLE_ID = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
 
@@ -71,7 +73,7 @@ describe("vault-stake", () => {
             }
         );
         // get the return data from the last instruction
-        if(!!s?.meta["returnData"]) {
+        if (!!s?.meta["returnData"]) {
             const returnData = s!.meta!["returnData"].data;
             const buffer = Buffer.from(returnData[0], returnData[1]);
             return createBigInt(new anchor.BN(buffer, "le").toNumber());
@@ -120,6 +122,25 @@ describe("vault-stake", () => {
         return await parsedTransactionReturnData(sig);
     }
 
+    const vaultSummary = (title: string) => {
+        let totalShares;
+        let totalAssets;
+        let rate;
+
+        (async () => {
+            totalShares = await getMint(provider.connection, mintedToken)
+            totalAssets = await getAccount(provider.connection, vaultTokenAccount)
+            rate = await exchangeRate();
+        })().then(_ => {
+                console.log(`\n======== ${title} ========`);
+                console.table({
+                    "Total Shares": totalShares.supply.toString(),
+                    "Total Assets": totalAssets.amount.toString(),
+                    "Exchange Rate (assets per share)": (() => { const s = rate.toString(); return s.length > 9 ? `${s.slice(0, -9)}.${s.slice(-9)}` : s; })(),
+                });
+            }
+        );
+    }
     before(async () => {
         // Setup keypairs
         user = Keypair.generate();
@@ -154,8 +175,8 @@ describe("vault-stake", () => {
         unbondingPeriod = new BN(10); // seconds
 
         // Airdrop SOL
-        await provider.connection.requestAirdrop(user.publicKey, 10 * LAMPORTS_PER_SOL);
-        await provider.connection.requestAirdrop(user2.publicKey, 10 * LAMPORTS_PER_SOL);
+        await provider.connection.requestAirdrop(user.publicKey, 100 * LAMPORTS_PER_SOL);
+        await provider.connection.requestAirdrop(user2.publicKey, 100 * LAMPORTS_PER_SOL);
         await provider.connection.requestAirdrop(freezeAdmin.publicKey, 2 * LAMPORTS_PER_SOL);
         await provider.connection.requestAirdrop(rewardsAdmin.publicKey, 2 * LAMPORTS_PER_SOL);
 
@@ -235,6 +256,9 @@ describe("vault-stake", () => {
         virtualOffset = createBigInt(1000000);
     });
 
+    after(async () => {
+        vaultSummary("after test suite")
+    })
     describe("initialize", () => {
         it("set up vault-mint deposit so user 1 has tokens to stake", async () => {
             const mintConfig = await mintProgram.account.config.fetch(configPda);
@@ -266,7 +290,7 @@ describe("vault-stake", () => {
             // Deposit into vault-mint to receive minted tokens (wYLDS)
             // the program is already deployed and initialized, just need to deposit
             await mintProgram.methods
-                .deposit(new BN(100000_000_000)) // convert all 100,000 USDC
+                .deposit(new BN(100_000_000_000)) // convert all 100,000 USDC
                 .accountsStrict({
                     config: configPda,
                     vaultTokenAccount: mintProgramVaultTokenAccount,
@@ -284,11 +308,11 @@ describe("vault-stake", () => {
             assert.equal(userVaultedTokenBalance.amount, createBigInt(100000_000_000));
         });
 
-        it("set up vault-mint deposit so user 2 has tokens to stake", async () => {
+        it("set up vault-mint deposit so user 2 has a bajillion tokens to stake", async () => {
             const mintConfig = await mintProgram.account.config.fetch(configPda);
 
             const mintProgramVaultToken = mintConfig.vault; //USDC
-            const userMintProgramVaultedTokenAccount = await createAccount(
+            const user2MintProgramVaultedTokenAccount = await createAccount(
                 provider.connection,
                 provider.wallet.payer,
                 mintProgramVaultToken,
@@ -302,9 +326,9 @@ describe("vault-stake", () => {
                 provider.connection,
                 provider.wallet.payer,
                 mintProgramVaultToken, //USDC
-                userMintProgramVaultedTokenAccount, //USDC ATA
+                user2MintProgramVaultedTokenAccount, //USDC ATA
                 provider.wallet.publicKey,
-                100_000_000_000 // 100,000 tokens
+                (hundredBillsLarge + hundredBillsLarge)
             );
             const [mintAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
                 [Buffer.from("mint_authority")],
@@ -313,14 +337,14 @@ describe("vault-stake", () => {
             // Deposit into vault-mint to receive minted tokens (wYLDS)
             // the program is already deployed and initialized, just need to deposit
             await mintProgram.methods
-                .deposit(new BN(10000_000_000)) // 10,000 tokens
+                .deposit(new BN(10_000_000_000)) // 10,000 tokens
                 .accountsStrict({
                     config: configPda,
                     vaultTokenAccount: mintProgramVaultTokenAccount,
                     mint: vaultedToken,
                     mintAuthority: mintAuthorityPda,
                     signer: user2.publicKey,
-                    userVaultTokenAccount: userMintProgramVaultedTokenAccount, //USDC
+                    userVaultTokenAccount: user2MintProgramVaultedTokenAccount, //USDC
                     userMintTokenAccount: user2VaultTokenAccount,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
                 })
@@ -354,7 +378,7 @@ describe("vault-stake", () => {
             const tooManyAdmins = Array(6).fill(Keypair.generate().publicKey);
             try {
                 await program.methods
-                    .initialize(unbondingPeriod,[freezeAdmin.publicKey], tooManyAdmins)
+                    .initialize(unbondingPeriod, [freezeAdmin.publicKey], tooManyAdmins)
                     .accounts({
                         signer: provider.wallet.publicKey,
                         vaultTokenAccount: vaultTokenAccount,
@@ -373,7 +397,7 @@ describe("vault-stake", () => {
             const tooManyAdmins = Array(6).fill(Keypair.generate().publicKey);
             try {
                 await program.methods
-                    .initialize(new BN(0),[freezeAdmin.publicKey], tooManyAdmins)
+                    .initialize(new BN(0), [freezeAdmin.publicKey], tooManyAdmins)
                     .accounts({
                         signer: provider.wallet.publicKey,
                         vaultTokenAccount: vaultTokenAccount,
@@ -435,7 +459,6 @@ describe("vault-stake", () => {
     });
 
     describe("deposit", () => {
-
         it("prevents inflation attack with virtual offsets", async () => {
             /*
             ## Vault inflation attack
@@ -510,6 +533,8 @@ describe("vault-stake", () => {
             assert.equal(userAssets, ONE_BIG_TOKEN, "User should have 1 assets");
             const userQueriedShares = await assetsToShares(userAssets);
             assert.equal(userQueriedShares, ONE_BIG_SHARE, "User should have 1 share at 1:1 ratio");
+            const exchangeRateInitial = await exchangeRate();
+            assert.equal(exchangeRateInitial, ONE_BIG_EXCHANGE_RATE, "Exchange rate should be 1:1 initially");
 
             // step 2 - transfer directly to the vault to try to inflate the value of shares
             await transfer(provider.connection, user, userVaultTokenAccount, vaultTokenAccount, user.publicKey, ONE_BIG_TOKEN * createBigInt(10_000)); // 10,000 wYLDS
@@ -530,7 +555,7 @@ describe("vault-stake", () => {
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
                 })
                 .signers([user2])
-                .rpc().catch(e => console.dir(e));
+                .rpc();
 
             // confirm shares to assets
             const user1Shares = (await getAccount(provider.connection, userMintTokenAccount)).amount;
@@ -596,12 +621,20 @@ describe("vault-stake", () => {
             const userVaultBalanceAfter = (await getAccount(provider.connection, userVaultTokenAccount)).amount;
             // original wylds - initial deposit - direct transfer + redemption
             assert.equal(userVaultBalanceAfter, user1InitialVaultedBalance - ONE_BIG_TOKEN - (ONE_BIG_TOKEN * createBigInt(10_000)) + user1Assets, "User vault balance should be their withdrawn assets");
+
+            const exchangeRateFinal = await exchangeRate();
+            assert.equal(exchangeRateFinal, createBigInt("5001000100013"), "Exchange rate should be 1:5001 finally");
+
         });
 
         it("user 2 redeems", async () => {
             const vaultBalanceBefore = (await getAccount(provider.connection, vaultTokenAccount)).amount;
             const user2MintTokenBefore = (await getAccount(provider.connection, user2MintTokenAccount)).amount;
             const user2VaultBalanceBefore = (await getAccount(provider.connection, user2VaultTokenAccount)).amount;
+
+            assert.equal(vaultBalanceBefore, createBigInt(14_999_999_900), "Vault should have all deposits");
+            assert.equal(user2MintTokenBefore, createBigInt(1_999_600), "User 2 should still have 1,999,600 shares");
+            assert.equal(user2VaultBalanceBefore, BIG_ZERO, "User 2 should not have any vault tokens");
 
             const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
                 [Buffer.from("ticket"), user2.publicKey.toBuffer()],
@@ -640,7 +673,7 @@ describe("vault-stake", () => {
             const user2MintTokenAfter = (await getAccount(provider.connection, user2MintTokenAccount)).amount;
             const user2VaultBalanceAfter = (await getAccount(provider.connection, user2VaultTokenAccount)).amount;
 
-            assert.equal(vaultBalanceAfter, vaultBalanceBefore - user2VaultBalanceBefore, "Vault balance should reflect all redeems");
+            assert.equal(vaultBalanceAfter, vaultBalanceBefore - user2VaultBalanceAfter, "Vault balance should reflect all redeems");
             assert.equal(user2MintTokenAfter, BIG_ZERO, "User should not have staked tokens after redeem");
             assert.ok(user2VaultBalanceAfter > user2VaultBalanceBefore, "User vault balance should reflect redeemed tokens");
         });
@@ -743,8 +776,6 @@ describe("vault-stake", () => {
     });
 
     describe("unbond", () => {
-        let redemptionRequestPda: PublicKey;
-
         it("unbond ticket closes", async () => {
             const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
                 [Buffer.from("ticket"), user.publicKey.toBuffer()],
@@ -763,10 +794,9 @@ describe("vault-stake", () => {
                 .rpc();
 
             const t = await program.account.unbondingTicket.fetch(
-                redemptionRequestPda
+                ticketPda
             );
-
-            assert.equal(t.requestedAmount.toNumber(), new BN(1000).toNumber(),"Unbonding ticket should reflect requested amount");
+            assert.equal(t.requestedAmount.toNumber(), new BN(1000).toNumber(), "Unbonding ticket should reflect requested amount");
 
             // wait for >10 seconds unbonding period
             await new Promise(resolve => setTimeout(resolve, 15000));
@@ -787,7 +817,7 @@ describe("vault-stake", () => {
 
             try {
                 await program.account.unbondingTicket.fetch(
-                    redemptionRequestPda
+                    ticketPda
                 );
                 assert.fail("Redemption request should be closed");
             } catch (err) {
@@ -869,7 +899,6 @@ describe("vault-stake", () => {
                 BPF_LOADER_UPGRADEABLE_ID
             );
         });
-
         it("pauses all functionality", async () => {
             await program.methods
                 .pause(true)
@@ -880,7 +909,7 @@ describe("vault-stake", () => {
                 })
                 .rpc();
 
-            const config = await program.account.config.fetch(stakeConfigPda);
+            const config = await program.account.stakeConfig.fetch(stakeConfigPda);
             assert.isTrue(config.paused);
         });
 
@@ -956,7 +985,7 @@ describe("vault-stake", () => {
                     signer: provider.wallet.publicKey,
                 })
                 .rpc();
-            const config = await program.account.config.fetch(stakeConfigPda);
+            const config = await program.account.stakeConfig.fetch(stakeConfigPda);
             assert.ok(!config.paused);
         });
     });
@@ -1092,6 +1121,9 @@ describe("vault-stake", () => {
 
     //write test cases against the rewards merkle tree functionality
     describe("rewards", () => {
+        after(async () => {
+            vaultSummary("after rewards")
+        });
 
         it("publish rewards", async () => {
 
@@ -1179,7 +1211,7 @@ describe("vault-stake", () => {
                 })
                 .rpc();
             //fetch config and verify
-            const config = await program.account.config.fetch(stakeConfigPda);
+            const config = await program.account.stakeConfig.fetch(stakeConfigPda);
             const freezeAdmins = config.freezeAdministrators.map(pk => pk.toBase58());
             assert.includeMembers(freezeAdmins, [freezeAdmin.publicKey.toBase58(), addFreezeAdmin.publicKey.toBase58()]);
         });
@@ -1246,7 +1278,7 @@ describe("vault-stake", () => {
                 })
                 .rpc();
             //fetch config and verify
-            const config = await program.account.config.fetch(stakeConfigPda);
+            const config = await program.account.stakeConfig.fetch(stakeConfigPda);
             const rewardsAdmins = config.rewardsAdministrators.map(pk => pk.toBase58());
             assert.includeMembers(rewardsAdmins, [rewardsAdmin.publicKey.toBase58(), addRewardsAdmin.publicKey.toBase58()]);
         });
@@ -1268,12 +1300,7 @@ describe("vault-stake", () => {
             }
         });
         it("new rewards admin can NOT publish rewards unless mint program updated", async () => {
-            const [redemptionRequestPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                [Buffer.from("redemption_request"), user.publicKey.toBuffer()],
-                program.programId
-            );
             try {
-
                 await program.methods
                     .publishRewards(new BN(100_000_000_000))
                     .accountsStrict({
@@ -1310,6 +1337,74 @@ describe("vault-stake", () => {
             //fetch config and verify
             const config = await program.account.stakeConfig.fetch(stakeConfigPda);
             assert.equal(config.unbondingPeriod.toNumber(), new BN(240).toNumber());
+        });
+    });
+
+    describe("overflow deposits", () => {
+
+        before(async () => {
+            const mintConfig = await mintProgram.account.config.fetch(configPda);
+            const mintProgramVaultToken = mintConfig.vault; //USDC
+            const user2MintProgramVaultedTokenAccount = await getAssociatedTokenAddress(
+                mintProgramVaultToken,
+                user2.publicKey
+            );
+
+            const user2UsdcBalance = await getAccount(provider.connection, user2MintProgramVaultedTokenAccount);
+            const [mintProgramMintAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [Buffer.from("mint_authority")],
+                mintProgram.programId
+            );
+
+            /* create large deposit to push total assets close to u64 max */
+            await mintProgram.methods
+                .deposit(new BN(user2UsdcBalance.amount))
+                .accountsStrict({
+                    config: configPda,
+                    vaultTokenAccount: mintProgramVaultTokenAccount,
+                    mint: vaultedToken,
+                    mintAuthority: mintProgramMintAuthorityPda,
+                    signer: user2.publicKey,
+                    userVaultTokenAccount: user2MintProgramVaultedTokenAccount, //USDC
+                    userMintTokenAccount: user2VaultTokenAccount, // WYLDS
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
+                })
+                .signers([user2])
+                .rpc().catch(err => {
+                    console.log(`USDC deposit error: ${err}`);
+                    console.dir(err);
+                    throw err;
+                });
+
+            const user2VaultedTokenAccount = await getAccount(provider.connection, user2VaultTokenAccount);
+            assert.isTrue(user2VaultedTokenAccount.amount > hundredBillsLarge, "User 2 has more than 100 billion vaulted tokens");
+        });
+        after(async () => {
+            vaultSummary("after overflow deposit")
+        });
+
+        it("billion dollar deposit works", async () => {
+            const userVaultedTokenBalanceBefore = await getAccount(provider.connection, user2VaultTokenAccount);
+            await program.methods
+                .deposit(new BN(userVaultedTokenBalanceBefore.amount))
+                .accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    vaultTokenAccount: vaultTokenAccount,
+                    vaultAuthority: vaultAuthorityPda,
+                    mint: mintedToken,
+                    vaultMint: vaultedToken,
+                    mintAuthority: mintAuthorityPda,
+                    signer: user2.publicKey,
+                    userVaultTokenAccount: user2VaultTokenAccount,
+                    userMintTokenAccount: user2MintTokenAccount,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
+                })
+                .signers([user2])
+                .rpc()
+                .catch(err => {
+                    console.log(`PRIME deposit error: ${err}`);
+                    console.dir(err);
+                });
         });
     });
 });
