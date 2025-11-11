@@ -10,13 +10,11 @@ use anchor_spl::token::{self, MintTo, Transfer};
 
 pub fn initialize(
     ctx: Context<Initialize>,
-    vault_token_mint: Pubkey,
-    mint: Pubkey,
     freeze_administrators: Vec<Pubkey>,
     rewards_administrators: Vec<Pubkey>,
     allowed_external_mint_program: Pubkey
 ) -> Result<()> {
-    msg!("Initializing with vault_token_mint: {}", vault_token_mint);
+    msg!("Initializing with vault_token_mint: {}", ctx.accounts.vault_token_mint.key());
     msg!("Vault mint account: {}", ctx.accounts.vault_token_mint.key());
 
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
@@ -32,13 +30,13 @@ pub fn initialize(
     );
 
     require!(
-        vault_token_mint != mint,
+        ctx.accounts.vault_token_mint.key() != ctx.accounts.mint.key(),
         CustomErrorCode::VaultAndMintCannotBeSame
     );
 
     let config = &mut ctx.accounts.config;
-    config.vault = vault_token_mint;
-    config.mint = mint;
+    config.vault = ctx.accounts.vault_token_mint.key();
+    config.mint = ctx.accounts.mint.key();
     config.freeze_administrators = freeze_administrators;
     config.rewards_administrators = rewards_administrators;
     config.vault_authority = ctx.accounts.vault_token_account.owner;
@@ -314,7 +312,7 @@ pub fn update_rewards_administrators(
 
     msg!(
         "Rewards administrators updated. New count: {}",
-        config.freeze_administrators.len()
+        config.rewards_administrators.len()
     );
     Ok(())
 }

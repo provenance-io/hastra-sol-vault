@@ -183,7 +183,9 @@ pub struct FreezeTokenAccount<'info> {
     pub token_account: Account<'info, TokenAccount>,
 
     #[account(
-        constraint = mint.freeze_authority == Some(freeze_authority_pda.key()).into() @ CustomErrorCode::InvalidFreezeAuthority
+        constraint = mint.freeze_authority == Some(freeze_authority_pda.key()).into() @ CustomErrorCode::InvalidFreezeAuthority,
+        constraint = config.mint == mint.key() @ CustomErrorCode::InvalidMint
+    
     )]
     pub mint: Account<'info, Mint>,
 
@@ -213,7 +215,8 @@ pub struct ThawTokenAccount<'info> {
     pub token_account: Account<'info, TokenAccount>,
 
     #[account(
-        constraint = mint.freeze_authority == Some(freeze_authority_pda.key()).into() @ CustomErrorCode::InvalidFreezeAuthority
+        constraint = mint.freeze_authority == Some(freeze_authority_pda.key()).into() @ CustomErrorCode::InvalidFreezeAuthority,
+        constraint = config.mint == mint.key() @ CustomErrorCode::InvalidMint
     )]
     pub mint: Account<'info, Mint>,
 

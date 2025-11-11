@@ -57,16 +57,12 @@ pub mod vault_stake {
     /// - unbonding_period: Time in seconds users must wait before redeeming
     pub fn initialize(
         ctx: Context<Initialize>,
-        vault_token_mint: Pubkey,
-        stake_mint: Pubkey,
         unbonding_period: i64,
         freeze_administrators: Vec<Pubkey>,
         rewards_administrators: Vec<Pubkey>,
     ) -> Result<()> {
         processor::initialize(
             ctx,
-            vault_token_mint,
-            stake_mint,
             unbonding_period,
             freeze_administrators,
             rewards_administrators,
@@ -132,5 +128,17 @@ pub mod vault_stake {
         amount: u64,
     ) -> Result<()> {
         processor::publish_rewards(ctx, amount)
+    }
+
+    pub fn shares_to_assets(ctx: Context<ConversionView>, shares: u64) -> Result<u64> {
+        processor::shares_to_assets(ctx, shares)
+    }
+
+    pub fn assets_to_shares(ctx: Context<ConversionView>, assets: u64) -> Result<u64> {
+        processor::assets_to_shares(ctx, assets)
+    }
+
+    pub fn exchange_rate(ctx: Context<ConversionView>) -> Result<u64> {
+        processor::exchange_rate(ctx)   
     }
 }

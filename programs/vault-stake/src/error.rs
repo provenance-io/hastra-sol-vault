@@ -62,5 +62,7 @@ pub enum CustomErrorCode {
     DepositTooSmall = 31,
     #[msg("Division by zero error")]
     DivisionByZero = 32,
+    #[msg("Arithmetic overflow error")]
+    Overflow = 33,
     
 }

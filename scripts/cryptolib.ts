@@ -36,6 +36,7 @@ export const padToPowerOfTwo = (leaves: Buffer<ArrayBufferLike>[])=> {
     return padded;
 }
 
+
 export const allocationsToMerkleTree = (allocationString: string, epochIndex: number) => {
     const allocations: {user: PublicKey, amount: anchor.BN}[] = (JSON.parse(allocationString).allocations as {account: string, amount: number}[]).map((a: {account: string, amount: number}) => {
         return {user: new PublicKey(a.account), amount: new anchor.BN(a.amount)};

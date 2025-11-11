@@ -50,16 +50,12 @@ pub mod vault_mint {
     /// - allowed_external_mint_program: An external program authorized to mint tokens
     pub fn initialize(
         ctx: Context<Initialize>,
-        vault_token_mint: Pubkey,
-        mint: Pubkey,
         freeze_administrators: Vec<Pubkey>,
         rewards_administrators: Vec<Pubkey>,
         allowed_external_mint_program: Pubkey,
     ) -> Result<()> {
         processor::initialize(
             ctx,
-            vault_token_mint,
-            mint,
             freeze_administrators,
             rewards_administrators,
             allowed_external_mint_program

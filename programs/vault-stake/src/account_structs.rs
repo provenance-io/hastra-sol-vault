@@ -45,7 +45,6 @@ pub struct Initialize<'info> {
 
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
-    pub rent: Sysvar<'info, Rent>,
 
     /// CHECK: This is the program data account that contains the update authority
     #[account(
@@ -87,7 +86,6 @@ pub struct UpdateConfig<'info> {
     )]
     pub program_data: UncheckedAccount<'info>,
 
-    pub rent: Sysvar<'info, Rent>,
     pub signer: Signer<'info>,
 }
 
@@ -313,7 +311,8 @@ pub struct FreezeTokenAccount<'info> {
     pub token_account: Account<'info, TokenAccount>,
 
     #[account(
-        constraint = mint.freeze_authority == Some(freeze_authority_pda.key()).into() @ CustomErrorCode::InvalidFreezeAuthority
+        constraint = mint.freeze_authority == Some(freeze_authority_pda.key()).into() @ CustomErrorCode::InvalidFreezeAuthority,
+        constraint = stake_config.mint == mint.key() @ CustomErrorCode::InvalidMint
     )]
     pub mint: Account<'info, Mint>,
 
@@ -343,7 +342,8 @@ pub struct ThawTokenAccount<'info> {
     pub token_account: Account<'info, TokenAccount>,
 
     #[account(
-        constraint = mint.freeze_authority == Some(freeze_authority_pda.key()).into() @ CustomErrorCode::InvalidFreezeAuthority
+        constraint = mint.freeze_authority == Some(freeze_authority_pda.key()).into() @ CustomErrorCode::InvalidFreezeAuthority,
+        constraint = stake_config.mint == mint.key() @ CustomErrorCode::InvalidMint
     )]
     pub mint: Account<'info, Mint>,
 
@@ -392,7 +392,8 @@ pub struct PublishRewards<'info> {
 
     #[account(
         mut,
-        constraint = rewards_mint.key() == stake_config.vault @ CustomErrorCode::InvalidMint
+        constraint = rewards_mint.key() == stake_config.vault @ CustomErrorCode::InvalidMint,
+        constraint = rewards_mint.mint_authority.unwrap() == rewards_mint_authority.key() @ CustomErrorCode::InvalidMintAuthority
     )]
     pub rewards_mint: Account<'info, Mint>, // this seems odd, but the rewards are in the vault token mint
     
@@ -419,6 +420,38 @@ pub struct PublishRewards<'info> {
     )]
     pub vault_authority: UncheckedAccount<'info>,
 
-    pub token_program: Program<'info, Token>,
+    #[account(
+        mut,
+        constraint = mint.key() == stake_config.mint @ CustomErrorCode::InvalidMint
+    )]
+    pub mint: Account<'info, Mint>,
     
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct ConversionView<'info> {
+    #[account(
+        seeds = [b"stake_config"], 
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        constraint = mint.key() == stake_config.mint @ CustomErrorCode::InvalidMint
+    )]
+    pub mint: Account<'info, Mint>,
+
+    #[account(
+        constraint = vault_token_account.mint == stake_config.vault @ CustomErrorCode::InvalidVaultMint,
+        constraint = vault_token_account.owner == vault_authority.key() @ CustomErrorCode::InvalidVaultAuthority
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+
+    /// CHECK: This is a PDA that acts as vault authority, validated by seeds constraint
+    #[account(
+        seeds = [b"vault_authority"],
+        bump
+    )]
+    pub vault_authority: UncheckedAccount<'info>,
 }

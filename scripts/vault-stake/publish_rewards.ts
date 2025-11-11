@@ -94,6 +94,7 @@ const main = async () => {
             rewardsMintAuthority: rewardsMintAuthorityPda,
             vaultTokenAccount: vaultTokenAccount,
             vaultAuthority: vaultAuthorityPda,
+            mint: rewardsMint,
             tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
         }).rpc();
 

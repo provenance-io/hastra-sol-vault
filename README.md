@@ -636,3 +636,17 @@ $ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
     --user <USER_PUBLIC_KEY_WHO_REQUESTED_REDEEM> \
     --mint AVpS6aTBQyCFBA4jymYRWqDyL7ipurn24PZVdjbbWT3X
 ```
+
+## Testing
+
+The project includes a suite of tests for both the mint and staking programs. To run the tests, use the following command:
+
+Start a local validator separately:
+```bash
+$ solana-test-validator --reset
+```
+then run:
+```bash
+$ anchor test --skip-local-validator
+```
+
