@@ -183,7 +183,9 @@ pub struct FreezeTokenAccount<'info> {
     pub token_account: Account<'info, TokenAccount>,
 
     #[account(
-        constraint = mint.freeze_authority == Some(freeze_authority_pda.key()).into() @ CustomErrorCode::InvalidFreezeAuthority
+        constraint = mint.freeze_authority == Some(freeze_authority_pda.key()).into() @ CustomErrorCode::InvalidFreezeAuthority,
+        constraint = config.mint == mint.key() @ CustomErrorCode::InvalidMint
+    
     )]
     pub mint: Account<'info, Mint>,
 
@@ -213,7 +215,8 @@ pub struct ThawTokenAccount<'info> {
     pub token_account: Account<'info, TokenAccount>,
 
     #[account(
-        constraint = mint.freeze_authority == Some(freeze_authority_pda.key()).into() @ CustomErrorCode::InvalidFreezeAuthority
+        constraint = mint.freeze_authority == Some(freeze_authority_pda.key()).into() @ CustomErrorCode::InvalidFreezeAuthority,
+        constraint = config.mint == mint.key() @ CustomErrorCode::InvalidMint
     )]
     pub mint: Account<'info, Mint>,
 
@@ -410,8 +413,16 @@ pub struct ExternalProgramMint<'info> {
     )]
     pub config: Account<'info, Config>,
 
-    /// CHECK: The caller program should be passed from CPI
-    pub external_mint_program_caller: AccountInfo<'info>,
+    /// PDA from the calling program that proves CPI origin
+    /// This PDA is derived using the allowed_external_mint_program's ID
+    /// Only that program can sign for this PDA, proving the call is from CPI
+    /// CHECK: Verified by seeds constraint against allowed_external_mint_program
+    #[account(
+    seeds = [b"external_mint_authority"],
+    seeds::program = config.allowed_external_mint_program,
+    bump,
+    )]
+    pub external_mint_authority: UncheckedAccount<'info>,
 
     #[account(
         mut,
@@ -427,9 +438,12 @@ pub struct ExternalProgramMint<'info> {
     )]
     pub mint_authority: UncheckedAccount<'info>,
 
-    #[account()]
-    pub signer: Signer<'info>,
-
+    /// The rewards administrator who authorized this mint operation
+    /// This is NOT a Signer in the CPI context - the PDA signs the CPI, not the admin
+    /// The admin's pubkey is just passed through for authorization checking
+    /// CHECK: Verified against config.rewards_administrators list in processor
+    pub admin: AccountInfo<'info>,
+    
     #[account(
         mut,
         constraint = destination.mint == mint.key() @ CustomErrorCode::InvalidMint
@@ -437,4 +451,29 @@ pub struct ExternalProgramMint<'info> {
     pub destination: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateVaultTokenAccount<'info> {
+    #[account(
+        mut,
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Account<'info, Config>,
+
+    #[account(
+        mut,
+        token::mint = config.vault,
+        constraint = vault_token_account.mint == config.vault @ CustomErrorCode::InvalidVaultMint,
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+    
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub signer: Signer<'info>,
 }

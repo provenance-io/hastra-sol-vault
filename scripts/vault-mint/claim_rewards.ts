@@ -6,8 +6,7 @@ import yargs from "yargs";
 import {getAssociatedTokenAddressSync} from "@solana/spl-token";
 import {
     allocationsToMerkleTree,
-    idl,
-    makeLeaf
+    makeLeaf, MINT_IDL
 } from "../cryptolib";
 
 const provider = anchor.AnchorProvider.env();
@@ -36,7 +35,7 @@ const args = yargs(process.argv.slice(2))
     })
     .parseSync();
 
-const program: Program<VaultMint> = new anchor.Program(idl as anchor.Idl, provider) as Program<VaultMint>;
+const program: Program<VaultMint> = new anchor.Program(MINT_IDL as anchor.Idl, provider) as Program<VaultMint>;
 
 const main = async () => {
     const epochIndex = args.epoch;

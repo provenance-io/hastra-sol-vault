@@ -68,6 +68,10 @@ const main = async () => {
         mintProgramId
     );
 
+    const [externalMintAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("external_mint_authority")],
+        stakeProgramId
+    );
     console.log("Rewards Mint (token to be minted e.g. wYLDS)", rewardsMint.toBase58());
     console.log("Amount:", amount.toString());
     console.log("Mint Program:", mintProgramId.toBase58());
@@ -83,13 +87,14 @@ const main = async () => {
         .accountsStrict({
             stakeConfig: stakeConfigPda,
             mintConfig: mintConfigPda,
-            admin: signer,
-            thisProgram: new anchor.web3.PublicKey(args.stake_program),
+            externalMintAuthority: externalMintAuthorityPda,
             mintProgram: new anchor.web3.PublicKey(args.mint_program),
-            vaultTokenAccount: vaultTokenAccount,
-            vaultAuthority: vaultAuthorityPda,
+            admin: signer,
             rewardsMint: rewardsMint,
             rewardsMintAuthority: rewardsMintAuthorityPda,
+            vaultTokenAccount: vaultTokenAccount,
+            vaultAuthority: vaultAuthorityPda,
+            mint: rewardsMint,
             tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
         }).rpc();
 

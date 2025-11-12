@@ -4,7 +4,8 @@ import {PublicKey} from "@solana/web3.js";
 import {MerkleTree} from "merkletreejs";
 
 
-export const idl = require("../target/idl/hastra_sol_vault_mint.json");
+export const MINT_IDL = require("../target/idl/vault_mint.json");
+export const STAKE_IDL = require("../target/idl/vault_stake.json");
 export const ZERO32 = Buffer.alloc(0);
 export const sha256 = (x: Buffer) => createHash("sha256").update(x).digest();
 
@@ -34,6 +35,7 @@ export const padToPowerOfTwo = (leaves: Buffer<ArrayBufferLike>[])=> {
     }
     return padded;
 }
+
 
 export const allocationsToMerkleTree = (allocationString: string, epochIndex: number) => {
     const allocations: {user: PublicKey, amount: anchor.BN}[] = (JSON.parse(allocationString).allocations as {account: string, amount: number}[]).map((a: {account: string, amount: number}) => {

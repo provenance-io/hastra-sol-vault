@@ -3,13 +3,13 @@ import {Program} from "@coral-xyz/anchor";
 import {VaultMint} from "../../target/types/vault_mint";
 import {PublicKey} from "@solana/web3.js";
 import yargs from "yargs";
-import {allocationsToMerkleTree, idl,} from "../cryptolib";
+import {allocationsToMerkleTree, MINT_IDL} from "../cryptolib";
 import * as fs from "fs";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
 
-const program: Program<VaultMint> = new anchor.Program(idl as anchor.Idl, provider) as Program<VaultMint>;
+const program: Program<VaultMint> = new anchor.Program(MINT_IDL as anchor.Idl, provider) as Program<VaultMint>;
 
 const args = yargs(process.argv.slice(2))
     .option("epoch", {

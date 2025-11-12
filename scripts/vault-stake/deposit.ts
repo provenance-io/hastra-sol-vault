@@ -80,6 +80,7 @@ const main = async () => {
             vaultTokenAccount: vaultTokenAccount,
             vaultAuthority: vaultAuthorityPda,
             mint: mint,
+            vaultMint: vault,
             mintAuthority: mintAuthorityPda,
             signer: signer,
             userVaultTokenAccount: userVaultTokenAccount,

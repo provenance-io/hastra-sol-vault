@@ -10,7 +10,7 @@ prompt_with_default_no_history() {
   fi
 }
 
-prompt_with_default_no_history SOLANA_NETWORK "Select Solana network (devnet, mainnet-beta, testnet)"
+prompt_with_default_no_history SOLANA_NETWORK "Select Solana network (localnet, devnet, mainnet-beta, testnet)"
 
 HISTORY_FILE="${SOLANA_NETWORK}_vault.history"
 
@@ -160,7 +160,7 @@ copy_stake_prog_idl_types() {
   echo "Copied to $dest_type"
   cp ../target/idl/vault_stake.json "$dest_idl"
   # add TS const to top of IDL file
-  sed -i '' '1s/^/export const VaultMint = /' "$dest_idl"
+  sed -i '' '1s/^/export const VaultStake = /' "$dest_idl"
   echo "Copied to $dest_idl"
 }
 

@@ -5,12 +5,12 @@ import {PublicKey} from "@solana/web3.js";
 import yargs from "yargs";
 import {
     allocationsToMerkleTree,
-    idl,
+    MINT_IDL,
 } from "../cryptolib";
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
 
-const program: Program<VaultMint> = new anchor.Program(idl as anchor.Idl, provider) as Program<VaultMint>;
+const program: Program<VaultMint> = new anchor.Program(MINT_IDL as anchor.Idl, provider) as Program<VaultMint>;
 
 const args = yargs(process.argv.slice(2))
     .option("epoch", {

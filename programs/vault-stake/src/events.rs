@@ -9,6 +9,9 @@ pub struct DepositEvent {
     pub mint_supply: u64,
     pub vault: Pubkey,
     pub vault_balance: u64,
+    pub total_assets: u64,
+    pub total_shares: u64,
+    pub totals_last_update_slot: u64,
 }
 
 #[event]
@@ -28,6 +31,10 @@ pub struct RedeemEvent {
     pub vault: Pubkey,
     pub redeemed_vault_amount: u64,
     pub vault_balance: u64,
+    pub shares_burned: u64,
+    pub total_assets: u64,
+    pub total_shares: u64,
+    pub totals_last_update_slot: u64,
 }
 
 #[event]
@@ -46,5 +53,8 @@ pub struct RewardsPublished {
     pub mint_program: Pubkey,
     pub vault_token_account: Pubkey,
     pub mint: Pubkey,
-    pub vault: Pubkey
+    pub vault: Pubkey,
+    pub total_assets: u64,
+    pub total_shares: u64,
+    pub totals_last_update_slot: u64,
 }

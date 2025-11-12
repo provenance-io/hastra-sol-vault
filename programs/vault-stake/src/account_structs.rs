@@ -45,7 +45,6 @@ pub struct Initialize<'info> {
 
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
-    pub rent: Sysvar<'info, Rent>,
 
     /// CHECK: This is the program data account that contains the update authority
     #[account(
@@ -87,7 +86,6 @@ pub struct UpdateConfig<'info> {
     )]
     pub program_data: UncheckedAccount<'info>,
 
-    pub rent: Sysvar<'info, Rent>,
     pub signer: Signer<'info>,
 }
 
@@ -119,6 +117,12 @@ pub struct Deposit<'info> {
         constraint = mint.key() == stake_config.mint @ CustomErrorCode::InvalidMint
     )]
     pub mint: Account<'info, Mint>,
+
+    #[account(
+        mut,
+        constraint = vault_mint.key() == stake_config.vault @ CustomErrorCode::InvalidVaultMint
+    )]
+    pub vault_mint: Account<'info, Mint>,
 
     /// CHECK: This is a PDA that acts as mint authority, validated by seeds constraint
     #[account(
@@ -242,6 +246,12 @@ pub struct Redeem<'info> {
     )]
     pub mint: Account<'info, Mint>,
 
+    #[account(
+        mut,
+        constraint = vault_mint.key() == stake_config.vault @ CustomErrorCode::InvalidVaultMint
+    )]
+    pub vault_mint: Account<'info, Mint>,
+
     pub token_program: Program<'info, Token>,
 }
 
@@ -301,7 +311,8 @@ pub struct FreezeTokenAccount<'info> {
     pub token_account: Account<'info, TokenAccount>,
 
     #[account(
-        constraint = mint.freeze_authority == Some(freeze_authority_pda.key()).into() @ CustomErrorCode::InvalidFreezeAuthority
+        constraint = mint.freeze_authority == Some(freeze_authority_pda.key()).into() @ CustomErrorCode::InvalidFreezeAuthority,
+        constraint = stake_config.mint == mint.key() @ CustomErrorCode::InvalidMint
     )]
     pub mint: Account<'info, Mint>,
 
@@ -331,7 +342,8 @@ pub struct ThawTokenAccount<'info> {
     pub token_account: Account<'info, TokenAccount>,
 
     #[account(
-        constraint = mint.freeze_authority == Some(freeze_authority_pda.key()).into() @ CustomErrorCode::InvalidFreezeAuthority
+        constraint = mint.freeze_authority == Some(freeze_authority_pda.key()).into() @ CustomErrorCode::InvalidFreezeAuthority,
+        constraint = stake_config.mint == mint.key() @ CustomErrorCode::InvalidMint
     )]
     pub mint: Account<'info, Mint>,
 
@@ -362,10 +374,16 @@ pub struct PublishRewards<'info> {
     )]
     pub mint_config: Account<'info, vault_mint::state::Config>,
 
-    /// CHECK: This program's executable
-    #[account(executable)]
-    pub this_program: AccountInfo<'info>,
-
+    /// PDA that proves this call is from vault-stake
+    /// This PDA is signed during the CPI call to vault-mint
+    /// Only vault-stake can sign for this PDA
+    /// CHECK: This is a PDA derived from vault-stake program, validated by seeds
+    #[account(
+        seeds = [b"external_mint_authority"],
+        bump
+    )]
+    pub external_mint_authority: UncheckedAccount<'info>,
+    
     /// CHECK: hastra vault-mint program's executable
     pub mint_program: AccountInfo<'info>,
     
@@ -374,7 +392,8 @@ pub struct PublishRewards<'info> {
 
     #[account(
         mut,
-        constraint = rewards_mint.key() == stake_config.vault @ CustomErrorCode::InvalidMint
+        constraint = rewards_mint.key() == stake_config.vault @ CustomErrorCode::InvalidMint,
+        constraint = rewards_mint.mint_authority.unwrap() == rewards_mint_authority.key() @ CustomErrorCode::InvalidMintAuthority
     )]
     pub rewards_mint: Account<'info, Mint>, // this seems odd, but the rewards are in the vault token mint
     
@@ -401,6 +420,38 @@ pub struct PublishRewards<'info> {
     )]
     pub vault_authority: UncheckedAccount<'info>,
 
-    pub token_program: Program<'info, Token>,
+    #[account(
+        mut,
+        constraint = mint.key() == stake_config.mint @ CustomErrorCode::InvalidMint
+    )]
+    pub mint: Account<'info, Mint>,
     
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct ConversionView<'info> {
+    #[account(
+        seeds = [b"stake_config"], 
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        constraint = mint.key() == stake_config.mint @ CustomErrorCode::InvalidMint
+    )]
+    pub mint: Account<'info, Mint>,
+
+    #[account(
+        constraint = vault_token_account.mint == stake_config.vault @ CustomErrorCode::InvalidVaultMint,
+        constraint = vault_token_account.owner == vault_authority.key() @ CustomErrorCode::InvalidVaultAuthority
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+
+    /// CHECK: This is a PDA that acts as vault authority, validated by seeds constraint
+    #[account(
+        seeds = [b"vault_authority"],
+        bump
+    )]
+    pub vault_authority: UncheckedAccount<'info>,
 }
