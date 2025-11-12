@@ -526,7 +526,7 @@ pub fn thaw_token_account(ctx: Context<ThawTokenAccount>) -> Result<()> {
     Ok(())
 }
 
-pub fn publish_rewards(ctx: Context<PublishRewards>, amount: u64) -> Result<()> {
+pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Result<()> {
     require!(
         !ctx.accounts.stake_config.paused,
         CustomErrorCode::ProtocolPaused
@@ -539,6 +539,13 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, amount: u64) -> Result<()> 
         CustomErrorCode::InvalidRewardsAdministrator
     );
     require!(amount > 0, CustomErrorCode::InvalidAmount);
+
+    // Initialize the reward record
+    let reward_record = &mut ctx.accounts.reward_record;
+    reward_record.id = id;
+    reward_record.amount = amount;
+    reward_record.published_at = Clock::get()?.unix_timestamp;
+    reward_record.bump = ctx.bumps.reward_record;
 
     let stake_config = &ctx.accounts.stake_config;
 
@@ -571,6 +578,7 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, amount: u64) -> Result<()> 
 
     let totals_last_update_slot = Clock::get()?.slot;
 
+    msg!("Publishing rewards for id: {} for amount: {}", id, amount);
     msg!("Emitting RewardsPublished");
     emit!(RewardsPublished {
         admin: ctx.accounts.admin.key(),
@@ -582,6 +590,7 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, amount: u64) -> Result<()> 
         total_assets: ctx.accounts.vault_token_account.amount,
         total_shares: ctx.accounts.mint.supply,
         totals_last_update_slot: totals_last_update_slot,
+        id: id,
     });
     msg!("Emitted RewardsPublished");
 

@@ -360,6 +360,7 @@ pub struct ThawTokenAccount<'info> {
 
 // admin publishes rewards
 #[derive(Accounts)]
+#[instruction(id: u32, amount: u64)]
 pub struct PublishRewards<'info> {
     #[account(
         seeds = [b"stake_config"], 
@@ -425,6 +426,22 @@ pub struct PublishRewards<'info> {
         constraint = mint.key() == stake_config.mint @ CustomErrorCode::InvalidMint
     )]
     pub mint: Account<'info, Mint>,
+
+    /// Reward record PDA to prevent duplicates
+    #[account(
+        init,
+        payer = admin,
+        space = RewardPublicationRecord::LEN,
+        seeds = [
+            b"reward_record",
+            id.to_le_bytes().as_ref(),
+            amount.to_le_bytes().as_ref(),
+        ],
+        bump
+    )]
+    pub reward_record: Account<'info, RewardPublicationRecord>,
+
+    pub system_program: Program<'info, System>,
     
     pub token_program: Program<'info, Token>,
 }

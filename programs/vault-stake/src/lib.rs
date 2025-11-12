@@ -125,9 +125,10 @@ pub mod vault_stake {
 
     pub fn publish_rewards(
         ctx: Context<PublishRewards>,
+        id: u32,
         amount: u64,
     ) -> Result<()> {
-        processor::publish_rewards(ctx, amount)
+        processor::publish_rewards(ctx, id, amount)
     }
 
     pub fn shares_to_assets(ctx: Context<ConversionView>, shares: u64) -> Result<u64> {

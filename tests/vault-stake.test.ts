@@ -50,12 +50,12 @@ describe("vault-stake", () => {
     let externalMintAuthorityPda: PublicKey;
     let rewardsMintAuthorityPda: PublicKey;
 
-    let virtualOffset: bigint;
-
     let freezeAdmin: Keypair;
     let rewardsAdmin: Keypair;
 
     let unbondingPeriod: BN;
+
+    let publishRewardsId = 0;
 
     const ONE_BIG_SHARE = createBigInt(1_000_000);
     const ONE_BIG_TOKEN = createBigInt(1_000_000);
@@ -253,7 +253,6 @@ describe("vault-stake", () => {
             mintProgramVaultTokenAccountOwner
         );
 
-        virtualOffset = createBigInt(1000000);
     });
 
     after(async () => {
@@ -1129,8 +1128,17 @@ describe("vault-stake", () => {
 
             const rateBefore = await exchangeRate();
 
+            const amount = 100_000_000_000;
+            const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("reward_record"),
+                    Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
+                    Buffer.from(new BigUint64Array([createBigInt(amount)]).buffer)
+                ],
+                program.programId);
+
             await program.methods
-                .publishRewards(new BN(100_000_000_000))
+                .publishRewards(publishRewardsId, new BN(amount))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     mintConfig: configPda,
@@ -1142,7 +1150,9 @@ describe("vault-stake", () => {
                     vaultTokenAccount: vaultTokenAccount,
                     vaultAuthority: vaultAuthorityPda,
                     mint: mintedToken,
-                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
+                    rewardRecord: rewardsRecordPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    systemProgram: anchor.web3.SystemProgram.programId,
                 })
                 .signers([rewardsAdmin])
                 .rpc();
@@ -1151,10 +1161,124 @@ describe("vault-stake", () => {
             assert.isTrue(rateAfter > rateBefore, "Exchange rate should increase after publishing rewards");
         });
 
-        it("only rewards admin can create rewards epoch", async () => {
+        it("prevents duplicate publish rewards", async () => {
+
+            const rateBefore = await exchangeRate();
+
+            const amount = 100_000_000_000;
+            const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("reward_record"),
+                    Buffer.from(new Uint32Array([publishRewardsId]).buffer),
+                    Buffer.from(new BigUint64Array([createBigInt(amount)]).buffer)
+                ],
+                program.programId);
+
             try {
                 await program.methods
-                    .publishRewards(new BN(100_000_000_000))
+                    .publishRewards(publishRewardsId, new BN(amount))
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        mintConfig: configPda,
+                        externalMintAuthority: externalMintAuthorityPda,
+                        mintProgram: mintProgram.programId,
+                        admin: rewardsAdmin.publicKey,
+                        rewardsMint: vaultedToken,
+                        rewardsMintAuthority: rewardsMintAuthorityPda,
+                        vaultTokenAccount: vaultTokenAccount,
+                        vaultAuthority: vaultAuthorityPda,
+                        mint: mintedToken,
+                        rewardRecord: rewardsRecordPda,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                        systemProgram: anchor.web3.SystemProgram.programId,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (e) {
+                expect(e).to.exist;
+            }
+        });
+
+        it("publish reward multiples", async () => {
+            const amount = 1_000_000_000;
+            const [rewardsRecordPda1] = anchor.web3.PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("reward_record"),
+                    Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
+                    Buffer.from(new BigUint64Array([createBigInt(amount)]).buffer)
+                ],
+                program.programId);
+
+            await program.methods
+                .publishRewards(publishRewardsId, new BN(amount))
+                .accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    mintConfig: configPda,
+                    externalMintAuthority: externalMintAuthorityPda,
+                    mintProgram: mintProgram.programId,
+                    admin: rewardsAdmin.publicKey,
+                    rewardsMint: vaultedToken,
+                    rewardsMintAuthority: rewardsMintAuthorityPda,
+                    vaultTokenAccount: vaultTokenAccount,
+                    vaultAuthority: vaultAuthorityPda,
+                    mint: mintedToken,
+                    rewardRecord: rewardsRecordPda1,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                })
+                .signers([rewardsAdmin])
+                .rpc();
+
+            const [rewardsRecordPda2] = anchor.web3.PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("reward_record"),
+                    Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
+                    Buffer.from(new BigUint64Array([createBigInt(amount)]).buffer)
+                ],
+                program.programId);
+
+            await program.methods
+                .publishRewards(publishRewardsId, new BN(amount))
+                .accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    mintConfig: configPda,
+                    externalMintAuthority: externalMintAuthorityPda,
+                    mintProgram: mintProgram.programId,
+                    admin: rewardsAdmin.publicKey,
+                    rewardsMint: vaultedToken,
+                    rewardsMintAuthority: rewardsMintAuthorityPda,
+                    vaultTokenAccount: vaultTokenAccount,
+                    vaultAuthority: vaultAuthorityPda,
+                    mint: mintedToken,
+                    rewardRecord: rewardsRecordPda2,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                })
+                .signers([rewardsAdmin])
+                .rpc();
+
+            const reward1 = await program.account.rewardPublicationRecord.fetch(rewardsRecordPda1);
+            const reward2 = await program.account.rewardPublicationRecord.fetch(rewardsRecordPda2);
+
+            assert.equal(reward1.amount.toNumber(), amount, "First reward amount should match");
+            assert.equal(reward2.amount.toNumber(), amount, "Second reward amount should match");
+            assert.equal(reward2.id, publishRewardsId, "Second reward id should match current reward id");
+        });
+
+        it("only rewards admin can create rewards epoch", async () => {
+            try {
+                const amount = 100_000_000_000;
+                const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                    [
+                        Buffer.from("reward_record"),
+                        Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
+                        Buffer.from(new BigUint64Array([createBigInt(amount)]).buffer)
+                    ],
+                    program.programId);
+
+                await program.methods
+                    .publishRewards(publishRewardsId, new BN(amount))
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
                         mintConfig: configPda,
@@ -1165,8 +1289,10 @@ describe("vault-stake", () => {
                         rewardsMintAuthority: rewardsMintAuthorityPda,
                         vaultTokenAccount: vaultTokenAccount,
                         vaultAuthority: vaultAuthorityPda,
-                        mint: vaultedToken,
-                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
+                        mint: mintedToken,
+                        rewardRecord: rewardsRecordPda,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                        systemProgram: anchor.web3.SystemProgram.programId,
                     })
                     .signers([user])
                     .rpc();
@@ -1301,8 +1427,17 @@ describe("vault-stake", () => {
         });
         it("new rewards admin can NOT publish rewards unless mint program updated", async () => {
             try {
+                const amount = 100_000_000_000;
+                const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                    [
+                        Buffer.from("reward_record"),
+                        Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
+                        Buffer.from(new BigUint64Array([createBigInt(amount)]).buffer)
+                    ],
+                    program.programId);
+
                 await program.methods
-                    .publishRewards(new BN(100_000_000_000))
+                    .publishRewards(publishRewardsId, new BN(amount))
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
                         mintConfig: configPda,
@@ -1314,7 +1449,9 @@ describe("vault-stake", () => {
                         vaultTokenAccount: vaultTokenAccount,
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
-                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
+                        rewardRecord: rewardsRecordPda,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                        systemProgram: anchor.web3.SystemProgram.programId,
                     })
                     .signers([addRewardsAdmin])
                     .rpc();

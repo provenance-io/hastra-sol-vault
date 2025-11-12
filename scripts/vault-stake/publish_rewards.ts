@@ -2,7 +2,7 @@ import * as anchor from "@coral-xyz/anchor";
 import {Program} from "@coral-xyz/anchor";
 import yargs from "yargs";
 import {VaultStake} from "../../target/types/vault_stake";
-import {getAccount, TOKEN_PROGRAM_ID} from "@solana/spl-token";
+import {createBigInt} from "@metaplex-foundation/umi";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
@@ -28,6 +28,11 @@ const args = yargs(process.argv.slice(2))
     .option("amount", {
         type: "number",
         description: "Amount of tokens to deposit and mint",
+        required: true,
+    })
+    .option("reward_id", {
+        type: "number",
+        description: "Unique ID for the reward record",
         required: true,
     })
     .option("vault_token_account", {
@@ -57,6 +62,7 @@ const main = async () => {
     const vaultTokenAccount = new anchor.web3.PublicKey(args.vault_token_account);
     const mintProgramId = new anchor.web3.PublicKey(args.mint_program)
     const stakeProgramId = new anchor.web3.PublicKey(args.stake_program)
+    const rewardId = Number(args.reward_id);
 
     const [rewardsMintAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("mint_authority")],
@@ -72,8 +78,18 @@ const main = async () => {
         [Buffer.from("external_mint_authority")],
         stakeProgramId
     );
+
+    const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("reward_record"),
+            Buffer.from(new Uint32Array([rewardId]).buffer),
+            Buffer.from(new BigUint64Array([createBigInt(amount.toNumber())]).buffer)
+        ],
+        program.programId);
+
     console.log("Rewards Mint (token to be minted e.g. wYLDS)", rewardsMint.toBase58());
     console.log("Amount:", amount.toString());
+    console.log("Reward ID:", rewardId.toString());
     console.log("Mint Program:", mintProgramId.toBase58());
     console.log("Stake Program:", stakeProgramId.toBase58());
     console.log("Vault Token Account (e.g. wYLDS)", vaultTokenAccount.toBase58());
@@ -83,7 +99,7 @@ const main = async () => {
     console.log("Vault Authority PDA:", vaultAuthorityPda.toBase58());
 
     const tx = await program.methods
-        .publishRewards(amount)
+        .publishRewards(rewardId, amount)
         .accountsStrict({
             stakeConfig: stakeConfigPda,
             mintConfig: mintConfigPda,
@@ -95,7 +111,9 @@ const main = async () => {
             vaultTokenAccount: vaultTokenAccount,
             vaultAuthority: vaultAuthorityPda,
             mint: rewardsMint,
-            tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
+            rewardRecord: rewardsRecordPda,
+            tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+            systemProgram: anchor.web3.SystemProgram.programId,
         }).rpc();
 
     console.log("Transaction:", tx);
