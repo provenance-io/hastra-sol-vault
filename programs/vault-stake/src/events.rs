@@ -57,4 +57,5 @@ pub struct RewardsPublished {
     pub total_assets: u64,
     pub total_shares: u64,
     pub totals_last_update_slot: u64,
+    pub id: u32,
 }

@@ -34,8 +34,21 @@ impl UnbondingTicket {
     pub const LEN: usize = 8 + 32 + 8 + 8 + 8;
 }
 
-use anchor_lang::prelude::*;
-use anchor_spl::token::{Mint, Token, TokenAccount};
+#[account]
+pub struct RewardPublicationRecord {
+    pub id: u32,                 // Unique identifier
+    pub amount: u64,               // Reward amount
+    pub published_at: i64,         // Timestamp when published
+    pub bump: u8,                  // PDA bump seed
+}
+
+impl RewardPublicationRecord {
+    pub const LEN: usize = 8 +     // discriminator
+        4 +    // id (u32)
+        8 +     // amount
+        8 +     // published_at
+        1;      // bump
+}
 
 // ========== HELPER FUNCTIONS for VIRTUAL SHARES CALCS  ==========
 pub fn calculate_shares_to_assets(
