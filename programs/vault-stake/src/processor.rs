@@ -2,10 +2,9 @@ use crate::account_structs::*;
 use crate::error::*;
 use crate::events::*;
 use crate::guard::validate_program_update_authority;
-use crate::state::{calculate_assets_to_shares, calculate_shares_to_assets, calculate_exchange_rate,
+use crate::state::{calculate_assets_to_shares, calculate_exchange_rate, calculate_shares_to_assets,
                    MAX_ADMINISTRATORS, MAX_UNBONDING_PERIOD, MIN_UNBONDING_PERIOD, VIRTUAL_ASSETS, VIRTUAL_SHARES};
 use anchor_lang::prelude::*;
-use anchor_spl::token::accessor::amount;
 use anchor_spl::token::spl_token::instruction::AuthorityType;
 use anchor_spl::token::{self, Burn, MintTo, Transfer};
 
@@ -160,7 +159,6 @@ pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
         CustomErrorCode::ProtocolPaused
     );
 
-    let stake_config = &ctx.accounts.stake_config;
     let total_assets = ctx.accounts.vault_token_account.amount;
     let total_shares = ctx.accounts.mint.supply;
 

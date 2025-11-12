@@ -50,9 +50,6 @@ impl RewardPublicationRecord {
         1;      // bump
 }
 
-use anchor_lang::prelude::*;
-use anchor_spl::token::{Mint, Token, TokenAccount};
-
 // ========== HELPER FUNCTIONS for VIRTUAL SHARES CALCS  ==========
 pub fn calculate_shares_to_assets(
     shares: u64,
