@@ -55,6 +55,10 @@ pub struct Initialize<'info> {
         constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
     )]
     pub program_data: UncheckedAccount<'info>,
+
+    /// CHECK: The external program authorized to mint tokens via CPI
+    #[account(executable)]
+    pub allowed_external_mint_program: AccountInfo<'info>,
 }
 
 #[derive(Accounts)]

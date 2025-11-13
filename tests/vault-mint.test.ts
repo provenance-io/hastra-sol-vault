@@ -159,11 +159,12 @@ describe("vault-mint", () => {
             const tooManyAdmins = Array(6).fill(Keypair.generate().publicKey);
             try {
                 await program.methods
-                    .initialize(tooManyAdmins, [rewardsAdmin.publicKey], stakeProgram.programId)
+                    .initialize(tooManyAdmins, [rewardsAdmin.publicKey])
                     .accounts({
                         signer: provider.wallet.publicKey,
                         vaultTokenAccount: vaultTokenAccount,
                         vaultTokenMint: vaultedToken,
+                        allowedExternalMintProgram: stakeProgram.programId,
                         redeemVaultTokenAccount: vaultTokenAccount,
                         mint: mintedToken,
                         programData: programDataPda,
@@ -179,11 +180,12 @@ describe("vault-mint", () => {
             const tooManyAdmins = Array(6).fill(Keypair.generate().publicKey);
             try {
                 await program.methods
-                    .initialize([freezeAdmin.publicKey], tooManyAdmins, stakeProgram.programId)
+                    .initialize([freezeAdmin.publicKey], tooManyAdmins)
                     .accounts({
                         signer: provider.wallet.publicKey,
                         vaultTokenAccount: vaultTokenAccount,
                         vaultTokenMint: vaultedToken,
+                        allowedExternalMintProgram: stakeProgram.programId,
                         redeemVaultTokenAccount: vaultTokenAccount,
                         mint: mintedToken,
                         programData: programDataPda,
@@ -197,12 +199,13 @@ describe("vault-mint", () => {
 
         it("initializes the vault config", async () => {
             await program.methods
-                .initialize([freezeAdmin.publicKey], [rewardsAdmin.publicKey], stakeProgram.programId)
+                .initialize([freezeAdmin.publicKey], [rewardsAdmin.publicKey])
                 .accounts({
                     signer: provider.wallet.publicKey,
                     vaultTokenAccount: vaultTokenAccount,
                     vaultTokenMint: vaultedToken,
                     redeemVaultTokenAccount: redeemVaultTokenAccount,
+                    allowedExternalMintProgram: stakeProgram.programId,
                     mint: mintedToken,
                     programData: programDataPda,
                 })
@@ -222,11 +225,12 @@ describe("vault-mint", () => {
         it("fails when called twice", async () => {
             try {
                 await program.methods
-                    .initialize([freezeAdmin.publicKey], [rewardsAdmin.publicKey], stakeProgram.programId)
+                    .initialize([freezeAdmin.publicKey], [rewardsAdmin.publicKey])
                     .accounts({
                         signer: provider.wallet.publicKey,
                         vaultTokenAccount: vaultTokenAccount,
                         vaultTokenMint: vaultedToken,
+                        allowedExternalMintProgram: stakeProgram.programId,
                         redeemVaultTokenAccount: vaultTokenAccount,
                         mint: mintedToken,
                         programData: programDataPda,
