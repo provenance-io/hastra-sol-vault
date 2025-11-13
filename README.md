@@ -650,3 +650,41 @@ then run:
 $ anchor test --skip-local-validator
 ```
 
+## Hastra Solana Vault - Local Development Setup
+
+**Start Local Validator**
+```bash
+$ solana-test-validator --reset
+```
+
+**Set Solana Configs**
+> You must generate the solana keypair first using `solana-keygen new --no-passphrase --outfile ~/.config/solana/hastra-localnet-id.json`
+
+```bash
+$ solana-keygen new --no-passphrase --outfile ~/.config/solana/hastra-localnet-id.json 
+$ solana config set --url l
+$ solana config set --keypair ~/.config/solana/hastra-localnet-id.json
+$ solana airdrop 1000
+````
+
+**Build and Deploy Programs**
+```bash
+$ anchor build
+$ anchor deploy
+```
+
+**Initialize Programs and Accounts**
+```bash
+$ ANCHOR_PROVIDER_URL=http://localhost:8899 \
+  ANCHOR_WALLET=~/.config/solana/hastra-localnet-id.json \
+  yarn run ts-node scripts/localnet/initialize-local-validator.ts
+```
+
+## Configuration Files
+
+After running `yarn validator:init`, you'll find:
+
+- `.local-validator/config.json` - Complete configuration
+- `.local-validator/.env` - Environment variables
+
+These have all the values needed for the FE and BE services.
