@@ -11,8 +11,7 @@ use anchor_spl::token::{self, MintTo, Transfer};
 pub fn initialize(
     ctx: Context<Initialize>,
     freeze_administrators: Vec<Pubkey>,
-    rewards_administrators: Vec<Pubkey>,
-    allowed_external_mint_program: Pubkey
+    rewards_administrators: Vec<Pubkey>
 ) -> Result<()> {
     msg!("Initializing with vault_token_mint: {}", ctx.accounts.vault_token_mint.key());
     msg!("Vault mint account: {}", ctx.accounts.vault_token_mint.key());
@@ -40,7 +39,7 @@ pub fn initialize(
     config.freeze_administrators = freeze_administrators;
     config.rewards_administrators = rewards_administrators;
     config.vault_authority = ctx.accounts.vault_token_account.owner;
-    config.allowed_external_mint_program = allowed_external_mint_program;
+    config.allowed_external_mint_program = ctx.accounts.allowed_external_mint_program.key();
     config.bump = ctx.bumps.config;
 
     // The redeem vault token account must be owned by the program-derived address (PDA)

@@ -51,14 +51,12 @@ pub mod vault_mint {
     pub fn initialize(
         ctx: Context<Initialize>,
         freeze_administrators: Vec<Pubkey>,
-        rewards_administrators: Vec<Pubkey>,
-        allowed_external_mint_program: Pubkey,
+        rewards_administrators: Vec<Pubkey>
     ) -> Result<()> {
         processor::initialize(
             ctx,
             freeze_administrators,
-            rewards_administrators,
-            allowed_external_mint_program
+            rewards_administrators
         )
     }
 

@@ -180,8 +180,8 @@ pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
         .ok_or(CustomErrorCode::Overflow)?;
     msg!("Numerator calculated: {}", numerator);
 
-    let denominator = total_assets
-        .checked_add(VIRTUAL_ASSETS as u64)
+    let denominator = (total_assets as u128)
+        .checked_add(VIRTUAL_ASSETS)
         .ok_or(CustomErrorCode::Overflow)?;
     msg!("Denominator calculated: {}", denominator);
 
@@ -326,7 +326,7 @@ pub fn redeem(ctx: Context<Redeem>) -> Result<()> {
         .checked_mul(
             (total_assets as u128)
                 .checked_add(VIRTUAL_ASSETS)
-                .ok_or(CustomErrorCode::Overflow)? as u128,
+                .ok_or(CustomErrorCode::Overflow)?,
         )
         .ok_or(CustomErrorCode::Overflow)?;
 
@@ -339,7 +339,7 @@ pub fn redeem(ctx: Context<Redeem>) -> Result<()> {
     msg!("Denominator calculated: {}", denominator);
 
     let amount_to_withdraw = numerator
-        .checked_div(denominator as u128)
+        .checked_div(denominator)
         .ok_or(CustomErrorCode::DivisionByZero)?;
 
     msg!("Amount to withdraw calculated: {}", amount_to_withdraw);

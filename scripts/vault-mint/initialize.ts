@@ -110,11 +110,12 @@ const main = async () => {
 
     // Call initialize
     await program.methods
-        .initialize(freezeAdministrators, rewardsAdministrators, allowedMintProgramId)
+        .initialize(freezeAdministrators, rewardsAdministrators)
         .accounts({
             signer: provider.wallet.publicKey,
             vaultTokenAccount: vaultTokenAccount,
             vaultTokenMint: vault,
+            allowedExternalMintProgram: allowedMintProgramId,
             redeemVaultTokenAccount: redeemVaultTokenAccount,
             mint: mint,
             programData: programData,
