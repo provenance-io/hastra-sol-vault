@@ -56,4 +56,7 @@ pub enum CustomErrorCode {
     ProtocolPaused = 26,
     #[msg("Invalid program calling mint")]
     InvalidMintProgramCaller = 27,
+    #[msg("Insufficient mint token balance to cover redemption request")]
+    InsufficientRedemptionBalance = 28,
+
 }

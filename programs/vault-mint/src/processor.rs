@@ -149,7 +149,7 @@ pub fn request_redeem(ctx: Context<RequestRedeem>, amount: u64) -> Result<()> {
     // redeem amount against the user balance at the time of completion to
     // prevent burn error.
     let amount_to_redeem = std::cmp::min(user_balance, amount);
-    require!(amount_to_redeem > 0, CustomErrorCode::InvalidAmount);
+    require!(amount_to_redeem > 0, CustomErrorCode::InsufficientRedemptionBalance);
 
     msg!("RequestRedeem user account balance: {}", user_balance);
     msg!("Requested amount to redeem: {}", amount);
