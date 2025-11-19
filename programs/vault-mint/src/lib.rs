@@ -144,4 +144,11 @@ pub mod vault_mint {
     ) -> Result<()> {
         processor::update_vault_token_account(ctx)
     }
+
+    pub fn sweep_redeem_vault_funds(
+        ctx: Context<SweepRedeemVaultFunds>,
+        amount: u64,
+    ) -> Result<()> {
+        processor::sweep_redeem_vault_funds(ctx, amount)
+    }
 }

@@ -42,3 +42,11 @@ pub struct ExternalProgramMintEvent {
     pub mint: Pubkey,
     pub vault: Pubkey,
 }
+
+#[event]
+pub struct SweepRedeemVaultEvent {
+    pub admin: Pubkey,
+    pub destination: Pubkey,
+    pub amount: u64,
+    pub vault: Pubkey,
+}

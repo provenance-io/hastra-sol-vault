@@ -46,7 +46,7 @@ pub enum CustomErrorCode {
     AlreadyFulfilled = 21,
     #[msg("Redemption request not found")]
     RequestNotFound = 22,
-    #[msg("Insufficient lamport funds in redeem vault authority")]
+    #[msg("Insufficient lamport funds in redeem vault")]
     InsufficientRedeemVaultFunds = 23,
     #[msg("Redeem request already exists")]
     RequestAlreadyExists = 24,
