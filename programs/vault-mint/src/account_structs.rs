@@ -507,9 +507,11 @@ pub struct SweepRedeemVaultFunds<'info> {
 
     #[account(
         mut,
-        constraint = destination_token_account.mint == config.vault @ CustomErrorCode::InvalidVaultMint,
+        token::mint = config.vault,
+        constraint = vault_token_account.mint == config.vault @ CustomErrorCode::InvalidVaultMint,
+        constraint = vault_token_account.owner == config.vault_authority @ CustomErrorCode::InvalidVaultAuthority
     )]
-    pub destination_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: Account<'info, TokenAccount>,
 
     /// CHECK: This is the program data account that contains the update authority
     #[account(

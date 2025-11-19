@@ -548,8 +548,14 @@ pub fn sweep_redeem_vault_funds(
     ctx: Context<SweepRedeemVaultFunds>,
     amount: u64,
 ) -> Result<()> {
-    // Validate that the signer is the program update authority
-    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    // Validate the signer is a rewards administrator
+    require!(
+        ctx.accounts
+            .config
+            .rewards_administrators
+            .contains(&ctx.accounts.signer.key()),
+        CustomErrorCode::InvalidRewardsAdministrator
+    );
 
     require!(amount > 0, CustomErrorCode::InvalidAmount);
 
@@ -564,13 +570,14 @@ pub fn sweep_redeem_vault_funds(
         &[ctx.bumps.redeem_vault_authority],
     ];
     let signer = &[&seeds[..]];
-    // transfer from redeem vault to destination token account
+    // transfer from redeem vault to the vault token account
+    // the vault token account is owned by the vault authority which is set in config
     token::transfer(
         CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
             Transfer {
                 from: ctx.accounts.redeem_vault_token_account.to_account_info(),
-                to: ctx.accounts.destination_token_account.to_account_info(),
+                to: ctx.accounts.vault_token_account.to_account_info(),
                 authority: ctx.accounts.redeem_vault_authority.to_account_info(),
             },
             signer,
@@ -581,7 +588,7 @@ pub fn sweep_redeem_vault_funds(
     msg!("Emitting SweepRedeemVaultEvent");
     emit!(SweepRedeemVaultEvent {
         admin: ctx.accounts.signer.key(),
-        destination: ctx.accounts.destination_token_account.key(),
+        destination: ctx.accounts.vault_token_account.key(),
         amount: amount,
         vault: ctx.accounts.redeem_vault_token_account.mint,
     });

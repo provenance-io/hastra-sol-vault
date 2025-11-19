@@ -21,7 +21,7 @@ const args = yargs(process.argv.slice(2))
         description: "Current redeem vault token account",
         required: true,
     })
-    .option("destination_token_account", {
+    .option("vault_token_account", {
         type: "string",
         description: "Account that will receive the redemption vault tokens",
         required: true,
@@ -47,12 +47,12 @@ const main = async () => {
         program.programId
     );
     const redeemVaultTokenAccount = new PublicKey(args.redeem_vault_token_account);
-    const destinationTokenAccount = new PublicKey(args.destination_token_account);
+    const vaultTokenAccount = new PublicKey(args.vault_token_account);
     console.log("Amount to transfer:", args.amount);
     console.log("Redeem Vault Authority PDA:", redeemVaultAuthorityPda.toBase58());
     console.log("Config PDA:", configPda.toBase58());
     console.log("ProgramData PDA:", programData.toBase58());
-    console.log("Destination Token Account:", destinationTokenAccount.toBase58());
+    console.log("Vault Token Account:", vaultTokenAccount.toBase58());
 
     const tx = await program.methods
         .sweepRedeemVaultFunds(new anchor.BN(args.amount))
@@ -61,7 +61,7 @@ const main = async () => {
             signer: provider.wallet.publicKey,
             redeemVaultAuthority: redeemVaultAuthorityPda,
             redeemVaultTokenAccount: redeemVaultTokenAccount,
-            destinationTokenAccount: destinationTokenAccount,
+            vaultTokenAccount: vaultTokenAccount,
             programData: programData,
             tokenProgram: TOKEN_PROGRAM_ID
         })
