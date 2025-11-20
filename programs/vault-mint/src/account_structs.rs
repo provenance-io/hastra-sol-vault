@@ -481,3 +481,45 @@ pub struct UpdateVaultTokenAccount<'info> {
 
     pub signer: Signer<'info>,
 }
+
+#[derive(Accounts)]
+pub struct SweepRedeemVaultFunds<'info> {
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Account<'info, Config>,
+
+    /// CHECK: This is a PDA that acts as the redeem vault authority, validated by seeds constraint
+    #[account(
+        seeds =
+        [b"redeem_vault_authority"],
+        bump
+    )]
+    pub redeem_vault_authority: UncheckedAccount<'info>,
+
+    #[account(
+        mut,
+        constraint = redeem_vault_token_account.mint == config.vault @ CustomErrorCode::InvalidVaultMint,
+        constraint = redeem_vault_token_account.owner == redeem_vault_authority.key() @ CustomErrorCode::InvalidVaultAuthority
+    )]
+    pub redeem_vault_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        token::mint = config.vault,
+        constraint = vault_token_account.mint == config.vault @ CustomErrorCode::InvalidVaultMint,
+        constraint = vault_token_account.owner == config.vault_authority @ CustomErrorCode::InvalidVaultAuthority
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub signer: Signer<'info>,
+    
+    pub token_program: Program<'info, Token>,
+}

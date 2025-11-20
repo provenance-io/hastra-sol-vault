@@ -149,7 +149,7 @@ pub fn request_redeem(ctx: Context<RequestRedeem>, amount: u64) -> Result<()> {
     // redeem amount against the user balance at the time of completion to
     // prevent burn error.
     let amount_to_redeem = std::cmp::min(user_balance, amount);
-    require!(amount_to_redeem > 0, CustomErrorCode::InvalidAmount);
+    require!(amount_to_redeem > 0, CustomErrorCode::InsufficientRedemptionBalance);
 
     msg!("RequestRedeem user account balance: {}", user_balance);
     msg!("Requested amount to redeem: {}", amount);
@@ -541,5 +541,58 @@ pub fn update_vault_token_account(
     config.vault_authority = ctx.accounts.vault_token_account.owner;
 
     msg!("Vault token account updated to: {}", ctx.accounts.vault_token_account.key());
+    Ok(())
+}
+
+pub fn sweep_redeem_vault_funds(
+    ctx: Context<SweepRedeemVaultFunds>,
+    amount: u64,
+) -> Result<()> {
+    // Validate the signer is a rewards administrator
+    require!(
+        ctx.accounts
+            .config
+            .rewards_administrators
+            .contains(&ctx.accounts.signer.key()),
+        CustomErrorCode::InvalidRewardsAdministrator
+    );
+
+    require!(amount > 0, CustomErrorCode::InvalidAmount);
+
+    let vault_balance = ctx.accounts.redeem_vault_token_account.amount;
+    require!(
+        vault_balance >= amount, 
+        CustomErrorCode::InsufficientRedeemVaultFunds
+    );
+
+    let seeds: &[&[u8]] = &[
+        b"redeem_vault_authority",
+        &[ctx.bumps.redeem_vault_authority],
+    ];
+    let signer = &[&seeds[..]];
+    // transfer from redeem vault to the vault token account
+    // the vault token account is owned by the vault authority which is set in config
+    token::transfer(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            Transfer {
+                from: ctx.accounts.redeem_vault_token_account.to_account_info(),
+                to: ctx.accounts.vault_token_account.to_account_info(),
+                authority: ctx.accounts.redeem_vault_authority.to_account_info(),
+            },
+            signer,
+        ),
+        amount
+    )?;
+
+    msg!("Emitting SweepRedeemVaultEvent");
+    emit!(SweepRedeemVaultEvent {
+        admin: ctx.accounts.signer.key(),
+        destination: ctx.accounts.vault_token_account.key(),
+        amount: amount,
+        vault: ctx.accounts.redeem_vault_token_account.mint,
+    });
+    msg!("Emitted SweepRedeemVaultEvent");
+
     Ok(())
 }

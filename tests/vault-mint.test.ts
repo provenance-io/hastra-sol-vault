@@ -152,6 +152,23 @@ describe("vault-mint", () => {
             1_000_000_000_000 // 1,000,000 tokens
         );
 
+        // print the important addresses
+        console.log("=".repeat(80))
+        console.log("Minted Token:              ", mintedToken.toBase58());
+        console.log("Vaulted Token:             ", vaultedToken.toBase58());
+        console.log("Vault Token Account:       ", vaultTokenAccount.toBase58());
+        console.log("Vault Token Account Owner: ", vaultTokenAccountOwner.toBase58());
+        console.log("Redeem Vault Token Account:", redeemVaultTokenAccount.toBase58());
+        console.log("Config PDA:                ", configPda.toBase58());
+        console.log("Mint Authority PDA:        ", mintAuthorityPda.toBase58());
+        console.log("Freeze Authority PDA:      ", freezeAuthorityPda.toBase58());
+        console.log("Program Data PDA:          ", programDataPda.toBase58());
+        console.log("Redeem Vault Authority PDA:", redeemVaultAuthorityPda.toBase58());
+        console.log("User:                      ", user.publicKey.toBase58());
+        console.log("User Mint Token Account:   ", userMintTokenAccount.toBase58());
+        console.log("User Vault Token Account:  ", userVaultTokenAccount.toBase58());
+        console.log("=".repeat(80))
+
     });
 
     describe("initialize", () => {
@@ -1235,6 +1252,8 @@ describe("vault-mint", () => {
         let addRewardsAdmin: Keypair;
         let newVaultTokenAccount: PublicKey;
         let newVaultTokenAccountOwner: PublicKey;
+        let sweepDestinationOwner: Keypair;
+        let sweepDestinationTokenAccount: PublicKey;
 
         before(async () => {
             [programData] = PublicKey.findProgramAddressSync(
@@ -1251,6 +1270,18 @@ describe("vault-mint", () => {
                 vaultedToken,
                 newVaultTokenAccountOwner
             );
+
+            // create a new user that owns the destination vault token account
+            sweepDestinationOwner = Keypair.generate();
+            // Create destination token account
+            sweepDestinationTokenAccount = await createAccount(
+                provider.connection,
+                provider.wallet.payer,
+                vaultedToken,
+                sweepDestinationOwner.publicKey
+            );
+
+
         });
 
         it("allows freeze admin update by upgrade authority", async () => {
@@ -1454,5 +1485,120 @@ describe("vault-mint", () => {
             assert.equal(config.vaultAuthority.toBase58(), vaultTokenAccountOwner.toBase58());
         });
 
+        it("disallows vault token account update by non upgrade authority", async () => {
+            try {
+                await program.methods
+                    .updateVaultTokenAccount()
+                    .accountsStrict({
+                        config: configPda,
+                        signer: freezeAdmin.publicKey,
+                        vaultTokenAccount: newVaultTokenAccount,
+                        programData: programData,
+                    })
+                    .signers([freezeAdmin])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+            }
+        });
+
+        it("allows sweep redeem vault token account by rewards admin", async () => {
+            const redeemVaultBalanceBefore = (await getAccount(provider.connection, redeemVaultTokenAccount)).amount;
+            const vaultTokenAccountBefore = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+            const amount = 5_000_000;
+
+            await program.methods
+                .sweepRedeemVaultFunds(new BN(amount))
+                .accountsStrict({
+                    config: configPda,
+                    signer: rewardsAdmin.publicKey,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    redeemVaultTokenAccount: redeemVaultTokenAccount,
+                    vaultTokenAccount: vaultTokenAccount,
+                    programData: programData,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                })
+                .signers([rewardsAdmin])
+                .rpc();
+
+            const redeemVaultBalanceAfter = (await getAccount(provider.connection, redeemVaultTokenAccount)).amount;
+            const vaultTokenAccountAfter = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+
+            assert.equal(redeemVaultBalanceAfter, redeemVaultBalanceBefore - createBigInt(amount));
+            assert.equal(vaultTokenAccountAfter, vaultTokenAccountBefore + createBigInt(amount));
+        });
+
+        it("disallows sweep redeem vault token account to unauthorized vault account", async () => {
+            // create a new user that owns the destination vault token account
+            const sweepDestinationOwner = Keypair.generate();
+            // Create destination token account
+            const sweepDestinationTokenAccount = await createAccount(
+                provider.connection,
+                provider.wallet.payer,
+                vaultedToken,
+                sweepDestinationOwner.publicKey
+            );
+
+            try {
+                await program.methods
+                    .sweepRedeemVaultFunds(new BN(5_000_000))
+                    .accountsStrict({
+                        config: configPda,
+                        signer: rewardsAdmin.publicKey,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        redeemVaultTokenAccount: redeemVaultTokenAccount,
+                        vaultTokenAccount: sweepDestinationTokenAccount,
+                        programData: programData,
+                        tokenProgram: TOKEN_PROGRAM_ID,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+            }
+        });
+
+        it("disallow sweep redeem vault token account update by NON rewards admin", async () => {
+            try {
+                await program.methods
+                    .sweepRedeemVaultFunds(new BN(5_000_000))
+                    .accountsStrict({
+                        config: configPda,
+                        signer: provider.wallet.publicKey,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        redeemVaultTokenAccount: redeemVaultTokenAccount,
+                        vaultTokenAccount: vaultTokenAccount,
+                        programData: programData,
+                        tokenProgram: TOKEN_PROGRAM_ID,
+                    })
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+            }
+        });
+
+        it("disallow zero amount redeem vault sweep", async () => {
+            try {
+                await program.methods
+                    .sweepRedeemVaultFunds(new BN(0))
+                    .accountsStrict({
+                        config: configPda,
+                        signer: rewardsAdmin.publicKey,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        redeemVaultTokenAccount: redeemVaultTokenAccount,
+                        vaultTokenAccount: vaultTokenAccount,
+                        programData: programData,
+                        tokenProgram: TOKEN_PROGRAM_ID,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+            }
+        });
     });
 });

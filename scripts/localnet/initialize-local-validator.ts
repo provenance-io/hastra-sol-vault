@@ -216,7 +216,6 @@ async function main() {
             .initialize(
                 [freezeAdmin.publicKey],
                 [rewardsAdmin.publicKey],
-                stakeProgram.programId
             )
             .accounts({
                 signer: upgradeAuthority.publicKey,
@@ -224,6 +223,7 @@ async function main() {
                 vaultTokenMint: usdcToken,
                 redeemVaultTokenAccount: redeemVaultTokenAccount,
                 mint: wyldsToken,
+                allowedExternalMintProgram: stakeProgram.programId,
                 programData: programDataPda,
             })
             .signers([upgradeAuthority])
