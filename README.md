@@ -420,7 +420,7 @@ Transaction: 3fU2zPujqqjfXD4bG2hjxSEFvvpYQMzZFRAvBkbt8tzce3H6q8NXXW6FBtJYmDQgFLG
 Done in 3.10s.
 ```
 
-### Choose Option `4` to Initialize Mint Program
+### Choose Option `4` to Initialize Stake Program
 
 Now that the program is deployed, we can initialize it. This will set up the config account and set the various PDAs that the program will use to control the vault and mint tokens. You will be prompted for redeem vault token account (if you didn't set it up in the previous steps), freeze administrators, and rewards administrators.
 
