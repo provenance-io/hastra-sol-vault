@@ -22,6 +22,14 @@ const main = async () => {
         Buffer.from("config")
     ], program.programId);
 
+    const [vaultTokenAccountConfigPda] = PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("vault_token_account_config"),
+            configPda.toBuffer()
+        ],
+        program.programId
+    );
+
     // bpf_loader_upgradeable program id
     const BPF_LOADER_UPGRADEABLE_ID = new PublicKey(
         "BPFLoaderUpgradeab1e11111111111111111111111"
@@ -34,6 +42,7 @@ const main = async () => {
 
     const newVaultTokenAccount = new PublicKey(args.new_vault_token_account);
     console.log("Config PDA:", configPda.toBase58());
+    console.log("Vault Token Config PDA:", vaultTokenAccountConfigPda.toBase58());
     console.log("ProgramData PDA:", programData.toBase58());
     console.log("New Vault Token Account:", newVaultTokenAccount.toBase58());
 
@@ -41,6 +50,7 @@ const main = async () => {
         .updateVaultTokenAccount()
         .accountsStrict({
             config: configPda,
+            vaultTokenAccountConfig: vaultTokenAccountConfigPda,
             signer: provider.wallet.publicKey,
             vaultTokenAccount: newVaultTokenAccount,
             programData: programData,

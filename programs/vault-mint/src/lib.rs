@@ -151,4 +151,8 @@ pub mod vault_mint {
     ) -> Result<()> {
         processor::sweep_redeem_vault_funds(ctx, amount)
     }
+
+    pub fn set_vault_token_account_config(ctx: Context<SetVaultTokenAccountConfig>) -> Result<()> {
+        processor::set_vault_token_account_config(ctx)
+    }
 }

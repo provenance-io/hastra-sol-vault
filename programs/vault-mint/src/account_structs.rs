@@ -88,10 +88,21 @@ pub struct Deposit<'info> {
     pub config: Account<'info, Config>,
 
     #[account(
+        seeds = [
+            b"vault_token_account_config",
+            config.key().as_ref(),
+        ],
+        bump = vault_token_account_config.bump,
+    )]
+    pub vault_token_account_config: Account<'info, VaultTokenAccountConfig>,
+
+    #[account(
         mut,
         token::mint = config.vault,
         constraint = vault_token_account.mint == config.vault @ CustomErrorCode::InvalidVaultMint,
-        constraint = vault_token_account.owner == config.vault_authority @ CustomErrorCode::InvalidVaultAuthority
+        constraint = vault_token_account.owner == config.vault_authority @ CustomErrorCode::InvalidVaultAuthority,
+        constraint = vault_token_account.key() == vault_token_account_config.vault_token_account @ CustomErrorCode::InvalidVaultTokenAccount
+
     )]
     pub vault_token_account: Account<'info, TokenAccount>,
 
@@ -468,6 +479,16 @@ pub struct UpdateVaultTokenAccount<'info> {
 
     #[account(
         mut,
+        seeds = [
+            b"vault_token_account_config",
+            config.key().as_ref(),
+        ],
+        bump
+    )]
+    pub vault_token_account_config: Account<'info, VaultTokenAccountConfig>,
+
+    #[account(
+        mut,
         token::mint = config.vault,
         constraint = vault_token_account.mint == config.vault @ CustomErrorCode::InvalidVaultMint,
     )]
@@ -522,4 +543,44 @@ pub struct SweepRedeemVaultFunds<'info> {
     pub signer: Signer<'info>,
     
     pub token_program: Program<'info, Token>,
+}
+
+
+#[derive(Accounts)]
+pub struct SetVaultTokenAccountConfig<'info> {
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, Config>,
+
+    // Precise vault token account to verify in deposit
+    #[account(
+        constraint = vault_token_account.mint == config.vault @ CustomErrorCode::InvalidVaultMint,
+        constraint = vault_token_account.owner == config.vault_authority @ CustomErrorCode::InvalidVaultAuthority,
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        init,
+        payer = signer,
+        space = VaultTokenAccountConfig::LEN,
+        seeds = [
+            b"vault_token_account_config",
+            config.key().as_ref(),
+        ],
+        bump
+    )]
+    pub vault_token_account_config: Account<'info, VaultTokenAccountConfig>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>, // Must be program update authority
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
 }
