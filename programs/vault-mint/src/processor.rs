@@ -540,8 +540,8 @@ pub fn update_vault_token_account(
     let config = &mut ctx.accounts.config;
     config.vault_authority = ctx.accounts.vault_token_account.owner;
 
-    let vaultTokenAccountConfig = &mut ctx.accounts.vault_token_account_config;
-    vaultTokenAccountConfig.vault_token_account = ctx.accounts.vault_token_account.key();
+    let vault_token_account_config = &mut ctx.accounts.vault_token_account_config;
+    vault_token_account_config.vault_token_account = ctx.accounts.vault_token_account.key();
 
     msg!("Vault token authority updated to: {}", ctx.accounts.vault_token_account.owner.key());
     msg!("Vault token account updated to: {}", ctx.accounts.vault_token_account.key());

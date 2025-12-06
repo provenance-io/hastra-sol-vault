@@ -83,6 +83,12 @@ get_pda() {
   echo "$pda"
 }
 
+get_mint_program_config_pda() {
+  local program_id="$1"
+  local pda=$(yarn run --silent ts-node scripts/vault-mint/derive_vault_token_account_config.ts --program_id "$program_id")
+  echo "$pda"
+}
+
 get_ata() {
   local mint="$1"
   local owner="$2"
@@ -350,6 +356,7 @@ show_accounts_and_pdas() {
   echo "Mint Token (token minted, wYLDS):         $MINT_PROG_MINT_TOKEN"
   echo "Vault Token Account:                      $MINT_PROG_VAULT_TOKEN_ACCOUNT"
   echo "Config PDA:                               $(get_pda "$VAULT_MINT_PROGRAM_ID" "config")"
+  echo "Vault Token Account Config PDA:           $(get_mint_program_config_pda "$VAULT_MINT_PROGRAM_ID")"
   echo "Mint Authority PDA:                       $(get_pda "$VAULT_MINT_PROGRAM_ID" "mint_authority")"
   echo "Freeze Authority PDA:                     $(get_pda "$VAULT_MINT_PROGRAM_ID" "freeze_authority")"
   echo "Freeze Administrators:                    $FREEZE_ADMINISTRATORS"
