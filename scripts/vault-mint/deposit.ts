@@ -68,6 +68,7 @@ const main = async () => {
     console.log("User Vault Token Account:", userVaultTokenAccount.toBase58());
     console.log("User Mint Token Account:", userMintTokenAccount.toBase58());
     console.log("Config PDA:", configPda.toBase58());
+    console.log("Vault Token Account Config PDA:", vaultTokenAccountConfigPda.toBase58());
     console.log("Mint Authority PDA:", mintAuthorityPda.toBase58());
 
     const tx = await program.methods
