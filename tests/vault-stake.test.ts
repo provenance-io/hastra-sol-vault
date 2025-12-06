@@ -33,6 +33,7 @@ describe("vault-stake", () => {
     let vaultedToken: PublicKey;
     let vaultTokenAccount: PublicKey;
     let configPda: PublicKey;
+    let vaultTokenAccountConfigPda: PublicKey;
     let stakeConfigPda: PublicKey;
     let mintAuthorityPda: PublicKey;
     let vaultAuthorityPda: PublicKey;
@@ -197,6 +198,14 @@ describe("vault-stake", () => {
             [Buffer.from("config")],
             mintProgram.programId
         );
+        [vaultTokenAccountConfigPda] = PublicKey.findProgramAddressSync(
+            [
+                Buffer.from("vault_token_account_config"),
+                configPda.toBuffer()
+            ],
+            mintProgram.programId
+        );
+
         const mintConfig = await mintProgram.account.config.fetch(configPda);
         vaultedToken = mintConfig.mint;
 
@@ -292,6 +301,7 @@ describe("vault-stake", () => {
                 .deposit(new BN(100_000_000_000)) // convert all 100,000 USDC
                 .accountsStrict({
                     config: configPda,
+                    vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                     vaultTokenAccount: mintProgramVaultTokenAccount,
                     mint: vaultedToken,
                     mintAuthority: mintAuthorityPda,
@@ -339,6 +349,7 @@ describe("vault-stake", () => {
                 .deposit(new BN(10_000_000_000)) // 10,000 tokens
                 .accountsStrict({
                     config: configPda,
+                    vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                     vaultTokenAccount: mintProgramVaultTokenAccount,
                     mint: vaultedToken,
                     mintAuthority: mintAuthorityPda,
@@ -1163,8 +1174,6 @@ describe("vault-stake", () => {
 
         it("prevents duplicate publish rewards", async () => {
 
-            const rateBefore = await exchangeRate();
-
             const amount = 100_000_000_000;
             const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
                 [
@@ -1498,6 +1507,7 @@ describe("vault-stake", () => {
                 .deposit(new BN(user2UsdcBalance.amount))
                 .accountsStrict({
                     config: configPda,
+                    vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                     vaultTokenAccount: mintProgramVaultTokenAccount,
                     mint: vaultedToken,
                     mintAuthority: mintProgramMintAuthorityPda,

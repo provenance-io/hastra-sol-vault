@@ -54,3 +54,22 @@ pub struct ProofNode {
     pub sibling: [u8; 32],
     pub is_left: bool,
 }
+
+// New vault token account config used to validate that the deposited token
+// account is the correct one. This is used to prevent a user from depositing
+// to the wrong token account even when it's owned by the vault authority.
+// Adding a new vault token config eliminates the need for reallocating the
+// program's config account size. The implication is, however, that this config
+// must be set after the program has been deployed and initialized - which
+// is a reasonable tradeoff to the complexity of updating the deployed
+// config.
+#[account]
+pub struct VaultTokenAccountConfig {
+    pub vault_token_account: Pubkey,
+    pub bump: u8,
+}
+
+impl VaultTokenAccountConfig {
+    pub const LEN: usize = 8 + 32 + 1; // discriminator + pubkey + bump
+}
+

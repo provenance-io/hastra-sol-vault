@@ -58,5 +58,8 @@ pub enum CustomErrorCode {
     InvalidMintProgramCaller = 27,
     #[msg("Insufficient mint token balance to cover redemption request")]
     InsufficientRedemptionBalance = 28,
+    #[msg("Invalid vault token account")]
+    InvalidVaultTokenAccount = 34,
+
 
 }

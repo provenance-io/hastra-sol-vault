@@ -27,9 +27,13 @@ describe("vault-mint", () => {
     let mintedToken: PublicKey;
     let vaultedToken: PublicKey;
     let vaultTokenAccount: PublicKey;
-    let vaultTokenAccountOwner: PublicKey;
+    let vaultTokenAccountOwner: Keypair;
+    let vaultTokenAccountOwnerPublicKey: PublicKey;
+    let badVaultTokenAccountOwner: Keypair;
+    let badVaultTokenAccountOwnerPublicKey: PublicKey;
     let redeemVaultTokenAccount: PublicKey;
     let configPda: PublicKey;
+    let vaultTokenAccountConfigPda: PublicKey;
     let mintAuthorityPda: PublicKey;
     let freezeAuthorityPda: PublicKey;
     let programDataPda: PublicKey;
@@ -49,7 +53,10 @@ describe("vault-mint", () => {
         user = Keypair.generate();
         freezeAdmin = Keypair.generate();
         rewardsAdmin = Keypair.fromSeed(Buffer.alloc(32, 31)); // Deterministic owner
-        vaultTokenAccountOwner = Keypair.fromSeed(Buffer.alloc(32, 72)).publicKey; // Deterministic owner
+        vaultTokenAccountOwner = Keypair.fromSeed(Buffer.alloc(32, 72)); // Deterministic owner
+        vaultTokenAccountOwnerPublicKey = vaultTokenAccountOwner.publicKey;
+        badVaultTokenAccountOwner = Keypair.generate();
+        badVaultTokenAccountOwnerPublicKey = badVaultTokenAccountOwner.publicKey;
         [mintAuthorityPda] = PublicKey.findProgramAddressSync(
             [Buffer.from("mint_authority")],
             program.programId
@@ -69,6 +76,8 @@ describe("vault-mint", () => {
         await provider.connection.requestAirdrop(freezeAdmin.publicKey, 2 * LAMPORTS_PER_SOL);
         await provider.connection.requestAirdrop(rewardsAdmin.publicKey, 2 * LAMPORTS_PER_SOL);
         await provider.connection.requestAirdrop(redeemVaultAuthorityPda, 10 * LAMPORTS_PER_SOL);
+        await provider.connection.requestAirdrop(vaultTokenAccountOwnerPublicKey, 10 * LAMPORTS_PER_SOL);
+        await provider.connection.requestAirdrop(badVaultTokenAccountOwnerPublicKey, 10 * LAMPORTS_PER_SOL);
 
         // Wait for airdrops
         await new Promise(resolve => setTimeout(resolve, 1000));
@@ -97,6 +106,14 @@ describe("vault-mint", () => {
             program.programId
         );
 
+        [vaultTokenAccountConfigPda] = PublicKey.findProgramAddressSync(
+            [
+                Buffer.from("vault_token_account_config"),
+                configPda.toBuffer()
+            ],
+            program.programId
+        );
+
         [programDataPda] = PublicKey.findProgramAddressSync(
             [program.programId.toBuffer()],
             BPF_LOADER_UPGRADEABLE_ID
@@ -107,7 +124,7 @@ describe("vault-mint", () => {
             provider.connection,
             provider.wallet.payer,
             vaultedToken,
-            vaultTokenAccountOwner
+            vaultTokenAccountOwnerPublicKey
         );
 
         redeemVaultTokenAccount = await createAccount(
@@ -157,7 +174,7 @@ describe("vault-mint", () => {
         console.log("Minted Token:              ", mintedToken.toBase58());
         console.log("Vaulted Token:             ", vaultedToken.toBase58());
         console.log("Vault Token Account:       ", vaultTokenAccount.toBase58());
-        console.log("Vault Token Account Owner: ", vaultTokenAccountOwner.toBase58());
+        console.log("Vault Token Account Owner: ", vaultTokenAccountOwnerPublicKey.toBase58());
         console.log("Redeem Vault Token Account:", redeemVaultTokenAccount.toBase58());
         console.log("Config PDA:                ", configPda.toBase58());
         console.log("Mint Authority PDA:        ", mintAuthorityPda.toBase58());
@@ -230,7 +247,7 @@ describe("vault-mint", () => {
 
             const config = await program.account.config.fetch(configPda);
             assert.ok(config.vault.equals(vaultedToken));
-            assert.ok(config.vaultAuthority.equals(vaultTokenAccountOwner));
+            assert.ok(config.vaultAuthority.equals(vaultTokenAccountOwnerPublicKey));
             assert.ok(config.mint.equals(mintedToken));
             assert.equal(config.freezeAdministrators.length, 1);
             assert.ok(config.freezeAdministrators[0].equals(freezeAdmin.publicKey));
@@ -258,6 +275,74 @@ describe("vault-mint", () => {
                 expect(err).to.exist;
             }
         });
+
+        it("set up vault token account config fails with invalid vault owner", async () => {
+            const badVaultTokenAccount = await createAccount(
+                provider.connection,
+                badVaultTokenAccountOwner,
+                vaultedToken,
+                badVaultTokenAccountOwnerPublicKey
+            )
+
+            try {
+                await program.methods
+                    .setVaultTokenAccountConfig()
+                    .accountsStrict({
+                        config: configPda,
+                        vaultTokenAccount: badVaultTokenAccount,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programDataPda,
+                        systemProgram: anchor.web3.SystemProgram.programId,
+                    })
+                    .rpc()
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.include("InvalidVaultAuthority");
+            }
+        });
+        it("set up vault token account config fails with invalid token account mint", async () => {
+            const badVaultTokenAccount = await createAccount(
+                provider.connection,
+                provider.wallet.payer,
+                mintedToken,
+                vaultTokenAccountOwnerPublicKey
+            )
+
+            try {
+                await program.methods
+                    .setVaultTokenAccountConfig()
+                    .accountsStrict({
+                        config: configPda,
+                        vaultTokenAccount: badVaultTokenAccount,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programDataPda,
+                        systemProgram: anchor.web3.SystemProgram.programId,
+                    })
+                    .rpc()
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.include("InvalidVaultMint");
+            }
+
+        });
+        it("sets up vault token account config", async () => {
+            await program.methods
+                .setVaultTokenAccountConfig()
+                .accountsStrict({
+                    config: configPda,
+                    vaultTokenAccount: vaultTokenAccount,
+                    vaultTokenAccountConfig: vaultTokenAccountConfigPda,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                })
+                .rpc()
+        });
+
     });
 
     describe("deposit", () => {
@@ -274,6 +359,7 @@ describe("vault-mint", () => {
                 .accountsStrict({
                     config: configPda,
                     vaultTokenAccount: vaultTokenAccount,
+                    vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                     mint: mintedToken,
                     mintAuthority: mintAuthorityPda,
                     signer: user.publicKey,
@@ -302,6 +388,7 @@ describe("vault-mint", () => {
                 .accountsStrict({
                     config: configPda,
                     vaultTokenAccount: vaultTokenAccount,
+                    vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                     mint: mintedToken,
                     mintAuthority: mintAuthorityPda,
                     signer: user.publicKey,
@@ -319,6 +406,7 @@ describe("vault-mint", () => {
                 .accountsStrict({
                     config: configPda,
                     vaultTokenAccount: vaultTokenAccount,
+                    vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                     mint: mintedToken,
                     mintAuthority: mintAuthorityPda,
                     signer: user.publicKey,
@@ -343,6 +431,7 @@ describe("vault-mint", () => {
                 .accountsStrict({
                     config: configPda,
                     vaultTokenAccount: vaultTokenAccount,
+                    vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                     mint: mintedToken,
                     mintAuthority: mintAuthorityPda,
                     signer: user.publicKey,
@@ -366,6 +455,7 @@ describe("vault-mint", () => {
                     .accountsStrict({
                         config: configPda,
                         vaultTokenAccount: vaultTokenAccount,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                         mint: mintedToken,
                         mintAuthority: mintAuthorityPda,
                         signer: user.publicKey,
@@ -391,6 +481,7 @@ describe("vault-mint", () => {
                     .accountsStrict({
                         config: configPda,
                         vaultTokenAccount: vaultTokenAccount,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                         mint: mintedToken,
                         mintAuthority: mintAuthorityPda,
                         signer: user.publicKey,
@@ -403,6 +494,41 @@ describe("vault-mint", () => {
                 assert.fail("Should have thrown error");
             } catch (err) {
                 expect(err).to.exist;
+            }
+        });
+
+        it("fails with invalid vault token account", async () => {
+            // create a new account to verify that the deposit only accepts vault token ATA's owned by the vault authority
+            // and not any other token account owned by the user
+            const badTokenKeypair = Keypair.generate();
+            const badVaultTokenAccount = await createAccount(
+                provider.connection,
+                vaultTokenAccountOwner,
+                vaultedToken,
+                vaultTokenAccountOwnerPublicKey,
+                badTokenKeypair
+            );
+
+            try {
+                await program.methods
+                    .deposit(new BN(1))
+                    .accountsStrict({
+                        config: configPda,
+                        vaultTokenAccount: badVaultTokenAccount,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
+                        mint: mintedToken,
+                        mintAuthority: mintAuthorityPda,
+                        signer: user.publicKey,
+                        userVaultTokenAccount: userVaultTokenAccount,
+                        userMintTokenAccount: userMintTokenAccount,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
+                    })
+                    .signers([user])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.include("InvalidVaultTokenAccount");
             }
         });
     });
@@ -418,6 +544,7 @@ describe("vault-mint", () => {
                 .accountsStrict({
                     config: configPda,
                     vaultTokenAccount: vaultTokenAccount,
+                    vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                     mint: mintedToken,
                     mintAuthority: mintAuthorityPda,
                     signer: user.publicKey,
@@ -649,6 +776,7 @@ describe("vault-mint", () => {
                     .accountsStrict({
                         config: configPda,
                         vaultTokenAccount: vaultTokenAccount,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                         mint: mintedToken,
                         mintAuthority: mintAuthorityPda,
                         signer: user.publicKey,
@@ -773,6 +901,7 @@ describe("vault-mint", () => {
                     .accountsStrict({
                         config: configPda,
                         vaultTokenAccount: vaultTokenAccount,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                         mint: mintedToken,
                         mintAuthority: mintAuthorityPda,
                         signer: user.publicKey,
@@ -925,6 +1054,7 @@ describe("vault-mint", () => {
                     .accountsStrict({
                         config: configPda,
                         vaultTokenAccount: vaultTokenAccount,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                         mint: mintedToken,
                         mintAuthority: mintAuthorityPda,
                         signer: user.publicKey,
@@ -967,6 +1097,7 @@ describe("vault-mint", () => {
                 .accountsStrict({
                     config: configPda,
                     vaultTokenAccount: vaultTokenAccount,
+                    vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                     mint: mintedToken,
                     mintAuthority: mintAuthorityPda,
                     signer: user.publicKey,
@@ -1031,6 +1162,7 @@ describe("vault-mint", () => {
                     .accountsStrict({
                         config: configPda,
                         vaultTokenAccount: vaultTokenAccount,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                         mint: mintedToken,
                         mintAuthority: mintAuthorityPda,
                         signer: user.publicKey,
@@ -1050,7 +1182,9 @@ describe("vault-mint", () => {
     //write test cases against the rewards merkle tree functionality
     describe("rewards", () => {
         const epochIndex = 1;
-        let rewardsAllocations: { allocations: { account: string; amount: number; }[]; };
+        let rewardsAllocations: {
+            allocations: { account: string; amount: number; }[];
+        };
         let epochPda: PublicKey;
         let claimPda: PublicKey;
         let root: Buffer;
@@ -1067,7 +1201,8 @@ describe("vault-mint", () => {
         before(async () => {
             rewardsAllocations = {
                 allocations: [
-                    {  account: user.publicKey.toBase58(),
+                    {
+                        account: user.publicKey.toBase58(),
                         amount: 1000
                     },
                     // Add more allocations as needed
@@ -1148,7 +1283,7 @@ describe("vault-mint", () => {
             assert.ok(userAllocation, "User allocation not found in merkle data");
 
             const leaf = makeLeaf(user.publicKey, userAllocation!.amount, epochIndex);
-            const treeProof =  merkleData.tree.getProof(leaf);
+            const treeProof = merkleData.tree.getProof(leaf);
             const proof = treeProof.map(p => ({
                 sibling: Array.from(p.data),
                 isLeft: p.position === "left",
@@ -1180,7 +1315,7 @@ describe("vault-mint", () => {
             const userAllocation = merkleData.allocations.find(a => a.user.toBase58() === user.publicKey.toBase58());
 
             const leaf = makeLeaf(user.publicKey, userAllocation!.amount, epochIndex);
-            const treeProof =  merkleData.tree.getProof(leaf);
+            const treeProof = merkleData.tree.getProof(leaf);
             const proof = treeProof.map(p => ({
                 sibling: Array.from(p.data),
                 isLeft: p.position === "left",
@@ -1215,7 +1350,7 @@ describe("vault-mint", () => {
             const invalidAmount = 888;
 
             const leaf = makeLeaf(user.publicKey, invalidAmount, epochIndex);
-            const treeProof =  merkleData.tree.getProof(leaf);
+            const treeProof = merkleData.tree.getProof(leaf);
             const proof = treeProof.map(p => ({
                 sibling: Array.from(p.data),
                 isLeft: p.position === "left",
@@ -1426,6 +1561,7 @@ describe("vault-mint", () => {
                 .updateVaultTokenAccount()
                 .accountsStrict({
                     config: configPda,
+                    vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                     signer: provider.wallet.publicKey,
                     vaultTokenAccount: newVaultTokenAccount,
                     programData: programData,
@@ -1435,6 +1571,10 @@ describe("vault-mint", () => {
             //fetch config and verify
             const config = await program.account.config.fetch(configPda);
             assert.equal(config.vaultAuthority.toBase58(), newVaultTokenAccountOwner.toBase58());
+
+            //verify vault token account config has been updated
+            const vaultTokenAccountConfig = await program.account.vaultTokenAccountConfig.fetch(vaultTokenAccountConfigPda);
+            assert.equal(vaultTokenAccountConfig.vaultTokenAccount.toBase58(), newVaultTokenAccount.toBase58());
         });
 
         it("new vault token account gets deposits", async () => {
@@ -1449,6 +1589,7 @@ describe("vault-mint", () => {
                 .accountsStrict({
                     config: configPda,
                     vaultTokenAccount: newVaultTokenAccount,
+                    vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                     mint: mintedToken,
                     mintAuthority: mintAuthorityPda,
                     signer: user.publicKey,
@@ -1474,6 +1615,7 @@ describe("vault-mint", () => {
                 .updateVaultTokenAccount()
                 .accountsStrict({
                     config: configPda,
+                    vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                     signer: provider.wallet.publicKey,
                     vaultTokenAccount: vaultTokenAccount,
                     programData: programData,
@@ -1482,7 +1624,7 @@ describe("vault-mint", () => {
 
             //fetch config and verify
             const config = await program.account.config.fetch(configPda);
-            assert.equal(config.vaultAuthority.toBase58(), vaultTokenAccountOwner.toBase58());
+            assert.equal(config.vaultAuthority.toBase58(), vaultTokenAccountOwnerPublicKey.toBase58());
         });
 
         it("disallows vault token account update by non upgrade authority", async () => {
@@ -1491,6 +1633,7 @@ describe("vault-mint", () => {
                     .updateVaultTokenAccount()
                     .accountsStrict({
                         config: configPda,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                         signer: freezeAdmin.publicKey,
                         vaultTokenAccount: newVaultTokenAccount,
                         programData: programData,
