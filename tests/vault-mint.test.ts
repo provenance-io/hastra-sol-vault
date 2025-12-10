@@ -194,14 +194,19 @@ describe("vault-mint", () => {
             try {
                 await program.methods
                     .initialize(tooManyAdmins, [rewardsAdmin.publicKey])
-                    .accounts({
-                        signer: provider.wallet.publicKey,
+                    .accountsStrict({
+                        config: configPda,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                         vaultTokenAccount: vaultTokenAccount,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        redeemVaultTokenAccount: redeemVaultTokenAccount,
                         vaultTokenMint: vaultedToken,
-                        allowedExternalMintProgram: stakeProgram.programId,
-                        redeemVaultTokenAccount: vaultTokenAccount,
                         mint: mintedToken,
+                        signer: provider.wallet.publicKey,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                        systemProgram: anchor.web3.SystemProgram.programId,
                         programData: programDataPda,
+                        allowedExternalMintProgram: stakeProgram.programId,
                     })
                     .rpc();
                 assert.fail("Should have thrown error");
@@ -215,14 +220,19 @@ describe("vault-mint", () => {
             try {
                 await program.methods
                     .initialize([freezeAdmin.publicKey], tooManyAdmins)
-                    .accounts({
-                        signer: provider.wallet.publicKey,
+                    .accountsStrict({
+                        config: configPda,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                         vaultTokenAccount: vaultTokenAccount,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        redeemVaultTokenAccount: redeemVaultTokenAccount,
                         vaultTokenMint: vaultedToken,
-                        allowedExternalMintProgram: stakeProgram.programId,
-                        redeemVaultTokenAccount: vaultTokenAccount,
                         mint: mintedToken,
+                        signer: provider.wallet.publicKey,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                        systemProgram: anchor.web3.SystemProgram.programId,
                         programData: programDataPda,
+                        allowedExternalMintProgram: stakeProgram.programId,
                     })
                     .rpc();
                 assert.fail("Should have thrown error");
@@ -234,14 +244,19 @@ describe("vault-mint", () => {
         it("initializes the vault config", async () => {
             await program.methods
                 .initialize([freezeAdmin.publicKey], [rewardsAdmin.publicKey])
-                .accounts({
-                    signer: provider.wallet.publicKey,
+                .accountsStrict({
+                    config: configPda,
+                    vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
-                    vaultTokenMint: vaultedToken,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
                     redeemVaultTokenAccount: redeemVaultTokenAccount,
-                    allowedExternalMintProgram: stakeProgram.programId,
+                    vaultTokenMint: vaultedToken,
                     mint: mintedToken,
+                    signer: provider.wallet.publicKey,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    systemProgram: anchor.web3.SystemProgram.programId,
                     programData: programDataPda,
+                    allowedExternalMintProgram: stakeProgram.programId,
                 })
                 .rpc();
 
@@ -260,87 +275,25 @@ describe("vault-mint", () => {
             try {
                 await program.methods
                     .initialize([freezeAdmin.publicKey], [rewardsAdmin.publicKey])
-                    .accounts({
-                        signer: provider.wallet.publicKey,
+                    .accountsStrict({
+                        config: configPda,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                         vaultTokenAccount: vaultTokenAccount,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        redeemVaultTokenAccount: redeemVaultTokenAccount,
                         vaultTokenMint: vaultedToken,
-                        allowedExternalMintProgram: stakeProgram.programId,
-                        redeemVaultTokenAccount: vaultTokenAccount,
                         mint: mintedToken,
+                        signer: provider.wallet.publicKey,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                        systemProgram: anchor.web3.SystemProgram.programId,
                         programData: programDataPda,
+                        allowedExternalMintProgram: stakeProgram.programId,
                     })
                     .rpc();
                 assert.fail("Should have thrown error");
             } catch (err) {
                 expect(err).to.exist;
             }
-        });
-
-        it("set up vault token account config fails with invalid vault owner", async () => {
-            const badVaultTokenAccount = await createAccount(
-                provider.connection,
-                badVaultTokenAccountOwner,
-                vaultedToken,
-                badVaultTokenAccountOwnerPublicKey
-            )
-
-            try {
-                await program.methods
-                    .setVaultTokenAccountConfig()
-                    .accountsStrict({
-                        config: configPda,
-                        vaultTokenAccount: badVaultTokenAccount,
-                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
-                        signer: provider.wallet.publicKey,
-                        programData: programDataPda,
-                        systemProgram: anchor.web3.SystemProgram.programId,
-                    })
-                    .rpc()
-                assert.fail("Should have thrown error");
-            } catch (err) {
-                expect(err).to.exist;
-                expect(err.toString()).to.include("InvalidVaultAuthority");
-            }
-        });
-        it("set up vault token account config fails with invalid token account mint", async () => {
-            const badVaultTokenAccount = await createAccount(
-                provider.connection,
-                provider.wallet.payer,
-                mintedToken,
-                vaultTokenAccountOwnerPublicKey
-            )
-
-            try {
-                await program.methods
-                    .setVaultTokenAccountConfig()
-                    .accountsStrict({
-                        config: configPda,
-                        vaultTokenAccount: badVaultTokenAccount,
-                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
-                        signer: provider.wallet.publicKey,
-                        programData: programDataPda,
-                        systemProgram: anchor.web3.SystemProgram.programId,
-                    })
-                    .rpc()
-                assert.fail("Should have thrown error");
-            } catch (err) {
-                expect(err).to.exist;
-                expect(err.toString()).to.include("InvalidVaultMint");
-            }
-
-        });
-        it("sets up vault token account config", async () => {
-            await program.methods
-                .setVaultTokenAccountConfig()
-                .accountsStrict({
-                    config: configPda,
-                    vaultTokenAccount: vaultTokenAccount,
-                    vaultTokenAccountConfig: vaultTokenAccountConfigPda,
-                    signer: provider.wallet.publicKey,
-                    programData: programDataPda,
-                    systemProgram: anchor.web3.SystemProgram.programId,
-                })
-                .rpc()
         });
 
     });
@@ -1346,7 +1299,6 @@ describe("vault-mint", () => {
         });
 
         it("prevents invalid proof claim", async () => {
-            const userAllocation = merkleData.allocations.find(a => a.user.toBase58() === user.publicKey.toBase58());
             const invalidAmount = 888;
 
             const leaf = makeLeaf(user.publicKey, invalidAmount, epochIndex);

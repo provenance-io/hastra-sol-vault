@@ -238,7 +238,7 @@ pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
         vault_balance: ctx.accounts.vault_token_account.amount,
         total_assets: result_total_assets,
         total_shares: result_total_shares,
-        totals_last_update_slot: totals_last_update_slot,
+        totals_last_update_slot,
     });
     msg!("Emitted DepositEvent");
 
@@ -395,7 +395,7 @@ pub fn redeem(ctx: Context<Redeem>) -> Result<()> {
         shares_burned: requested_shares_to_withdraw,
         total_assets: result_total_assets,
         total_shares: result_total_shares,
-        totals_last_update_slot: totals_last_update_slot,
+        totals_last_update_slot,
     });
     msg!("Emitted RedeemEvent");
 
@@ -580,15 +580,15 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
     msg!("Emitting RewardsPublished");
     emit!(RewardsPublished {
         admin: ctx.accounts.admin.key(),
-        amount: amount,
+        amount,
         mint_program: ctx.accounts.mint_program.key(),
         vault_token_account: ctx.accounts.vault_token_account.key(),
         mint: stake_config.mint,
         vault: stake_config.vault,
         total_assets: ctx.accounts.vault_token_account.amount,
         total_shares: ctx.accounts.mint.supply,
-        totals_last_update_slot: totals_last_update_slot,
-        id: id,
+        totals_last_update_slot,
+        id,
     });
     msg!("Emitted RewardsPublished");
 
