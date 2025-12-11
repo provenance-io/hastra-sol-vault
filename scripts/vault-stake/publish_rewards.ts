@@ -25,6 +25,12 @@ const args = yargs(process.argv.slice(2))
         description: "Token mint address for the rewards token (e.g. wYLDS)",
         required: true,
     })
+    .option("mint", {
+        type: "string",
+        description: "Staking token mint (e.g. PRIME)",
+        required: true,
+    })
+
     .option("amount", {
         type: "number",
         description: "Amount of tokens to deposit and mint",
@@ -63,6 +69,7 @@ const main = async () => {
     const mintProgramId = new anchor.web3.PublicKey(args.mint_program)
     const stakeProgramId = new anchor.web3.PublicKey(args.stake_program)
     const rewardId = Number(args.reward_id);
+    const mint = new anchor.web3.PublicKey(args.mint);
 
     const [rewardsMintAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("mint_authority")],
@@ -87,6 +94,7 @@ const main = async () => {
         ],
         program.programId);
 
+    console.log("Staking Mint (e.g. PRIME)", mint.toBase58());
     console.log("Rewards Mint (token to be minted e.g. wYLDS)", rewardsMint.toBase58());
     console.log("Amount:", amount.toString());
     console.log("Reward ID:", rewardId.toString());
@@ -110,7 +118,7 @@ const main = async () => {
             rewardsMintAuthority: rewardsMintAuthorityPda,
             vaultTokenAccount: vaultTokenAccount,
             vaultAuthority: vaultAuthorityPda,
-            mint: rewardsMint,
+            mint: mint,
             rewardRecord: rewardsRecordPda,
             tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
             systemProgram: anchor.web3.SystemProgram.programId,

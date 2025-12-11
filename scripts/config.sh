@@ -176,13 +176,11 @@ build_program() {
   copy_stake_prog_idl_types
 }
 
-deploy_program() {
-  echo "Deploying Programs..."
+deploy_mint_program() {
+  echo "Deploying Mint Program..."
   echo "Getting Program IDs..."
   VAULT_MINT_PROGRAM_ID=$(solana-keygen pubkey ../target/deploy/vault_mint-keypair.json)
-  VAULT_STAKE_PROGRAM_ID=$(solana-keygen pubkey ../target/deploy/vault_stake-keypair.json)
   update_history_var "VAULT_MINT_PROGRAM_ID"
-  update_history_var "VAULT_STAKE_PROGRAM_ID"
   # Update lib.rs declare_id:
   PROGRAM_FILE="../programs/vault-mint/src/lib.rs"
   sed -i '' "s/declare_id!(\"[A-Za-z0-9]*\");/declare_id!(\"$VAULT_MINT_PROGRAM_ID\");/" $PROGRAM_FILE
@@ -190,24 +188,11 @@ deploy_program() {
   echo "Saving Deploy Keypair to local config ${HOME}/.config/solana"
   cp ../target/deploy/vault_mint-keypair.json $HOME/.config/solana/vault_mint_${VAULT_MINT_PROGRAM_ID}-keypair.json
 
-  # Update stake program lib.rs declare_id:
-  PROGRAM_FILE="../programs/vault-stake/src/lib.rs"
-  sed -i '' "s/declare_id!(\"[A-Za-z0-9]*\");/declare_id!(\"$VAULT_STAKE_PROGRAM_ID\");/" $PROGRAM_FILE
-  echo "Updated ${PROGRAM_FILE} with new Program ID ${VAULT_STAKE_PROGRAM_ID}"
-  echo "Saving Deploy Keypair to local config ${HOME}/.config/solana"
-  cp ../target/deploy/vault_stake-keypair.json $HOME/.config/solana/vault_stake_${VAULT_STAKE_PROGRAM_ID}-keypair.json
-
   solana program deploy ../target/deploy/vault_mint.so \
     --url "$SOLANA_URL" \
     --keypair "$KEYPAIR" \
     --config "$CONFIG_FILE"
   echo "Mint program deployed with ID: $VAULT_MINT_PROGRAM_ID"
-
-  solana program deploy ../target/deploy/vault_stake.so \
-    --url "$SOLANA_URL" \
-    --keypair "$KEYPAIR" \
-    --config "$CONFIG_FILE"
-  echo "Stake program deployed with ID: $VAULT_STAKE_PROGRAM_ID"
 }
 
 deploy_staking_program() {
@@ -222,7 +207,8 @@ deploy_staking_program() {
 
 build_and_deploy() {
   build_program
-  deploy_program
+  deploy_mint_program
+  deploy_staking_program
 }
 
 initialize_mint_program() {
@@ -401,7 +387,7 @@ while true; do
   echo "Select an action:"
   select opt in \
     "Build Programs" \
-    "Deploy Programs" \
+    "Deploy Mint Program" \
     "Initialize Mint Program" \
     "Initialize Stake Program" \
     "Setup Metaplex" \
@@ -417,7 +403,7 @@ while true; do
   do
     case $REPLY in
       1) build_program; break ;;
-      2) deploy_program; break ;;
+      2) deploy_mint_program; break ;;
       3) initialize_mint_program; break ;;
       4) initialize_stake_program; break ;;
       5) setup_metaplex; break ;;
