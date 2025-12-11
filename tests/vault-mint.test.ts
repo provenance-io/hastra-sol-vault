@@ -1130,6 +1130,31 @@ describe("vault-mint", () => {
                 expect(err).to.exist;
             }
         });
+        it("prevents arbitrary external program mint execute", async () => {
+            const [externalMintAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [Buffer.from("external_mint_authority")],
+                stakeProgram.programId
+            )
+            try {
+                await program.methods
+                    .externalProgramMint(new BN(1_000_000))
+                    .accountsStrict({
+                        config: configPda,
+                        externalMintAuthority: externalMintAuthorityPda,
+                        mint: mintedToken,
+                        mintAuthority: mintAuthorityPda,
+                        admin: rewardsAdmin.publicKey,
+                        destination: userMintTokenAccount,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
+                    })
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.include("Signature verification failed");
+            }
+        });
+
     });
 
     //write test cases against the rewards merkle tree functionality
