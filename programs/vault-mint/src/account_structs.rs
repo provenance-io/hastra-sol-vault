@@ -433,9 +433,10 @@ pub struct ExternalProgramMint<'info> {
     /// Only that program can sign for this PDA, proving the call is from CPI
     /// CHECK: Verified by seeds constraint against allowed_external_mint_program
     #[account(
-    seeds = [b"external_mint_authority"],
-    seeds::program = config.allowed_external_mint_program,
-    bump,
+        signer,
+        seeds = [b"external_mint_authority"],
+        seeds::program = config.allowed_external_mint_program,
+        bump,
     )]
     pub external_mint_authority: UncheckedAccount<'info>,
 

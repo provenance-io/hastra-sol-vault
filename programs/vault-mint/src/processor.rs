@@ -485,6 +485,8 @@ pub fn claim_rewards(ctx: Context<ClaimRewards>, amount: u64, proof: Vec<ProofNo
 
 // Allows an external program (specified in config) to mint tokens to a destination account
 pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> Result<()> {
+    require!(!ctx.accounts.config.paused, CustomErrorCode::ProtocolPaused);
+
     let config = &ctx.accounts.config;
 
     // Verify admin is a rewards administrator
