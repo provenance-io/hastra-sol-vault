@@ -50,10 +50,18 @@ const args = yargs(process.argv.slice(2))
     .parseSync();
 
 const main = async () => {
-    const [configPda, bump] = anchor.web3.PublicKey.findProgramAddressSync(
+    const [configPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("config")],
         program.programId
     );
+    const [vaultTokenAccountConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("vault_token_account_config"),
+            configPda.toBuffer()
+        ],
+        program.programId
+    );
+
     // bpf_loader_upgradeable program id
     const BPF_LOADER_UPGRADEABLE_ID = new PublicKey(
         "BPFLoaderUpgradeab1e11111111111111111111111"
@@ -99,6 +107,7 @@ const main = async () => {
     console.log("Mint (token to be minted):", mint.toBase58());
     console.log("Vault Token Account:", vaultTokenAccount.toBase58());
     console.log("Config PDA:", configPda.toBase58());
+    console.log("Vault Token Account Config PDA:", vaultTokenAccountConfigPda.toBase58());
     console.log("Mint Authority PDA:", mintAuthorityPda.toBase58());
     console.log("Freeze Authority PDA:", freezeAuthorityPda.toBase58());
     console.log("Freeze Administrators:", freezeAdministrators.map((a) => a.toBase58()));
@@ -111,14 +120,20 @@ const main = async () => {
     // Call initialize
     await program.methods
         .initialize(freezeAdministrators, rewardsAdministrators)
-        .accounts({
-            signer: provider.wallet.publicKey,
+        .accountsStrict({
+            config: configPda,
+            vaultTokenAccountConfig: vaultTokenAccountConfigPda,
             vaultTokenAccount: vaultTokenAccount,
-            vaultTokenMint: vault,
-            allowedExternalMintProgram: allowedMintProgramId,
+            redeemVaultAuthority: redeemVaultAuthorityPda,
             redeemVaultTokenAccount: redeemVaultTokenAccount,
+            vaultTokenMint: vault,
             mint: mint,
+            signer: provider.wallet.publicKey,
+            tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+            systemProgram: anchor.web3.SystemProgram.programId,
             programData: programData,
+            allowedExternalMintProgram: allowedMintProgramId,
+
         }).rpc()
         .then((tx) => {
             console.log("Transaction:", tx);

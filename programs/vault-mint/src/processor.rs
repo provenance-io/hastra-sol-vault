@@ -42,6 +42,10 @@ pub fn initialize(
     config.allowed_external_mint_program = ctx.accounts.allowed_external_mint_program.key();
     config.bump = ctx.bumps.config;
 
+    let vault_token_account_config = &mut ctx.accounts.vault_token_account_config;
+    vault_token_account_config.vault_token_account = ctx.accounts.vault_token_account.key();
+    vault_token_account_config.bump = ctx.bumps.vault_token_account_config;
+
     // The redeem vault token account must be owned by the program-derived address (PDA)
     // and is a token account that holds the deposited vault tokens (e.g., USDC).
     // This ensures that only the program can move tokens out of this account.
@@ -523,7 +527,7 @@ pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> 
     emit!(ExternalProgramMintEvent {
         admin: ctx.accounts.admin.key(),
         destination: ctx.accounts.destination.key(),
-        amount: amount,
+        amount,
         mint: ctx.accounts.mint.key(),
         vault: ctx.accounts.config.vault,
     });
@@ -595,22 +599,10 @@ pub fn sweep_redeem_vault_funds(
     emit!(SweepRedeemVaultEvent {
         admin: ctx.accounts.signer.key(),
         destination: ctx.accounts.vault_token_account.key(),
-        amount: amount,
+        amount,
         vault: ctx.accounts.redeem_vault_token_account.mint,
     });
     msg!("Emitted SweepRedeemVaultEvent");
-
-    Ok(())
-}
-
-pub fn set_vault_token_account_config(ctx: Context<SetVaultTokenAccountConfig>) -> Result<()> {
-    // Validate that the signer is the program's update authority
-    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
-
-    // Write the new value
-    let vault_token_account_config = &mut ctx.accounts.vault_token_account_config;
-    vault_token_account_config.vault_token_account = ctx.accounts.vault_token_account.key();
-    vault_token_account_config.bump = ctx.bumps.vault_token_account_config;
 
     Ok(())
 }

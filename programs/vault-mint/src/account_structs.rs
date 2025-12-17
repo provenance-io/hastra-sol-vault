@@ -18,6 +18,18 @@ pub struct Initialize<'info> {
     pub config: Account<'info, Config>,
 
     #[account(
+        init,
+        payer = signer,
+        space = VaultTokenAccountConfig::LEN,
+        seeds = [
+            b"vault_token_account_config",
+            config.key().as_ref(),
+        ],
+        bump
+    )]
+    pub vault_token_account_config: Account<'info, VaultTokenAccountConfig>,
+    
+    #[account(
         constraint = vault_token_account.mint == vault_token_mint.key() @ CustomErrorCode::InvalidMint
     )]
     pub vault_token_account: Account<'info, TokenAccount>,
