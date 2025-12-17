@@ -72,6 +72,7 @@ describe("vault-mint", () => {
         );
 
         // Airdrop SOL
+        await provider.connection.requestAirdrop(provider.publicKey, 100 * LAMPORTS_PER_SOL);
         await provider.connection.requestAirdrop(user.publicKey, 10 * LAMPORTS_PER_SOL);
         await provider.connection.requestAirdrop(freezeAdmin.publicKey, 2 * LAMPORTS_PER_SOL);
         await provider.connection.requestAirdrop(rewardsAdmin.publicKey, 2 * LAMPORTS_PER_SOL);
