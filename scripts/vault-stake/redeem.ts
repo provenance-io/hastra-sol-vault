@@ -51,6 +51,14 @@ const main = async () => {
         program.programId
     );
 
+    const [stakeVaultTokenAccountConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("stake_vault_token_account_config"),
+            stakeConfigPda.toBuffer()
+        ],
+        program.programId
+    );
+
     const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("ticket"), signer.toBuffer()],
         program.programId
@@ -75,6 +83,7 @@ const main = async () => {
         .redeem()
         .accountsStrict({
             stakeConfig: stakeConfigPda,
+            stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
             vaultTokenAccount: vaultTokenAccount,
             vaultAuthority: vaultAuthorityPda,
             signer: signer,

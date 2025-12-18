@@ -89,6 +89,12 @@ get_mint_program_config_pda() {
   echo "$pda"
 }
 
+get_stake_program_config_pda() {
+  local program_id="$1"
+  local pda=$(yarn run --silent ts-node scripts/vault-stake/derive_stake_vault_token_account_config.ts --program_id "$program_id")
+  echo "$pda"
+}
+
 get_ata() {
   local mint="$1"
   local owner="$2"
@@ -357,7 +363,9 @@ show_accounts_and_pdas() {
   echo "Vault Token (accepted token, i.e. wYLDS): $MINT_PROG_MINT_TOKEN"
   echo "Mint Token (token minted, PRIME):         $STAKE_PROG_MINT_TOKEN"
   echo "Vault Token Account:                      $STAKE_PROG_VAULT_TOKEN_ACCOUNT"
+  echo "Vault Authority:                          $(get_pda "$VAULT_STAKE_PROGRAM_ID" "vault_authority")"
   echo "Config PDA:                               $(get_pda "$VAULT_STAKE_PROGRAM_ID" "stake_config")"
+  echo "Stake Vault Token Account Config PDA:     $(get_stake_program_config_pda "$VAULT_STAKE_PROGRAM_ID")"
   echo "Mint Authority PDA:                       $(get_pda "$VAULT_STAKE_PROGRAM_ID" "mint_authority")"
   echo "Freeze Authority PDA:                     $(get_pda "$VAULT_STAKE_PROGRAM_ID" "freeze_authority")"
   echo "Freeze Administrators:                    $FREEZE_ADMINISTRATORS"

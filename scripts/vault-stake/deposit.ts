@@ -2,11 +2,7 @@ import * as anchor from "@coral-xyz/anchor";
 import {Program} from "@coral-xyz/anchor";
 import yargs from "yargs";
 import {VaultStake} from "../../target/types/vault_stake";
-import {
-    getAccount,
-    getAssociatedTokenAddress,
-    TOKEN_PROGRAM_ID
-} from "@solana/spl-token";
+import {getAssociatedTokenAddress} from "@solana/spl-token";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
@@ -55,6 +51,14 @@ const main = async () => {
         program.programId
     );
 
+    const [stakeVaultTokenAccountConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("stake_vault_token_account_config"),
+            stakeConfigPda.toBuffer()
+        ],
+        program.programId
+    );
+
     // Program args
     const mint = new anchor.web3.PublicKey(args.mint);
     const vault = new anchor.web3.PublicKey(args.vault);
@@ -70,6 +74,7 @@ const main = async () => {
     console.log("User Vault Token Account:", userVaultTokenAccount.toBase58());
     console.log("User Mint Token Account:", userMintTokenAccount.toBase58());
     console.log("Stake Config PDA:", stakeConfigPda.toBase58());
+    console.log("Stake Vault Config PDA:", stakeVaultTokenAccountConfigPda.toBase58());
     console.log("Mint Authority PDA:", mintAuthorityPda.toBase58());
     console.log("Vault Authority PDA:", vaultAuthorityPda.toBase58());
 
@@ -77,6 +82,7 @@ const main = async () => {
         .deposit(amount)
         .accountsStrict({
             stakeConfig: stakeConfigPda,
+            stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
             vaultTokenAccount: vaultTokenAccount,
             vaultAuthority: vaultAuthorityPda,
             mint: mint,

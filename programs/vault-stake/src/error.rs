@@ -64,5 +64,7 @@ pub enum CustomErrorCode {
     DivisionByZero = 32,
     #[msg("Arithmetic overflow error")]
     Overflow = 33,
+    #[msg("Invalid vault token account")]
+    InvalidVaultTokenAccount = 34,
     
 }
