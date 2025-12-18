@@ -644,3 +644,17 @@ pub fn exchange_rate(ctx: Context<ConversionView>) -> Result<u64> {
 
     Ok(rate)
 }
+
+pub fn set_stake_vault_token_account_config(ctx: Context<SetStakeVaultTokenAccountConfig>) -> Result<()> {
+    // Validate that the signer is the program's update authority
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+
+    // Write the new value
+    let stake_vault_token_account_config = &mut ctx.accounts.stake_vault_token_account_config;
+    stake_vault_token_account_config.vault_token_account = ctx.accounts.vault_token_account.key();
+    stake_vault_token_account_config.vault_authority = ctx.accounts.vault_authority.key();
+    stake_vault_token_account_config.bump = ctx.bumps.stake_vault_token_account_config;
+
+    Ok(())
+}
+

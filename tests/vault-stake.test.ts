@@ -32,8 +32,11 @@ describe("vault-stake", () => {
     let mintedToken: PublicKey;
     let vaultedToken: PublicKey;
     let vaultTokenAccount: PublicKey;
+    let badVaultTokenAccountOwner: Keypair;
+    let badVaultTokenAccountOwnerPublicKey: PublicKey;
     let configPda: PublicKey;
     let vaultTokenAccountConfigPda: PublicKey;
+    let stakeVaultTokenAccountConfigPda: PublicKey;
     let stakeConfigPda: PublicKey;
     let mintAuthorityPda: PublicKey;
     let vaultAuthorityPda: PublicKey;
@@ -148,6 +151,8 @@ describe("vault-stake", () => {
         user2 = Keypair.generate();
         freezeAdmin = Keypair.generate();
         rewardsAdmin = Keypair.fromSeed(Buffer.alloc(32, 31)); // Deterministic owner to match mint admin
+        badVaultTokenAccountOwner = Keypair.generate();
+        badVaultTokenAccountOwnerPublicKey = badVaultTokenAccountOwner.publicKey;
 
         [mintAuthorityPda] = PublicKey.findProgramAddressSync(
             [Buffer.from("mint_authority")],
@@ -180,6 +185,7 @@ describe("vault-stake", () => {
         await provider.connection.requestAirdrop(user2.publicKey, 100 * LAMPORTS_PER_SOL);
         await provider.connection.requestAirdrop(freezeAdmin.publicKey, 2 * LAMPORTS_PER_SOL);
         await provider.connection.requestAirdrop(rewardsAdmin.publicKey, 2 * LAMPORTS_PER_SOL);
+        await provider.connection.requestAirdrop(badVaultTokenAccountOwnerPublicKey, 10 * LAMPORTS_PER_SOL);
 
         // Wait for airdrops
         await new Promise(resolve => setTimeout(resolve, 1000));
@@ -211,6 +217,14 @@ describe("vault-stake", () => {
 
         [stakeConfigPda] = PublicKey.findProgramAddressSync(
             [Buffer.from("stake_config")],
+            program.programId
+        );
+
+        [stakeVaultTokenAccountConfigPda] = PublicKey.findProgramAddressSync(
+            [
+                Buffer.from("stake_vault_token_account_config"),
+                stakeConfigPda.toBuffer()
+            ],
             program.programId
         );
 
@@ -466,6 +480,82 @@ describe("vault-stake", () => {
                 expect(err).to.exist;
             }
         });
+
+        it("set up stake vault token account config fails with invalid vault owner", async () => {
+            const badVaultTokenAccount = await createAccount(
+                provider.connection,
+                badVaultTokenAccountOwner,
+                vaultedToken,
+                badVaultTokenAccountOwnerPublicKey
+            )
+
+            try {
+                await program.methods
+                    .setStakeVaultTokenAccountConfig()
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        vaultTokenAccount: badVaultTokenAccount,
+                        vaultAuthority: vaultAuthorityPda,
+                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programDataPda,
+                        systemProgram: anchor.web3.SystemProgram.programId,
+                    })
+                    .rpc()
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.include("InvalidVaultAuthority");
+            }
+        });
+        it("set up stake vault token account config fails with invalid token account mint", async () => {
+            const randoKey = Keypair.generate();
+            await provider.connection.requestAirdrop(randoKey.publicKey, 10 * LAMPORTS_PER_SOL);
+            // Wait for airdrops
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            const badVaultTokenAccount = await createAccount(
+                provider.connection,
+                randoKey,
+                mintedToken,
+                randoKey.publicKey
+            )
+
+            try {
+                await program.methods
+                    .setStakeVaultTokenAccountConfig()
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        vaultTokenAccount: badVaultTokenAccount,
+                        vaultAuthority: vaultAuthorityPda,
+                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programDataPda,
+                        systemProgram: anchor.web3.SystemProgram.programId,
+                    })
+                    .rpc()
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.include("InvalidVaultMint");
+            }
+
+        });
+        it("sets up vault token account config", async () => {
+            await program.methods
+                .setStakeVaultTokenAccountConfig()
+                .accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    vaultTokenAccount: vaultTokenAccount,
+                    vaultAuthority: vaultAuthorityPda,
+                    stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                })
+                .rpc()
+        });
+
     });
 
     describe("deposit", () => {
@@ -524,6 +614,7 @@ describe("vault-stake", () => {
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
+                    stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     vaultAuthority: vaultAuthorityPda,
                     mint: mintedToken,
                     vaultMint: vaultedToken,
@@ -555,6 +646,7 @@ describe("vault-stake", () => {
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
+                    stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     vaultAuthority: vaultAuthorityPda,
                     mint: mintedToken,
                     vaultMint: vaultedToken,
@@ -610,6 +702,7 @@ describe("vault-stake", () => {
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
+                    stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     vaultAuthority: vaultAuthorityPda,
                     signer: user.publicKey,
                     userVaultTokenAccount: userVaultTokenAccount,
@@ -668,6 +761,7 @@ describe("vault-stake", () => {
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
+                    stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     vaultAuthority: vaultAuthorityPda,
                     signer: user2.publicKey,
                     userVaultTokenAccount: user2VaultTokenAccount,
@@ -697,6 +791,7 @@ describe("vault-stake", () => {
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
+                    stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     vaultAuthority: vaultAuthorityPda,
                     mint: mintedToken,
                     vaultMint: vaultedToken,
@@ -716,6 +811,7 @@ describe("vault-stake", () => {
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
+                    stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     vaultAuthority: vaultAuthorityPda,
                     mint: mintedToken,
                     vaultMint: vaultedToken,
@@ -740,6 +836,7 @@ describe("vault-stake", () => {
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
                         vaultTokenAccount: vaultTokenAccount,
+                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         vaultMint: vaultedToken,
@@ -767,6 +864,7 @@ describe("vault-stake", () => {
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
                         vaultTokenAccount: vaultTokenAccount,
+                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         vaultMint: vaultedToken,
@@ -781,6 +879,43 @@ describe("vault-stake", () => {
                 assert.fail("Should have thrown error");
             } catch (err) {
                 expect(err).to.exist;
+            }
+        });
+
+        it("fails with invalid vault token account", async () => {
+            // create a new account to verify that the deposit only accepts vault token ATA's owned by the vault authority
+            // and not any other token account owned by the user
+            const badTokenKeypair = Keypair.generate();
+            const badVaultTokenAccount = await createAccount(
+                provider.connection,
+                provider.wallet.payer,
+                vaultedToken,
+                vaultAuthorityPda,
+                badTokenKeypair
+            );
+
+            try {
+                await program.methods
+                    .deposit(new BN(1))
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        vaultTokenAccount: badVaultTokenAccount,
+                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+                        vaultAuthority: vaultAuthorityPda,
+                        mint: mintedToken,
+                        vaultMint: vaultedToken,
+                        mintAuthority: mintAuthorityPda,
+                        signer: user.publicKey,
+                        userVaultTokenAccount: userVaultTokenAccount,
+                        userMintTokenAccount: userMintTokenAccount,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
+                    })
+                    .signers([user])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.include("InvalidVaultTokenAccount");
             }
         });
     });
@@ -814,6 +949,7 @@ describe("vault-stake", () => {
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
+                    stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     vaultAuthority: vaultAuthorityPda,
                     signer: user.publicKey,
                     userVaultTokenAccount: userVaultTokenAccount,
@@ -883,6 +1019,7 @@ describe("vault-stake", () => {
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
                         vaultTokenAccount: vaultTokenAccount,
+                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                         vaultAuthority: vaultAuthorityPda,
                         signer: user.publicKey,
                         userVaultTokenAccount: userVaultTokenAccount,
@@ -946,6 +1083,7 @@ describe("vault-stake", () => {
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
                         vaultTokenAccount: vaultTokenAccount,
+                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         vaultMint: vaultedToken,
@@ -1097,6 +1235,7 @@ describe("vault-stake", () => {
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
                         vaultTokenAccount: vaultTokenAccount,
+                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         vaultMint: vaultedToken,
@@ -1152,6 +1291,7 @@ describe("vault-stake", () => {
                 .publishRewards(publishRewardsId, new BN(amount))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
+                    stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     mintConfig: configPda,
                     externalMintAuthority: externalMintAuthorityPda,
                     mintProgram: mintProgram.programId,
@@ -1188,6 +1328,7 @@ describe("vault-stake", () => {
                     .publishRewards(publishRewardsId, new BN(amount))
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
+                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                         mintConfig: configPda,
                         externalMintAuthority: externalMintAuthorityPda,
                         mintProgram: mintProgram.programId,
@@ -1223,6 +1364,7 @@ describe("vault-stake", () => {
                 .publishRewards(publishRewardsId, new BN(amount))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
+                    stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     mintConfig: configPda,
                     externalMintAuthority: externalMintAuthorityPda,
                     mintProgram: mintProgram.programId,
@@ -1251,6 +1393,7 @@ describe("vault-stake", () => {
                 .publishRewards(publishRewardsId, new BN(amount))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
+                    stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     mintConfig: configPda,
                     externalMintAuthority: externalMintAuthorityPda,
                     mintProgram: mintProgram.programId,
@@ -1290,6 +1433,7 @@ describe("vault-stake", () => {
                     .publishRewards(publishRewardsId, new BN(amount))
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
+                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                         mintConfig: configPda,
                         externalMintAuthority: externalMintAuthorityPda,
                         mintProgram: mintProgram.programId,
@@ -1449,6 +1593,7 @@ describe("vault-stake", () => {
                     .publishRewards(publishRewardsId, new BN(amount))
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
+                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                         mintConfig: configPda,
                         externalMintAuthority: externalMintAuthorityPda,
                         mintProgram: mintProgram.programId,
@@ -1536,6 +1681,7 @@ describe("vault-stake", () => {
                 .deposit(new BN(userVaultedTokenBalanceBefore.amount))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
+                    stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
                     vaultAuthority: vaultAuthorityPda,
                     mint: mintedToken,

@@ -98,17 +98,28 @@ pub struct Deposit<'info> {
     pub stake_config: Account<'info, StakeConfig>,
 
     #[account(
+        seeds = [
+            b"stake_vault_token_account_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_vault_token_account_config.bump,
+    )]
+    pub stake_vault_token_account_config: Account<'info, StakeVaultTokenAccountConfig>,
+
+    #[account(
         mut,
         token::mint = stake_config.vault,
         constraint = vault_token_account.mint == stake_config.vault @ CustomErrorCode::InvalidVaultMint,
-        constraint = vault_token_account.owner == vault_authority.key() @ CustomErrorCode::InvalidVaultAuthority
+        constraint = vault_token_account.key() == stake_vault_token_account_config.vault_token_account @ CustomErrorCode::InvalidVaultTokenAccount,
+        constraint = vault_token_account.owner == stake_vault_token_account_config.vault_authority @ CustomErrorCode::InvalidVaultAuthority
     )]
     pub vault_token_account: Account<'info, TokenAccount>,
 
     /// CHECK: This is a PDA that acts as vault authority, validated by seeds constraint
     #[account(
         seeds = [b"vault_authority"],
-        bump
+        bump,
+        constraint = vault_authority.key() == stake_vault_token_account_config.vault_authority @ CustomErrorCode::InvalidVaultAuthority
     )]
     pub vault_authority: UncheckedAccount<'info>,
 
@@ -199,9 +210,20 @@ pub struct Redeem<'info> {
     pub stake_config: Account<'info, StakeConfig>,
 
     #[account(
+        seeds = [
+            b"stake_vault_token_account_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_vault_token_account_config.bump,
+    )]
+    pub stake_vault_token_account_config: Account<'info, StakeVaultTokenAccountConfig>,
+
+    #[account(
         mut,
         token::mint = stake_config.vault,
-        constraint = vault_token_account.mint == stake_config.vault @ CustomErrorCode::InvalidVaultMint
+        constraint = vault_token_account.mint == stake_config.vault @ CustomErrorCode::InvalidVaultMint,
+        constraint = vault_token_account.key() == stake_vault_token_account_config.vault_token_account @ CustomErrorCode::InvalidVaultTokenAccount,
+        constraint = vault_token_account.owner == stake_vault_token_account_config.vault_authority @ CustomErrorCode::InvalidVaultAuthority,
     )]
     pub vault_token_account: Account<'info, TokenAccount>,
 
@@ -209,7 +231,7 @@ pub struct Redeem<'info> {
     #[account(
         seeds = [b"vault_authority"],
         bump,
-        constraint = vault_authority.key() == vault_token_account.owner @ CustomErrorCode::InvalidVaultAuthority
+        constraint = vault_authority.key() == stake_vault_token_account_config.vault_authority @ CustomErrorCode::InvalidVaultAuthority
     )]
     pub vault_authority: UncheckedAccount<'info>,
 
@@ -407,17 +429,28 @@ pub struct PublishRewards<'info> {
     pub rewards_mint_authority: UncheckedAccount<'info>,
 
     #[account(
+        seeds = [
+            b"stake_vault_token_account_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_vault_token_account_config.bump,
+    )]
+    pub stake_vault_token_account_config: Account<'info, StakeVaultTokenAccountConfig>,
+
+    #[account(
         mut,
         token::mint = stake_config.vault,
         constraint = vault_token_account.mint == stake_config.vault @ CustomErrorCode::InvalidVaultMint,
-        constraint = vault_token_account.owner == vault_authority.key() @ CustomErrorCode::InvalidVaultAuthority
+        constraint = vault_token_account.key() == stake_vault_token_account_config.vault_token_account @ CustomErrorCode::InvalidVaultTokenAccount,
+        constraint = vault_token_account.owner == stake_vault_token_account_config.vault_authority @ CustomErrorCode::InvalidVaultAuthority
     )]
     pub vault_token_account: Account<'info, TokenAccount>,
 
     /// CHECK: This is a PDA that acts as vault authority, validated by seeds constraint
     #[account(
         seeds = [b"vault_authority"],
-        bump
+        bump,
+        constraint = vault_authority.key() == stake_vault_token_account_config.vault_authority @ CustomErrorCode::InvalidVaultAuthority
     )]
     pub vault_authority: UncheckedAccount<'info>,
 
@@ -472,3 +505,50 @@ pub struct ConversionView<'info> {
     )]
     pub vault_authority: UncheckedAccount<'info>,
 }
+
+#[derive(Accounts)]
+pub struct SetStakeVaultTokenAccountConfig<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump,
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    /// CHECK: This is a PDA that acts as vault authority, validated by seeds constraint
+    #[account(
+        seeds = [b"vault_authority"],
+        bump
+    )]
+    pub vault_authority: UncheckedAccount<'info>,
+
+    // Precise vault token account to verify in deposit
+    #[account(
+        constraint = vault_token_account.mint == stake_config.vault @ CustomErrorCode::InvalidVaultMint,
+        constraint = vault_token_account.owner == vault_authority.key() @ CustomErrorCode::InvalidVaultAuthority,
+    )]
+    pub vault_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        init,
+        payer = signer,
+        space = StakeVaultTokenAccountConfig::LEN,
+        seeds = [
+            b"stake_vault_token_account_config",
+            stake_config.key().as_ref(),
+        ],
+        bump
+    )]
+    pub stake_vault_token_account_config: Account<'info, StakeVaultTokenAccountConfig>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>, // Must be program update authority
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+

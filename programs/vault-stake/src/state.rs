@@ -50,6 +50,25 @@ impl RewardPublicationRecord {
         1;      // bump
 }
 
+// New vault token account config used to validate that the deposited and redeemed token
+// account is the correct one. This is used to prevent a user from depositing
+// to the wrong token account even when it's owned by the vault authority.
+// Adding a new vault token config eliminates the need for reallocating the
+// program's config account size. The implication is, however, that this config
+// must be set after the program has been deployed and initialized - which
+// is a reasonable tradeoff to the complexity of updating the deployed
+// config.
+#[account]
+pub struct StakeVaultTokenAccountConfig {
+    pub vault_token_account: Pubkey,
+    pub vault_authority: Pubkey,
+    pub bump: u8,
+}
+
+impl StakeVaultTokenAccountConfig {
+    pub const LEN: usize = 8 + 32 + 32 + 1; // discriminator + pubkey + pubkey + bump
+}
+
 // ========== HELPER FUNCTIONS for VIRTUAL SHARES CALCS  ==========
 pub fn calculate_shares_to_assets(
     shares: u64,

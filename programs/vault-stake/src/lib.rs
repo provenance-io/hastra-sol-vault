@@ -142,4 +142,9 @@ pub mod vault_stake {
     pub fn exchange_rate(ctx: Context<ConversionView>) -> Result<u64> {
         processor::exchange_rate(ctx)   
     }
+
+    pub fn set_stake_vault_token_account_config(ctx: Context<SetStakeVaultTokenAccountConfig>) -> Result<()> {
+        processor::set_stake_vault_token_account_config(ctx)
+    }
+
 }
