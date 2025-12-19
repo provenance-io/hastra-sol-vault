@@ -57,6 +57,14 @@ const main = async () => {
         program.programId
     );
 
+    const [stakeVaultTokenAccountConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("stake_vault_token_account_config"),
+            stakeConfigPda.toBuffer()
+        ],
+        program.programId
+    );
+
     const [vaultAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("vault_authority")],
         program.programId
@@ -102,6 +110,7 @@ const main = async () => {
     console.log("Stake Program:", stakeProgramId.toBase58());
     console.log("Vault Token Account (e.g. wYLDS)", vaultTokenAccount.toBase58());
     console.log("Stake Config PDA:", stakeConfigPda.toBase58());
+    console.log("Stake Vault Token Account Config PDA:", stakeVaultTokenAccountConfigPda.toBase58());
     console.log("Mint Config PDA:", mintConfigPda.toBase58());
     console.log("Rewards Mint Authority PDA:", rewardsMintAuthorityPda.toBase58());
     console.log("Vault Authority PDA:", vaultAuthorityPda.toBase58());
@@ -110,6 +119,7 @@ const main = async () => {
         .publishRewards(rewardId, amount)
         .accountsStrict({
             stakeConfig: stakeConfigPda,
+            stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
             mintConfig: mintConfigPda,
             externalMintAuthority: externalMintAuthorityPda,
             mintProgram: new anchor.web3.PublicKey(args.mint_program),

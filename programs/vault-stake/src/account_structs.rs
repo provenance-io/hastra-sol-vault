@@ -37,6 +37,19 @@ pub struct Initialize<'info> {
     )]
     pub vault_token_account: Account<'info, TokenAccount>,
 
+    // Captures the specific vault authority and vault token account for this stake config
+    #[account(
+        init,
+        payer = signer,
+        space = StakeVaultTokenAccountConfig::LEN,
+        seeds = [
+            b"stake_vault_token_account_config",
+            stake_config.key().as_ref(),
+        ],
+        bump
+    )]
+    pub stake_vault_token_account_config: Account<'info, StakeVaultTokenAccountConfig>,
+
     pub vault_token_mint: Account<'info, Mint>,
     pub mint: Account<'info, Mint>,
 
@@ -505,50 +518,3 @@ pub struct ConversionView<'info> {
     )]
     pub vault_authority: UncheckedAccount<'info>,
 }
-
-#[derive(Accounts)]
-pub struct SetStakeVaultTokenAccountConfig<'info> {
-    #[account(
-        seeds = [b"stake_config"],
-        bump = stake_config.bump,
-    )]
-    pub stake_config: Account<'info, StakeConfig>,
-
-    /// CHECK: This is a PDA that acts as vault authority, validated by seeds constraint
-    #[account(
-        seeds = [b"vault_authority"],
-        bump
-    )]
-    pub vault_authority: UncheckedAccount<'info>,
-
-    // Precise vault token account to verify in deposit
-    #[account(
-        constraint = vault_token_account.mint == stake_config.vault @ CustomErrorCode::InvalidVaultMint,
-        constraint = vault_token_account.owner == vault_authority.key() @ CustomErrorCode::InvalidVaultAuthority,
-    )]
-    pub vault_token_account: Account<'info, TokenAccount>,
-
-    #[account(
-        init,
-        payer = signer,
-        space = StakeVaultTokenAccountConfig::LEN,
-        seeds = [
-            b"stake_vault_token_account_config",
-            stake_config.key().as_ref(),
-        ],
-        bump
-    )]
-    pub stake_vault_token_account_config: Account<'info, StakeVaultTokenAccountConfig>,
-
-    #[account(mut)]
-    pub signer: Signer<'info>, // Must be program update authority
-
-    /// CHECK: This is the program data account that contains the update authority
-    #[account(
-        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
-    )]
-    pub program_data: UncheckedAccount<'info>,
-
-    pub system_program: Program<'info, System>,
-}
-

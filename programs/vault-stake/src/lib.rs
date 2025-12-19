@@ -143,8 +143,4 @@ pub mod vault_stake {
         processor::exchange_rate(ctx)   
     }
 
-    pub fn set_stake_vault_token_account_config(ctx: Context<SetStakeVaultTokenAccountConfig>) -> Result<()> {
-        processor::set_stake_vault_token_account_config(ctx)
-    }
-
 }
