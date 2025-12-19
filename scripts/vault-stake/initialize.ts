@@ -3,11 +3,7 @@ import {Program} from "@coral-xyz/anchor";
 import {VaultStake} from "../../target/types/vault_stake";
 import yargs from "yargs";
 import BN from "bn.js";
-import {
-    PublicKey,
-    sendAndConfirmTransaction,
-    Transaction
-} from "@solana/web3.js";
+import {PublicKey} from "@solana/web3.js";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
@@ -49,10 +45,18 @@ const args = yargs(process.argv.slice(2))
     .parseSync();
 
 const main = async () => {
-    const [stakeConfigPda, bump] = anchor.web3.PublicKey.findProgramAddressSync(
+    const [stakeConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("stake_config")],
         program.programId
     );
+    const [stakeVaultTokenAccountConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("stake_vault_token_account_config"),
+            stakeConfigPda.toBuffer()
+        ],
+        program.programId
+    );
+
     // bpf_loader_upgradeable program id
     const BPF_LOADER_UPGRADEABLE_ID = new PublicKey(
         "BPFLoaderUpgradeab1e11111111111111111111111"
@@ -94,6 +98,7 @@ const main = async () => {
     console.log("Unbonding Period (seconds):", unbondingPeriod);
     console.log("Vault Token Account:", vaultTokenAccount.toBase58());
     console.log("Stake Config PDA:", stakeConfigPda.toBase58());
+    console.log("Stake Vault Token Account Config PDA:", stakeVaultTokenAccountConfigPda.toBase58());
     console.log("Vault Authority PDA:", vaultAuthorityPda.toBase58());
     console.log("Mint Authority PDA:", mintAuthorityPda.toBase58());
     console.log("Freeze Authority PDA:", freezeAuthorityPda.toBase58());
@@ -104,11 +109,16 @@ const main = async () => {
     // Call initialize
     await program.methods
         .initialize(unbondingPeriod, freezeAdministrators, rewardsAdministrators)
-        .accounts({
-            signer: provider.wallet.publicKey,
+        .accountsStrict({
+            stakeConfig: stakeConfigPda,
+            vaultAuthority: vaultAuthorityPda,
             vaultTokenAccount: vaultTokenAccount,
+            stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
             vaultTokenMint: vault,
             mint: mint,
+            signer: provider.wallet.publicKey,
+            tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+            systemProgram: anchor.web3.SystemProgram.programId,
             programData: programData,
         }).rpc()
         .then((tx) => {

@@ -443,6 +443,7 @@ describe("vault-stake", () => {
                     stakeConfig: stakeConfigPda,
                     vaultAuthority: vaultAuthorityPda,
                     vaultTokenAccount: vaultTokenAccount,
+                    stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     vaultTokenMint: vaultedToken,
                     mint: mintedToken,
                     signer: provider.wallet.publicKey,
@@ -480,82 +481,6 @@ describe("vault-stake", () => {
                 expect(err).to.exist;
             }
         });
-
-        it("set up stake vault token account config fails with invalid vault owner", async () => {
-            const badVaultTokenAccount = await createAccount(
-                provider.connection,
-                badVaultTokenAccountOwner,
-                vaultedToken,
-                badVaultTokenAccountOwnerPublicKey
-            )
-
-            try {
-                await program.methods
-                    .setStakeVaultTokenAccountConfig()
-                    .accountsStrict({
-                        stakeConfig: stakeConfigPda,
-                        vaultTokenAccount: badVaultTokenAccount,
-                        vaultAuthority: vaultAuthorityPda,
-                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
-                        signer: provider.wallet.publicKey,
-                        programData: programDataPda,
-                        systemProgram: anchor.web3.SystemProgram.programId,
-                    })
-                    .rpc()
-                assert.fail("Should have thrown error");
-            } catch (err) {
-                expect(err).to.exist;
-                expect(err.toString()).to.include("InvalidVaultAuthority");
-            }
-        });
-        it("set up stake vault token account config fails with invalid token account mint", async () => {
-            const randoKey = Keypair.generate();
-            await provider.connection.requestAirdrop(randoKey.publicKey, 10 * LAMPORTS_PER_SOL);
-            // Wait for airdrops
-            await new Promise(resolve => setTimeout(resolve, 1000));
-
-            const badVaultTokenAccount = await createAccount(
-                provider.connection,
-                randoKey,
-                mintedToken,
-                randoKey.publicKey
-            )
-
-            try {
-                await program.methods
-                    .setStakeVaultTokenAccountConfig()
-                    .accountsStrict({
-                        stakeConfig: stakeConfigPda,
-                        vaultTokenAccount: badVaultTokenAccount,
-                        vaultAuthority: vaultAuthorityPda,
-                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
-                        signer: provider.wallet.publicKey,
-                        programData: programDataPda,
-                        systemProgram: anchor.web3.SystemProgram.programId,
-                    })
-                    .rpc()
-                assert.fail("Should have thrown error");
-            } catch (err) {
-                expect(err).to.exist;
-                expect(err.toString()).to.include("InvalidVaultMint");
-            }
-
-        });
-        it("sets up vault token account config", async () => {
-            await program.methods
-                .setStakeVaultTokenAccountConfig()
-                .accountsStrict({
-                    stakeConfig: stakeConfigPda,
-                    vaultTokenAccount: vaultTokenAccount,
-                    vaultAuthority: vaultAuthorityPda,
-                    stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
-                    signer: provider.wallet.publicKey,
-                    programData: programDataPda,
-                    systemProgram: anchor.web3.SystemProgram.programId,
-                })
-                .rpc()
-        });
-
     });
 
     describe("deposit", () => {
