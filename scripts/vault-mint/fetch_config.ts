@@ -27,10 +27,12 @@ const main = async () => {
 
     const config = await program.account.config.fetch(configPda);
     console.log("Vault Mint:                            ", config.vault.toBase58());
-    console.log("Vault Token Owner:                     ", config.vaultAuthority.toBase58());
-    console.log("Redeem Vault:                          ", config.vaultAuthority.toBase58());
+    console.log("Mint:                                  ", config.mint.toBase58());
     console.log("Freeze Administrators:                 ", config.freezeAdministrators.map(a => a.toBase58()).join(", "));
-    console.log("Rewards Administrators:                ", config.freezeAdministrators.map(a => a.toBase58()).join(", "));
+    console.log("Rewards Administrators:                ", config.rewardsAdministrators.map(a => a.toBase58()).join(", "));
+    console.log("Vault Authority:                       ", config.vaultAuthority.toBase58());
+    console.log("Paused:                                ", config.paused);
+    console.log("Allowed External Mint Program:         ", config.allowedExternalMintProgram.toBase58());
 
     const vaultTokenAccountConfig = await program.account.vaultTokenAccountConfig.fetch(vaultTokenAccountConfigPda);
     console.log("Vault Token Account:                   ", vaultTokenAccountConfig.vaultTokenAccount.toBase58());

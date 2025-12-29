@@ -1,10 +1,7 @@
 import * as anchor from "@coral-xyz/anchor";
-import { Program } from "@coral-xyz/anchor";
-import { VaultStake } from "../../target/types/vault_stake";
+import {Program} from "@coral-xyz/anchor";
+import {VaultStake} from "../../target/types/vault_stake";
 import yargs from "yargs";
-import {
-    PublicKey,
-} from "@solana/web3.js";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
@@ -20,18 +17,9 @@ const args = yargs(process.argv.slice(2))
     .parseSync();
 
 const main = async () => {
-    const [stakeConfigPda, bump] = anchor.web3.PublicKey.findProgramAddressSync(
+    const [stakeConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("stake_config")],
         program.programId
-    );
-    // bpf_loader_upgradeable program id
-    const BPF_LOADER_UPGRADEABLE_ID = new PublicKey(
-        "BPFLoaderUpgradeab1e11111111111111111111111"
-    );
-    // derive ProgramData PDA
-    const [programData] = PublicKey.findProgramAddressSync(
-        [program.programId.toBuffer()],
-        BPF_LOADER_UPGRADEABLE_ID
     );
 
     console.log("Program ID:", program.programId.toBase58());
@@ -40,8 +28,9 @@ const main = async () => {
     // Call initialize
     await program.methods
         .pause(args.pause)
-        .accounts({
-            programData: programData,
+        .accountsStrict({
+            stakeConfig: stakeConfigPda,
+            signer: provider.wallet.publicKey,
         })
         .rpc()
         .then((tx) => {

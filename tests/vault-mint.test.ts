@@ -51,8 +51,8 @@ describe("vault-mint", () => {
     before(async () => {
         // Setup keypairs
         user = Keypair.generate();
-        freezeAdmin = Keypair.generate();
-        rewardsAdmin = Keypair.fromSeed(Buffer.alloc(32, 31)); // Deterministic owner
+        freezeAdmin = Keypair.fromSeed(Buffer.alloc(32, 7)); // Deterministic admin
+        rewardsAdmin = Keypair.fromSeed(Buffer.alloc(32, 31)); // Deterministic admin
         vaultTokenAccountOwner = Keypair.fromSeed(Buffer.alloc(32, 72)); // Deterministic owner
         vaultTokenAccountOwnerPublicKey = vaultTokenAccountOwner.publicKey;
         badVaultTokenAccountOwner = Keypair.generate();
@@ -809,39 +809,29 @@ describe("vault-mint", () => {
     });
 
     describe("paused protocol", () => {
-        let programData: PublicKey;
-
-        before(async () => {
-            [programData] = PublicKey.findProgramAddressSync(
-                [program.programId.toBuffer()],
-                BPF_LOADER_UPGRADEABLE_ID
-            );
-        });
-
         it("pauses all functionality", async () => {
             await program.methods
                 .pause(true)
                 .accountsStrict({
                     config: configPda,
-                    programData: programData,
-                    signer: provider.wallet.publicKey,
+                    signer: freezeAdmin.publicKey,
                 })
+                .signers([freezeAdmin])
                 .rpc();
 
             const config = await program.account.config.fetch(configPda);
             assert.isTrue(config.paused);
         });
 
-        it("fails pause when called by non upgrade authority", async () => {
+        it("fails pause when called by non admin", async () => {
             try {
                 await program.methods
                     .pause(true)
                     .accountsStrict({
                         config: configPda,
-                        programData: programData,
-                        signer: freezeAdmin.publicKey,
+                        signer: user.publicKey,
                     })
-                    .signers([freezeAdmin])
+                    .signers([user])
                     .rpc();
                 assert.fail("Should have thrown error");
             } catch (err) {
@@ -868,6 +858,8 @@ describe("vault-mint", () => {
                 assert.fail("Should have thrown error");
             } catch (err) {
                 expect(err).to.exist;
+                expect(err.toString()).to.include("ProtocolPaused");
+
             }
         });
         it("prevents request redeem when paused", async () => {
@@ -894,6 +886,8 @@ describe("vault-mint", () => {
                 assert.fail("Should have thrown error");
             } catch (err) {
                 expect(err).to.exist;
+                expect(err.toString()).to.include("ProtocolPaused");
+
             }
         });
 
@@ -902,9 +896,9 @@ describe("vault-mint", () => {
                 .pause(false)
                 .accountsStrict({
                     config: configPda,
-                    programData: programData,
-                    signer: provider.wallet.publicKey,
+                    signer: freezeAdmin.publicKey,
                 })
+                .signers([freezeAdmin])
                 .rpc();
             const config = await program.account.config.fetch(configPda);
             assert.ok(!config.paused);
