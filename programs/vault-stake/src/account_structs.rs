@@ -75,12 +75,6 @@ pub struct Pause<'info> {
     )]
     pub stake_config: Account<'info, StakeConfig>,
 
-    /// CHECK: This is the program data account that contains the update authority
-    #[account(
-        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
-    )]
-    pub program_data: UncheckedAccount<'info>,
-
     pub signer: Signer<'info>,
 }
 

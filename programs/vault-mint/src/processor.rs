@@ -75,8 +75,14 @@ pub fn initialize(
 }
 
 pub fn pause(ctx: Context<Pause>, pause: bool) -> Result<()> {
-    // Validate that the signer is the program's update authority
-    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    let config = &ctx.accounts.config;
+    let signer = ctx.accounts.signer.key();
+
+    // Verify signer is a freeze administrator
+    require!(
+        config.freeze_administrators.contains(&signer),
+        CustomErrorCode::UnauthorizedFreezeAdministrator
+    );
 
     let config = &mut ctx.accounts.config;
     config.paused = pause;

@@ -149,7 +149,7 @@ describe("vault-stake", () => {
         // Setup keypairs
         user = Keypair.generate();
         user2 = Keypair.generate();
-        freezeAdmin = Keypair.generate();
+        freezeAdmin = Keypair.fromSeed(Buffer.alloc(32, 7)); // Deterministic admin to match mint admin
         rewardsAdmin = Keypair.fromSeed(Buffer.alloc(32, 31)); // Deterministic owner to match mint admin
         badVaultTokenAccountOwner = Keypair.generate();
         badVaultTokenAccountOwnerPublicKey = badVaultTokenAccountOwner.publicKey;
@@ -898,12 +898,11 @@ describe("vault-stake", () => {
         });
 
         it("unbond twice fails", async () => {
-            const userShares = (await getAccount(provider.connection, userMintTokenAccount)).amount;
             const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
                 [Buffer.from("ticket"), user.publicKey.toBuffer()],
                 program.programId
             );
-            await program.methods.unbond(new BN(userShares))
+            await program.methods.unbond(new BN(1000))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     mint: mintedToken,
@@ -916,7 +915,7 @@ describe("vault-stake", () => {
                 .rpc();
 
             try {
-                await program.methods.unbond(new BN(userShares))
+                await program.methods.unbond(new BN(1000))
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
                         mint: mintedToken,
@@ -960,41 +959,57 @@ describe("vault-stake", () => {
                 expect(err).to.exist;
             }
         });
+
+        it("closes out unbonding tickets", async () => {
+            const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [Buffer.from("ticket"), user.publicKey.toBuffer()],
+                program.programId
+            );
+
+            // wait for >10 seconds unbonding period which was created in the double bond test
+            await new Promise(resolve => setTimeout(resolve, 15000));
+            await program.methods.redeem()
+                .accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    vaultTokenAccount: vaultTokenAccount,
+                    stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+                    vaultAuthority: vaultAuthorityPda,
+                    signer: user.publicKey,
+                    userVaultTokenAccount: userVaultTokenAccount,
+                    userMintTokenAccount: userMintTokenAccount,
+                    mint: mintedToken,
+                    vaultMint: vaultedToken,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    ticket: ticketPda
+                }).signers([user])
+                .rpc()
+        });
     });
 
     describe("paused protocol", () => {
-        let programData: PublicKey;
-
-        before(async () => {
-            [programData] = PublicKey.findProgramAddressSync(
-                [program.programId.toBuffer()],
-                BPF_LOADER_UPGRADEABLE_ID
-            );
-        });
         it("pauses all functionality", async () => {
             await program.methods
                 .pause(true)
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
-                    programData: programData,
-                    signer: provider.wallet.publicKey,
+                    signer: freezeAdmin.publicKey,
                 })
+                .signers([freezeAdmin])
                 .rpc();
 
             const config = await program.account.stakeConfig.fetch(stakeConfigPda);
             assert.isTrue(config.paused);
         });
 
-        it("fails pause when called by non upgrade authority", async () => {
+        it("fails pause when called by non admin", async () => {
             try {
                 await program.methods
                     .pause(true)
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
-                        programData: programData,
-                        signer: freezeAdmin.publicKey,
+                        signer: user.publicKey,
                     })
-                    .signers([freezeAdmin])
+                    .signers([user])
                     .rpc();
                 assert.fail("Should have thrown error");
             } catch (err) {
@@ -1023,16 +1038,16 @@ describe("vault-stake", () => {
                 assert.fail("Should have thrown error");
             } catch (err) {
                 expect(err).to.exist;
+                expect(err.toString()).to.include("ProtocolPaused");
             }
         });
-        it("prevents request redeem when paused", async () => {
+        it("prevents unbond when paused", async () => {
             try {
-                const userShares = (await getAccount(provider.connection, userMintTokenAccount)).amount;
                 const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
                     [Buffer.from("ticket"), user.publicKey.toBuffer()],
                     program.programId
                 );
-                await program.methods.unbond(new BN(userShares))
+                await program.methods.unbond(new BN(1000))
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
                         mint: mintedToken,
@@ -1046,6 +1061,7 @@ describe("vault-stake", () => {
                 assert.fail("Should have thrown error");
             } catch (err) {
                 expect(err).to.exist;
+                expect(err.toString()).to.include("ProtocolPaused");
             }
         });
 
@@ -1054,13 +1070,82 @@ describe("vault-stake", () => {
                 .pause(false)
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
-                    programData: programData,
-                    signer: provider.wallet.publicKey,
+                    signer: freezeAdmin.publicKey,
                 })
+                .signers([freezeAdmin])
                 .rpc();
             const config = await program.account.stakeConfig.fetch(stakeConfigPda);
             assert.ok(!config.paused);
         });
+
+        it("pause mint program", async () => {
+            await mintProgram.methods
+                .pause(true)
+                .accountsStrict({
+                    config: configPda,
+                    signer: freezeAdmin.publicKey,
+                })
+                .signers([freezeAdmin])
+                .rpc();
+
+            const config = await mintProgram.account.config.fetch(configPda);
+            assert.isTrue(config.paused);
+        });
+
+        it("prevents publish rewards redeem when MINT PROGRAM is paused", async () => {
+            try {
+                const amount = 1_000_000_000;
+                const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                    [
+                        Buffer.from("reward_record"),
+                        Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
+                        Buffer.from(new BigUint64Array([createBigInt(amount)]).buffer)
+                    ],
+                    program.programId);
+
+                await program.methods
+                    .publishRewards(publishRewardsId, new BN(amount))
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+                        mintConfig: configPda,
+                        externalMintAuthority: externalMintAuthorityPda,
+                        mintProgram: mintProgram.programId,
+                        admin: rewardsAdmin.publicKey,
+                        rewardsMint: vaultedToken,
+                        rewardsMintAuthority: rewardsMintAuthorityPda,
+                        vaultTokenAccount: vaultTokenAccount,
+                        vaultAuthority: vaultAuthorityPda,
+                        mint: mintedToken,
+                        rewardRecord: rewardsRecordPda,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                        systemProgram: anchor.web3.SystemProgram.programId,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.include("ProtocolPaused");
+            }
+        });
+
+
+        it("unpause mint program", async () => {
+            await mintProgram.methods
+                .pause(false)
+                .accountsStrict({
+                    config: configPda,
+                    signer: freezeAdmin.publicKey,
+                })
+                .signers([freezeAdmin])
+                .rpc();
+
+            const config = await mintProgram.account.config.fetch(configPda);
+            assert.isFalse(config.paused);
+        });
+
     });
 
     describe("freeze thaw", () => {

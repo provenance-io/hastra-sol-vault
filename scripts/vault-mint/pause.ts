@@ -1,10 +1,7 @@
 import * as anchor from "@coral-xyz/anchor";
-import { Program } from "@coral-xyz/anchor";
-import { VaultMint } from "../../target/types/vault_mint";
+import {Program} from "@coral-xyz/anchor";
+import {VaultMint} from "../../target/types/vault_mint";
 import yargs from "yargs";
-import {
-    PublicKey,
-} from "@solana/web3.js";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
@@ -20,28 +17,19 @@ const args = yargs(process.argv.slice(2))
     .parseSync();
 
 const main = async () => {
-    const [configPda, bump] = anchor.web3.PublicKey.findProgramAddressSync(
+    const [configPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("config")],
         program.programId
     );
-    // bpf_loader_upgradeable program id
-    const BPF_LOADER_UPGRADEABLE_ID = new PublicKey(
-        "BPFLoaderUpgradeab1e11111111111111111111111"
-    );
-    // derive ProgramData PDA
-    const [programData] = PublicKey.findProgramAddressSync(
-        [program.programId.toBuffer()],
-        BPF_LOADER_UPGRADEABLE_ID
-    );
-
     console.log("Program ID:", program.programId.toBase58());
     console.log("Config PDA:", configPda.toBase58());
 
     // Call initialize
     await program.methods
         .pause(args.pause)
-        .accounts({
-            programData: programData,
+        .accountsStrict({
+            config: configPda,
+            signer: provider.wallet.publicKey,
         })
         .rpc()
         .then((tx) => {
