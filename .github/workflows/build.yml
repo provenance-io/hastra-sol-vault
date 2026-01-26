@@ -1,5 +1,8 @@
 name: Build
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [ main, develop ]
@@ -9,11 +12,11 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
@@ -28,4 +31,4 @@ jobs:
     - name: Build Docker image
       run: |
         chmod +x ./docker/build.sh
-        ./docker/build.sh 
+        ./docker/build.sh
