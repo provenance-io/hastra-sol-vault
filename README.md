@@ -688,3 +688,116 @@ After running `yarn validator:init`, you'll find:
 - `.local-validator/.env` - Environment variables
 
 These have all the values needed for the FE and BE services.
+
+## Converting Upgrade Authority to a Squads Multi Sig
+
+Initially the programs were deployed to devnet and mainnet using a vaulted but single
+signing key. This section describes how to convert to a Squads multi signature
+key for upgrade and deployment.
+
+This section will be using the Squads UI to set up and manage the Squad.
+
+### Hastra Devnet Squad Set Up
+
+A devnet Squad was created to manage the **devnet** programs. 
+
+Using a Squad owner account, connect with your Solana wallet to [Devnet Squads](devnet.squads.so). 
+
+The devnet Squad address is `FftEXgzqaJNm8A6ynAmyfixBpHZtEJNr22q4KvUydByB`
+
+#### Both Mint and Stake Programs Upgrade Authority Moved to Squad
+
+The **vault-mint** program `9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV` upgrade authority was transferred from
+`93cFkHJZR2AqjTJ1rqrAbvLsh5WqtKr6q8jh3LdH8tAq` to the Squad's vault PDA `ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K`
+using: 
+
+```bash
+$ solana program set-upgrade-authority 9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV \
+       --new-upgrade-authority ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K \
+       --skip-new-upgrade-authority-signer-check \
+       --keypair <Current Upgrade Auth Key Pair> \
+       --url devnet
+```
+
+The **vault-stake** program `97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY` upgrade authority was transferred from
+`93cFkHJZR2AqjTJ1rqrAbvLsh5WqtKr6q8jh3LdH8tAq` to the Squad's vault PDA `ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K`
+using: 
+
+```bash
+$ solana program set-upgrade-authority 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY \
+       --new-upgrade-authority ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K \
+       --skip-new-upgrade-authority-signer-check \
+       --keypair <Current Upgrade Auth Key Pair> \
+       --url devnet
+```
+
+### Creating a Squads Upgrade Request
+
+1. Build the programs:
+
+```bash
+$ anchor build
+```
+
+2. Write the program buffer to Solana:
+
+```bash
+$ solana program write-buffer target/deploy/vault_stake.so \
+  --keypair <KEY PAIR> \
+  --url devnet
+
+Buffer: 5tWAz76wZXCB3GFzpdswa7E9ZkVP6R9KrsmBZ9sV3fQX
+```
+
+Note the `Buffer` address.
+
+3. Transfer the the buffer address authority to the Squad vault PDA:
+
+```bash
+$ solana program set-buffer-authority 5tWAz76wZXCB3GFzpdswa7E9ZkVP6R9KrsmBZ9sV3fQX \
+  --new-buffer-authority ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K \
+  --keypair <KEY PAIR Used to create Buffer> \
+  --url devnet
+
+Account Type: Buffer
+Authority: ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K
+```
+
+4. Connect to [Devnet Squads](devnet.squads.so) with Squad owner and
+open the `FftEXgzqaJNm8A6ynAmyfixBpHZtEJNr22q4KvUydByB` Squad.
+
+5. Select **Developer | Programs** from the Squads menu.
+
+6. Click the Vault Stake program `97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY`
+
+7. Click **Add Upgrade** and fill in the upgrade name, the buffer address from Step 2 and click Next.
+   - You can use your address in the Buffer Refund to get the buffer rent back.
+
+8. The Upgrade will be enqueued. Select the Upgrade and click the **Upgrade** button and enter
+   a Description then click **Initiate Upgrade**.
+
+This will enqueue the upgrade in the Squads **Transactions** list. From there other Squad members must approve the upgrade.
+
+The next section describes how other Squad owners approve.
+
+### Approve the Upgrade Request
+
+In this step, the other Squads owner(s) approve the upgrade.
+
+1. Connect your wallet to [Devnet Squads](devnet.squads.so) and select the `FftEXgzqaJNm8A6ynAmyfixBpHZtEJNr22q4KvUydByB` Squad.
+
+2. Navigate to the **Transactions** page.
+
+3. In the Results card, Click the **Approve** button to just approve or also select _Approve and execte_ to approve the 
+   upgrade and execute it. Note that you will need SOL here.
+
+Once the Squad threshold is met, the **Execute** button becomes available in the Results card. Click it to execute the
+upgrade.
+
+Squads shows the transaction signature that contains the upgrade. For example: https://explorer.solana.com/tx/65f4dUN86TDLW5PmENhssfRAL3Fk7Gv5c2XNt6wsF2gx74xBLCtJhhRn2V9Zh6RimGvosDyXkrYshB6NyHaBdDLq?cluster=devnet
+
+
+
+
+
+
