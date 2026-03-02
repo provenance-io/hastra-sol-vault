@@ -2,11 +2,38 @@ import * as anchor from "@coral-xyz/anchor";
 import {Program} from "@coral-xyz/anchor";
 import {VaultMint} from "../../target/types/vault_mint";
 import {PublicKey} from "@solana/web3.js";
+import yargs from "yargs";
 import {getAssociatedTokenAddressSync} from "@solana/spl-token";
-import {allocationsToMerkleTree, makeLeaf, MINT_IDL} from "../cryptolib";
+import {
+    allocationsToMerkleTree,
+    makeLeaf, MINT_IDL
+} from "../cryptolib";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
+
+const args = yargs(process.argv.slice(2))
+    .option("epoch", {
+        type: "number",
+        description: "Epoch index",
+        required: true,
+    })
+    .option("reward_allocations", {
+        type: "string",
+        description: "Allocations object: {allocations: [{\"account\": \"3m7...sKf\", \"amount\": 1000}, ...]}",
+        required: true,
+    })
+    .option("mint", {
+        type: "string",
+        description: "Token that will be minted (e.g. wYLDS) upon validation of the claim proof",
+        required: true,
+    })
+    .option("amount", {
+        type: "number",
+        description: "Amount to claim from this epoch index",
+        required: false,
+    })
+    .parseSync();
 
 const program: Program<VaultMint> = new anchor.Program(MINT_IDL as anchor.Idl, provider) as Program<VaultMint>;
 
