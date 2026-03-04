@@ -1,10 +1,10 @@
 FROM solanafoundation/anchor:v0.31.1
 
-# Update Rust toolchain to match local development (1.90.0+).
+# Update Rust toolchain to match local development (pinned to 1.90.0 for reproducibility).
 # Use 'toolchain install' rather than 'rustup update' to avoid the cross-device
 # rename error (os error 18) that occurs when building amd64 images on Apple Silicon
 # via QEMU emulation. This is safe on all platforms including GHA.
-RUN rustup toolchain install stable --no-self-update && rustup default stable
+RUN rustup toolchain install 1.90.0 --no-self-update && rustup default 1.90.0
 
 # Update Solana CLI to latest stable. The base image's bundled version ships with
 # BPF platform tools that use Rust 1.79.0-dev, which is too old for indexmap >= 2.12
