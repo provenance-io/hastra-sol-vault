@@ -1,0 +1,120 @@
+name: Release
+
+# Triggered by pushing a version tag, e.g.: git tag v1.0.0 && git push origin v1.0.0
+#
+# Produces a GitHub Release containing:
+#   - vault_mint.so
+#   - vault_stake.so
+#   - checksums.txt  (SHA-256 of each .so)
+#
+# Use checksums.txt to verify that the buffer uploaded to Squads matches the
+# artifact compiled at this exact commit before approving the upgrade proposal.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write  # required to create GitHub releases and upload assets
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          pkg-config \
+          libudev-dev \
+          llvm \
+          libclang-dev \
+          protobuf-compiler \
+          libssl-dev
+
+    - uses: dtolnay/rust-toolchain@stable
+
+    - uses: Swatinem/rust-cache@v2
+
+    - name: Install Solana CLI
+      run: |
+        sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+        echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+
+    - name: Install avm
+      run: cargo install avm --locked --version 0.30.0
+
+    - name: Install Anchor
+      run: |
+        anchor_version=$(cat Anchor.toml | grep anchor_version | awk '{print $NF}' | tr -d '"')
+        avm install ${anchor_version}
+        avm use ${anchor_version}
+
+    - name: Set up Node.js and Yarn
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'yarn'
+
+    - name: Install yarn dependencies
+      run: |
+        corepack enable
+        yarn install --frozen-lockfile
+
+    - name: Build programs
+      run: anchor build
+
+    - name: Generate SHA-256 checksums
+      id: checksums
+      run: |
+        sha256sum target/deploy/vault_mint.so   > target/deploy/checksums.txt
+        sha256sum target/deploy/vault_stake.so >> target/deploy/checksums.txt
+        echo "Checksums:"
+        cat target/deploy/checksums.txt
+
+        # Expose individual hashes as outputs for the release body
+        MINT_HASH=$(sha256sum target/deploy/vault_mint.so | awk '{print $1}')
+        STAKE_HASH=$(sha256sum target/deploy/vault_stake.so | awk '{print $1}')
+        echo "mint_hash=$MINT_HASH"   >> $GITHUB_OUTPUT
+        echo "stake_hash=$STAKE_HASH" >> $GITHUB_OUTPUT
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        name: ${{ github.ref_name }}
+        tag_name: ${{ github.ref_name }}
+        files: |
+          target/deploy/vault_mint.so
+          target/deploy/vault_stake.so
+          target/deploy/checksums.txt
+        body: |
+          ## Program Artifacts — ${{ github.ref_name }}
+
+          Compiled from commit `${{ github.sha }}`.
+
+          | Program | SHA-256 |
+          |---------|---------|
+          | `vault_mint.so` | `${{ steps.checksums.outputs.mint_hash }}` |
+          | `vault_stake.so` | `${{ steps.checksums.outputs.stake_hash }}` |
+
+          ### Verifying a Squads upgrade
+
+          Before approving a program upgrade proposal in Squads, confirm that the
+          buffer written on-chain was built from this release:
+
+          ```bash
+          # Download the release artifact and verify its hash locally
+          sha256sum vault_mint.so
+          sha256sum vault_stake.so
+
+          # Compare against checksums.txt attached to this release
+          ```
+
+          The hash of the buffer written to the cluster must match the hash above.
+          Any discrepancy means the buffer was NOT built from this tagged release.

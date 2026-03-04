@@ -183,9 +183,16 @@ $ anchor build
 
 ## Build and Release
 
-> This section uses the `scripts/config.sh` script to execute commands with the correct environment variables set.
-> You can also run the commands directly in your terminal, but ensure you set the `ANCHOR_PROVIDER_URL` and `ANCHOR_WALLET` environment variables correctly. 
-> Refer to the `config.sh` script for examples.
+The deployment workflow is split into two interactive scripts that share a common configuration layer:
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/setup-tokens.sh` | **Part 1** — Create SPL tokens, token accounts, and Metaplex metadata |
+| `scripts/deploy.sh` | **Part 2** — Build programs, write upgrade buffers for Squads, initialize programs, set authorities |
+
+> Programs are **never deployed directly** from `deploy.sh`. Instead, the script writes a program buffer on-chain and prints the buffer address and SHA-256 hash so you can create a Squads upgrade proposal. This ensures every deployment goes through the M-of-N multisig approval process. See [Creating a Squads Upgrade Request](#creating-a-squads-upgrade-request) below.
+
+Both scripts persist selections to a network-specific history file (e.g. `devnet_vault.history`) so you don't have to re-enter values on every run.
 
 ### Generate a new keypair
 
@@ -203,19 +210,18 @@ refuse detail throw curtain spell journey grab shiver assume salute recycle tube
 ================================================================================
 ```
 
-### Fresh Rollout of the Protocol
+---
 
-#### Start ./scripts/config.sh
+## Part 1 — Token Setup (`scripts/setup-tokens.sh`)
+
+Run this script once when setting up a new deployment environment. It creates the SPL tokens and token accounts that the programs require, and registers their metadata on Metaplex.
+
+### Start `setup-tokens.sh`
 
 ```
-$ sh config.sh
+$ cd scripts && sh setup-tokens.sh
 
-Select Solana network (devnet, mainnet-beta, testnet) []: devnet
-
-Current settings in devnet_vault.history:
-
-sh config.sh
-Select Solana network (devnet, mainnet-beta, testnet) []: devnet
+Select Solana network (localnet, devnet, mainnet-beta, testnet) []: devnet
 Solana Keypair from config: /Users/jd/.config/solana/hastra-devnet-prime.json
 Solana RPC URL from config: https://api.devnet.solana.com
 Enter path to Solana wallet keypair [/Users/jd/.config/solana/hastra-devnet-prime.json]:
@@ -228,267 +234,265 @@ Keypair Path: /Users/jd/.config/solana/hastra-devnet-prime.json
 Commitment: confirmed
 
 Public Key:             HT9c4xkDT9bx2JyMfLrauNmg8BA7bjUm7qba1vdMsMrz (8.34021568 SOL)
+Vault Mint Program ID:  9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV
+Vault Stake Program ID: 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY
+Mint Token (wYLDS):     <not set>
+Vault Token (USDC):     <not set>
+Staking Token (PRIME):  <not set>
 
 Select an action:
- 1) Build Programs
- 2) Deploy Programs
- 3) Initialize Mint Program
- 4) Initialize Stake Program
- 5) Setup Metaplex
- 6) Set Mint Program Mint and Freeze Authorities
- 7) Set Stake Program Mint and Freeze Authorities
- 8) Show Accounts & PDAs
- 9) Create Mint Token
-10) Create Stake Token
-11) Create Mint Program Redeem Vault Token Account
-12) Create Stake Program Vault Token Account
-13) Exit
+1) Create Mint Token (wYLDS)
+2) Create Stake Token (PRIME)
+3) Create Mint Program Redeem Vault Token Account
+4) Create Stake Program Vault Token Account
+5) Setup Metaplex Metadata
+6) Show Accounts & PDAs
+7) Exit
 #?
 ```
 
-#### Choose option `9` Create Mint Token
+### Option `1` — Create Mint Token (wYLDS)
 
-This step creates a new mint token that will be minted when users deposit the vault token (e.g. USDC). When
-the program is initialized, the mint authority will be set to a PDA owned by the program.
-
-```
-Creating Mint Token...
-Mint Token: 2vEiPvsJjpctLv78HACy9uQB4nm88oX8fbbfW7MaWiaB
-
-Config File: /Users/jd/.config/solana/cli/config.yml
-RPC URL: https://api.devnet.solana.com
-WebSocket URL: wss://api.devnet.solana.com/ (computed)
-Keypair Path: /Users/jd/.config/solana/hastra-devnet-id.json
-Commitment: confirmed
-```
-
-#### Choose Option `11` Create Mint Program Redeem Vault Token Account
-
-This step creates the token account that will hold the vault tokens when users redeem their mint tokens.
-When the program is initialized, the vault authority PDA will be set as the owner of this token account.
+Creates the SPL token that is minted when users deposit vault tokens (e.g. USDC). The mint authority is initially your wallet; it is transferred to a program PDA after initialization.
 
 ```
-Creating Redeem Vault Token Account (ATA)...
-Redeem Vault Token Account: 717cmnRqL1mRYRWVqFjrNKDHtQS3neLPuAbJBZaa5ah1
-
-Config File: /Users/jd/.config/solana/cli/config.yml
-RPC URL: https://api.devnet.solana.com
-WebSocket URL: wss://api.devnet.solana.com/ (computed)
-Keypair Path: /Users/jd/.config/solana/hastra-devnet-id.json
-Commitment: confirmed
+Creating Mint Program mint token...
+Mint Program mint token: 2vEiPvsJjpctLv78HACy9uQB4nm88oX8fbbfW7MaWiaB
 ```
 
-#### Choose option `10` Create Stake Token
+### Option `3` — Create Mint Program Redeem Vault Token Account
 
-This step creates a new stake token that will be minted when users deposit the mint token (e.g. wYLDS). When
-the program is initialized, the stake token mint authority will be set to a PDA owned by the program.
-
-```
-Creating Stake Token...
-Mint Token: 2vEiPvsJjpctLv78HACy9uQB4nm88oX8fbbfW7MaWiaB
-
-Config File: /Users/jd/.config/solana/cli/config.yml
-RPC URL: https://api.devnet.solana.com
-WebSocket URL: wss://api.devnet.solana.com/ (computed)
-Keypair Path: /Users/jd/.config/solana/hastra-devnet-id.json
-Commitment: confirmed
-```
-
-#### Choose Option `12` Create Stake Program Vault Token Account
-
-This step creates the token account that will hold the staking program vaulted mint token (e.g. wYLDS).
-When the program is initialized, the vault authority PDA will be set as the owner of this token account. This token account is effectively the supply pool for staked mint tokens.
+Creates the token account that holds vault tokens (USDC) during the redeem process. After initialization the redeem vault authority PDA controls this account.
 
 ```
-Creating Redeem Vault Token Account (ATA)...
-Redeem Vault Token Account: 717cmnRqL1mRYRWVqFjrNKDHtQS3neLPuAbJBZaa5ah1
-
-Config File: /Users/jd/.config/solana/cli/config.yml
-RPC URL: https://api.devnet.solana.com
-WebSocket URL: wss://api.devnet.solana.com/ (computed)
-Keypair Path: /Users/jd/.config/solana/hastra-devnet-id.json
-Commitment: confirmed
+Creating Mint Program redeem vault ATA...
+Mint Program redeem vault ATA: 717cmnRqL1mRYRWVqFjrNKDHtQS3neLPuAbJBZaa5ah1
 ```
 
-#### Choose Option `5` to Setup Tokens on Metaplex
+### Option `2` — Create Stake Token (PRIME)
 
-Sets up the mint and stake tokens on Metaplex. You will be prompted for the name, symbol, and metadata URL. Metaplex is used to store the token's metadata, including the image that will be displayed in wallets as well as the denomination and display decimals.
-
-This step sets up both the mint and stake tokens on Metaplex. You will be prompted for the name, symbol, and metadata URL for each token.
+Creates the SPL token minted when users deposit the mint token (wYLDS) into the staking program. The mint authority is transferred to a program PDA after initialization.
 
 ```
-Enter Metaplex Token Name []: wYLDSdev
-Enter Metaplex Token Symbol []: wYLDSdev
-Enter Metaplex Token Metadata URL (must be a valid JSON URL) []: https://storage.googleapis.com/hastra-cdn-prod/spl/wyldsdevnet.meta.json
-yarn run v1.22.19
-$ /Users/jd/provenanceio/git/hastra-sol-vault/node_modules/.bin/ts-node scripts/register_meta.ts --mint 2vEiPvsJjpctLv78HACy9uQB4nm88oX8fbbfW7MaWiaB --keypair /Users/jd/.config/solana/hastra-devnet-id.json --name wYLDSdev --symbol wYLDSdev --token_meta_url https://storage.googleapis.com/hastra-cdn-prod/spl/wyldsdevnet.meta.json
-Using mint 2vEiPvsJjpctLv78HACy9uQB4nm88oX8fbbfW7MaWiaB current key owner: GusaXhaH11VvYyFvsEiaaaBw3oFUjgmVoJZswzb9cnqc
-Using token name: wYLDSdev
-Using token symbol: wYLDSdev
-Using token meta_url: https://storage.googleapis.com/hastra-cdn-prod/spl/wyldsdevnet.meta.json
-Using Solana RPC: https://api.devnet.solana.com
-Transaction Result: {"signature":{"0":142,"1":15,"2":138,"3":177,"4":23,"5":221,"6":188,"7":161,"8":24,"9":179,"10":225,"11":66,"12":33,"13":254,"14":229,"15":124,"16":24,"17":184,"18":227,"19":249,"20":89,"21":161,"22":85,"23":201,"24":79,"25":66,"26":177,"27":22,"28":46,"29":217,"30":32,"31":63,"32":40,"33":209,"34":55,"35":223,"36":123,"37":20,"38":4,"39":179,"40":2,"41":3,"42":244,"43":159,"44":219,"45":222,"46":183,"47":104,"48":202,"49":57,"50":139,"51":145,"52":114,"53":54,"54":213,"55":254,"56":173,"57":3,"58":128,"59":40,"60":175,"61":96,"62":102,"63":7},"result":{"context":{"slot":410073982},"value":{"err":null}}}
+Creating Stake Program mint token...
+Stake Program mint token: 6vTKjkQ5srGZPyfjKf3nRa97Lf9hQn6Yx7Gs6SB8y7Ht
+```
+
+### Option `4` — Create Stake Program Vault Token Account
+
+Creates the token account that holds staked wYLDS. This is the supply pool for staked mint tokens; its authority is set to a program PDA after initialization.
+
+```
+Creating Stake Program vault token ATA...
+Stake Program vault token ATA: 94DMQyHTpyvGvGpjmukrRAxXwEhZfmiKyoSu12seHFYz
+```
+
+### Option `5` — Setup Metaplex Metadata
+
+Registers on-chain metadata (name, symbol, image URL) for both the mint and stake tokens. You are prompted for each token in sequence.
+
+```
+Enter Mint Token Metaplex Token Name []: wYLDSdev
+Enter Mint Token Metaplex Token Symbol []: wYLDSdev
+Enter Mint Token Metaplex Token Metadata URL (must be a valid JSON URL) []: https://storage.googleapis.com/hastra-cdn-prod/spl/wyldsdevnet.meta.json
+...
+Enter Stake Token Metaplex Token Name []: PRIMEdev
+Enter Stake Token Metaplex Token Symbol []: PRIMEdev
+Enter Stake Token Metaplex Token Metadata URL (must be a valid JSON URL) []: https://storage.googleapis.com/hastra-cdn-prod/spl/primedevnet.meta.json
 ✨  Done in 15.96s.
 ```
 
-#### Choose Option `1` to Build Program
+### Option `6` — Show Accounts & PDAs
 
-Now that the requisite tokens are created, we can build the program. This will also generate the IDL and typescript types
-that are used by the scripts and can be used by other frontends.
+Prints all program IDs, token addresses, token accounts, and derived PDAs in one view. Useful for confirming state before moving to Part 2.
 
-> Be sure to set the location of any FEs that use the IDL and types. In this deployment, the `hastra-fi-nexus-flow` frontend 
-> is used, so we set the paths accordingly.
+---
+
+## Part 2 — Build & Deploy (`scripts/deploy.sh`)
+
+Run this script to build programs, write upgrade buffers for Squads, and initialize programs after the first Squads-executed deployment.
+
+### Start `deploy.sh`
+
+```
+$ cd scripts && sh deploy.sh
+
+Select Solana network (localnet, devnet, mainnet-beta, testnet) []: devnet
+...
+
+Public Key:             HT9c4xkDT9bx2JyMfLrauNmg8BA7bjUm7qba1vdMsMrz (8.34021568 SOL)
+Vault Mint Program ID:  9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV
+Vault Stake Program ID: 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY
+Squads Vault:           ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K
+Mint Buffer:            <none>
+Stake Buffer:           <none>
+
+Select an action:
+ 1) Build Programs
+ 2) Write Vault Mint Buffer (for Squads upgrade)
+ 3) Write Vault Stake Buffer (for Squads upgrade)
+ 4) Write All Buffers
+ 5) Initialize Mint Program
+ 6) Initialize Stake Program
+ 7) Set Mint Program Mint and Freeze Authorities
+ 8) Set Stake Program Mint and Freeze Authorities
+ 9) Configure Squads Vault Address
+10) Show Accounts & PDAs
+11) Exit
+#?
+```
+
+### Option `9` — Configure Squads Vault Address
+
+Set the Squads vault PDA once so subsequent buffer writes can optionally transfer buffer authority automatically.
+
+```
+Enter Squads vault address (used as upgrade authority) []: ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K
+```
+
+This value is persisted to the network history file.
+
+### Option `1` — Build Programs
+
+Runs `anchor build` and prompts for the destination paths to copy the generated IDL and TypeScript types to the frontend project (e.g. `hastra-fi-nexus-flow`).
 
 ```
 ...snip...
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.88s
-     Running unittests src/lib.rs (/Users/jd/provenanceio/git/hastra-sol-vault/target/debug/deps/hastra_sol_vault_mint-f6c84dffe2fc9617)
+    Finished `release` profile target(s) in 95.12s
 
-Enter destination for hastra_sol_vault_mint.ts TYPE [../../hastra-fi-nexus-flow/src/types/hastra-sol-vault.ts]:
-Enter destination for hastra_sol_vault_mint.ts IDL  [../../hastra-fi-nexus-flow/src/types/idl/hastra-sol-vault.ts]:
+Enter destination for vault_mint.ts TYPE [../../hastra-fi-nexus-flow/src/types/vault-mint.ts]:
+Enter destination for vault_mint.ts IDL  [../../hastra-fi-nexus-flow/src/types/idl/vault-mint.ts]:
+Copied to ../../hastra-fi-nexus-flow/src/types/vault-mint.ts
+Copied to ../../hastra-fi-nexus-flow/src/types/idl/vault-mint.ts
 
-Copied to ../../hastra-fi-nexus-flow/src/types/hastra-sol-vault.ts
-Copied to ../../hastra-fi-nexus-flow/src/types/idl/hastra-sol-vault.ts
-
-Config File: /Users/jd/.config/solana/cli/config.yml
-RPC URL: https://api.devnet.solana.com
-WebSocket URL: wss://api.devnet.solana.com/ (computed)
-Keypair Path: /Users/jd/.config/solana/hastra-devnet-id.json
-Commitment: confirmed
-
-Public Key: GusaXhaH11VvYyFvsEiaaaBw3oFUjgmVoJZswzb9cnqc (4.8834078 SOL)
-Program ID: DyB1GKA83V8byG11QfwxZWdysbvVo5ySqjvwGZ471rqs
+Enter destination for vault_stake.ts TYPE [../../hastra-fi-nexus-flow/src/types/vault-stake.ts]:
+Enter destination for vault_stake.ts IDL  [../../hastra-fi-nexus-flow/src/types/idl/vault-stake.ts]:
+Copied to ../../hastra-fi-nexus-flow/src/types/vault-stake.ts
+Copied to ../../hastra-fi-nexus-flow/src/types/idl/vault-stake.ts
 ```
 
-#### Choose Option `2` to Deploy Programs
+### Option `2` / `3` / `4` — Write Program Buffer(s)
 
-When the program builds successfully, you can deploy it to the Solana cluster. This will upload the program binary and set the program ID. 
-The program ID, specific to your Solana ID, will be saved to the local anchor config as well as updated in the `lib.rs` file.
+Writes the compiled `.so` to an on-chain buffer account, prints the buffer address and SHA-256 hash, and optionally transfers buffer authority to the configured Squads vault. Use this instead of `solana program deploy`.
 
 ```
-Deploying Programs...
-Getting Program IDs...
-Updated ../programs/vault-mint/src/lib.rs with new Program ID BCEGzDnzedZJi9ZTdTcYhaFjhKWtXBYLxsW1vvNaiM9Z
-Saving Deploy Keypair to local config /Users/jd/.config/solana
-Updated ../programs/vault-stake/src/lib.rs with new Program ID 5DQa7eRDF6gLYV4w5UQNG9MwyqvXWW3vsA3ApwQMEaCG
-Saving Deploy Keypair to local config /Users/jd/.config/solana
-   Compiling vault-mint v0.1.0 (/Users/jd/provenanceio/git/hastra-sol-vault/programs/vault-mint)
-      
- ...snip...
+Writing Vault Mint Program to buffer...
+Program file: ../target/deploy/vault_mint.so
+SHA-256: a3f2c1d4e5b6789012345678abcdef01234567890abcdef1234567890abcdef12
 
-Program Id: BCEGzDnzedZJi9ZTdTcYhaFjhKWtXBYLxsW1vvNaiM9Z
+============================================================
+  Vault Mint Program Buffer Written
+============================================================
+  Buffer Address : 5tWAz76wZXCB3GFzpdswa7E9ZkVP6R9KrsmBZ9sV3fQX
+  SHA-256        : a3f2c1d4e5b6789012345678abcdef01234567890abcdef1234567890abcdef12
+============================================================
 
-Signature: 66dHN6cn7XkHBUqz32UisyWZ3CH7qbq59QSayZTU6vdkruy5VAyHUHmu3CgTEcYfhYbcaVs7u9rBan2B2FA18zKv
+Next steps:
+  1. Verify the SHA-256 above matches the GitHub release artifact.
+  2. Go to devnet.squads.so (or squads.so for mainnet).
+  3. Create a Program Upgrade proposal using:
+       Buffer Address : 5tWAz76wZXCB3GFzpdswa7E9ZkVP6R9KrsmBZ9sV3fQX
+       Program ID     : 9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV
+       Buffer Refund  : your wallet address
 
-Mint program deployed with ID: BCEGzDnzedZJi9ZTdTcYhaFjhKWtXBYLxsW1vvNaiM9Z
-Program Id: 5DQa7eRDF6gLYV4w5UQNG9MwyqvXWW3vsA3ApwQMEaCG
-
-Signature: QsjjS4UmuRfVxeyqrc4QGdPiRivbGUMX4N4WcjNj9Xsdc2p88tEVxUmw4yo16dudECPhwK3j1w6oPijkhdbTu7f
-
-Stake program deployed with ID: 5DQa7eRDF6gLYV4w5UQNG9MwyqvXWW3vsA3ApwQMEaCG
+Transfer buffer authority to Squads vault now? [y/N]: y
+Buffer authority transferred to ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K
 ```
 
-### Choose Option `3` to Initialize Mint Program
+> The SHA-256 printed here must match the hash in the GitHub release artifact. See [GitHub Release](#github-release) below.
 
-Now that the program is deployed, we can initialize it. This will set up the config account and set the various PDAs that the program will use to control the vault and mint tokens. You will be prompted for redeem vault token account (if you didn't set it up in the previous steps), freeze administrators, and rewards administrators.
+### Option `5` — Initialize Mint Program
+
+Run this **after** Squads executes the first deployment. Sets up the config account, PDAs, freeze/rewards administrators, and the allowed caller program ID.
 
 ```
 Enter comma-separated list of Freeze Administrator addresses []: GrzQ4vW3UviEDKN7aHGroayoJC3B87ovcSofyt2Q48KG,56NYkGD9TCijuYgfeiHTbMN9sqcr9uH2CeV1GnSCy4Xn
 Enter comma-separated list of Rewards Administrator addresses []: GrzQ4vW3UviEDKN7aHGroayoJC3B87ovcSofyt2Q48KG,56NYkGD9TCijuYgfeiHTbMN9sqcr9uH2CeV1GnSCy4Xn
-yarn run v1.22.19
-$ /Users/jd/provenanceio/git/hastra-sol-vault/node_modules/.bin/ts-node scripts/vault-mint/initialize.ts --vault 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU --vault_token_account 6RgMF1zd7wttDhWRpZ3LYWBA81W5dK5tpx4mz34CjWaR --redeem_vault_token_account E1KSij8aQWj1e7mpiz63TH4M2Wv2iCzBFQzTpTKu62yp --mint EcqKZtgqAdtxjACxinNUrKUXJVuVARwc1YCFNQUGPz6 --freeze_administrators GrzQ4vW3UviEDKN7aHGroayoJC3B87ovcSofyt2Q48KG,56NYkGD9TCijuYgfeiHTbMN9sqcr9uH2CeV1GnSCy4Xn --rewards_administrators GrzQ4vW3UviEDKN7aHGroayoJC3B87ovcSofyt2Q48KG,56NYkGD9TCijuYgfeiHTbMN9sqcr9uH2CeV1GnSCy4Xn --allow_mint_program_caller_id 5DQa7eRDF6gLYV4w5UQNG9MwyqvXWW3vsA3ApwQMEaCG
-Program ID: BCEGzDnzedZJi9ZTdTcYhaFjhKWtXBYLxsW1vvNaiM9Z
+Program ID: 9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV
 Vault (accepted token): 4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
 Mint (token to be minted): EcqKZtgqAdtxjACxinNUrKUXJVuVARwc1YCFNQUGPz6
-Vault Token Account: 6RgMF1zd7wttDhWRpZ3LYWBA81W5dK5tpx4mz34CjWaR
 Config PDA: BY7kJQ7H41DbzZZtZaoWh5eYYQx1RXqAur6B3BM1P6ef
 Mint Authority PDA: BxW9j6D5UCdMCAwGXYBmuvGZZw8oiMoLkZT29rpMrzp2
 Freeze Authority PDA: 4cpL9meEt6hPuG2SBbDr4jUxXDtaGTVqm7pxzdTd8iZV
-Freeze Administrators: [
-  'GrzQ4vW3UviEDKN7aHGroayoJC3B87ovcSofyt2Q48KG',
-  '56NYkGD9TCijuYgfeiHTbMN9sqcr9uH2CeV1GnSCy4Xn'
-]
-Allowed Mint Program ID: 5DQa7eRDF6gLYV4w5UQNG9MwyqvXWW3vsA3ApwQMEaCG
-Rewards Administrators: [
-  'GrzQ4vW3UviEDKN7aHGroayoJC3B87ovcSofyt2Q48KG',
-  '56NYkGD9TCijuYgfeiHTbMN9sqcr9uH2CeV1GnSCy4Xn'
-]
-Redeem Vault Token Account: E1KSij8aQWj1e7mpiz63TH4M2Wv2iCzBFQzTpTKu62yp
-Redeem Vault Authority PDA: PCx64YjYWtenMstmyJ7sRz9AoH8jFXb4iyBZxGbFCHU
-Program Data PDA: CNViEm1ygkq139ecdFuHczt1fhe4Gow5ZMVs2qPECsb9
 Transaction: 3fU2zPujqqjfXD4bG2hjxSEFvvpYQMzZFRAvBkbt8tzce3H6q8NXXW6FBtJYmDQgFLGCLWHYxU4eJCqenBpqyzJF
 Done in 3.10s.
 ```
 
-### Choose Option `4` to Initialize Stake Program
+### Option `6` — Initialize Stake Program
 
-Now that the program is deployed, we can initialize it. This will set up the config account and set the various PDAs that the program will use to control the vault and mint tokens. You will be prompted for redeem vault token account (if you didn't set it up in the previous steps), freeze administrators, and rewards administrators.
+Run this after the stake program's first Squads-executed deployment. Configures the unbonding period, administrators, and vault PDAs.
 
 ```
 Enter Unbonding Period (in seconds) []: 300
-yarn run v1.22.19
-$ /Users/jd/provenanceio/git/hastra-sol-vault/node_modules/.bin/ts-node scripts/vault-stake/initialize.ts --vault EcqKZtgqAdtxjACxinNUrKUXJVuVARwc1YCFNQUGPz6 --vault_token_account 94DMQyHTpyvGvGpjmukrRAxXwEhZfmiKyoSu12seHFYz --mint 6vTKjkQ5srGZPyfjKf3nRa97Lf9hQn6Yx7Gs6SB8y7Ht --unbonding_period 300 --freeze_administrators GrzQ4vW3UviEDKN7aHGroayoJC3B87ovcSofyt2Q48KG,56NYkGD9TCijuYgfeiHTbMN9sqcr9uH2CeV1GnSCy4Xn --rewards_administrators GrzQ4vW3UviEDKN7aHGroayoJC3B87ovcSofyt2Q48KG,56NYkGD9TCijuYgfeiHTbMN9sqcr9uH2CeV1GnSCy4Xn
-Program ID: 5DQa7eRDF6gLYV4w5UQNG9MwyqvXWW3vsA3ApwQMEaCG
+Program ID: 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY
 Vault (accepted token): EcqKZtgqAdtxjACxinNUrKUXJVuVARwc1YCFNQUGPz6
 Mint (token to be minted): 6vTKjkQ5srGZPyfjKf3nRa97Lf9hQn6Yx7Gs6SB8y7Ht
-Unbonding Period (seconds): <BN: 12c>
-Vault Token Account: 94DMQyHTpyvGvGpjmukrRAxXwEhZfmiKyoSu12seHFYz
+Unbonding Period (seconds): 300
 Config PDA: Bdjt3yVjegtwfXH4qzSUCMvT1avMfzKzrUXf4ZV8jVR2
 Vault Authority PDA: fByzStfcJmRWnmk7ySxcW7JyPLhzVnQawVtwnknrHRg
-Mint Authority PDA: HyKvZbsURg9gd2zkfzjdLkGYhV7uLymzfwkbwa1kWhwa
-Freeze Authority PDA: DMqBGKYzHDLbmj3XgjDHoQNghTASiyAdwH7UqY985Pib
-Freeze Administrators: [
-  'GrzQ4vW3UviEDKN7aHGroayoJC3B87ovcSofyt2Q48KG',
-  '56NYkGD9TCijuYgfeiHTbMN9sqcr9uH2CeV1GnSCy4Xn'
-]
-Rewards Administrators: [
-  'GrzQ4vW3UviEDKN7aHGroayoJC3B87ovcSofyt2Q48KG',
-  '56NYkGD9TCijuYgfeiHTbMN9sqcr9uH2CeV1GnSCy4Xn'
-]
-Program Data PDA: JDaNmDuTC1fEAYhnt2E6YpXgNsvFvJUW3VsqN46maxfh
 Transaction: 3SJbVXBpGRCSboKRy5mWAV9Qpdc7nmJYCfTdrQRxG6i14f5MV7pGKuaySH65UYa615zrgV3EKYSseL59eenfVjGZ
 Done in 3.09s.
 ```
 
-#### Choose Option `6` Set Mint Program Mint and Freeze Authorities
+### Option `7` — Set Mint Program Mint and Freeze Authorities
 
-This step sets the mint and freeze authorities to the PDAs created during mint program initialization. This ensures that only the program can mint new tokens and freeze accounts holding the mint token.
+Transfers the mint and freeze authority of the wYLDS token to the program PDAs. Run once after initialization so that only the on-chain program can mint or freeze.
 
 ```
 Setting Mint Program mint authority to BxW9j6D5UCdMCAwGXYBmuvGZZw8oiMoLkZT29rpMrzp2
-Updating EcqKZtgqAdtxjACxinNUrKUXJVuVARwc1YCFNQUGPz6
-  Current mint: HT9c4xkDT9bx2JyMfLrauNmg8BA7bjUm7qba1vdMsMrz
-  New mint: BxW9j6D5UCdMCAwGXYBmuvGZZw8oiMoLkZT29rpMrzp2
-
 Signature: JLWN8kuypcM8gEAvnvQBQvKPsLFP8URec97dJMYes8myHt3qvCtYZMMNVbaDBSYaXnxY2K32gwmmEmrfeirqYAm
 
 Setting Mint Program freeze authority to 4cpL9meEt6hPuG2SBbDr4jUxXDtaGTVqm7pxzdTd8iZV
-Updating EcqKZtgqAdtxjACxinNUrKUXJVuVARwc1YCFNQUGPz6
-  Current freeze: HT9c4xkDT9bx2JyMfLrauNmg8BA7bjUm7qba1vdMsMrz
-  New freeze: 4cpL9meEt6hPuG2SBbDr4jUxXDtaGTVqm7pxzdTd8iZV
-
 Signature: q8ckEeRm6GcWJbCfEV3DTW4hVDiarbxM1rV8HdWqyVojVeQ7b9A2HoBcjgT7ZsY2djfeNVEgyNyKBTuEg6yJ6SU
 ```
 
-#### Choose Option `7` Set Stake Program Mint and Freeze Authorities
+### Option `8` — Set Stake Program Mint and Freeze Authorities
 
-This step sets the mint and freeze authorities to the PDAs created during staking program initialization. This ensures that only the staking program can mint new staking tokens and freeze accounts holding the stake token.
+Transfers the mint and freeze authority of the PRIME token to the stake program PDAs.
 
 ```
 Setting Stake Program mint authority to HyKvZbsURg9gd2zkfzjdLkGYhV7uLymzfwkbwa1kWhwa
-Updating 6vTKjkQ5srGZPyfjKf3nRa97Lf9hQn6Yx7Gs6SB8y7Ht
-  Current mint: HT9c4xkDT9bx2JyMfLrauNmg8BA7bjUm7qba1vdMsMrz
-  New mint: HyKvZbsURg9gd2zkfzjdLkGYhV7uLymzfwkbwa1kWhwa
-
 Signature: 3ME5sE2EJT41GjmUWrSZsE6tspdDd7x7GjrzPTZ5WaD62shJSGSLLMv9gEYPzq6YCcRHMEgH9xmx2Ks6rqTiG4kw
 
 Setting Freeze Authority to DMqBGKYzHDLbmj3XgjDHoQNghTASiyAdwH7UqY985Pib
-Updating 6vTKjkQ5srGZPyfjKf3nRa97Lf9hQn6Yx7Gs6SB8y7Ht
-  Current freeze: HT9c4xkDT9bx2JyMfLrauNmg8BA7bjUm7qba1vdMsMrz
-  New freeze: DMqBGKYzHDLbmj3XgjDHoQNghTASiyAdwH7UqY985Pib
-
 Signature: Nchp5Tdd5L8gPu1xheqTAjHP9LoaZYjwQw2D8D5dE89eVna8Rqrp18KvmtCTvfy5ZwRmaxbHzaxYDRgxw8xr1oa
 ```
+
+---
+
+## GitHub Release
+
+The `.github/workflows/release.yml` workflow triggers when a version tag is pushed. It builds both programs, computes SHA-256 checksums, and publishes a GitHub Release containing the `.so` artifacts and a `checksums.txt` file.
+
+### Create a Release
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+The release will contain:
+
+| File | Description |
+|------|-------------|
+| `vault_mint.so` | Compiled vault-mint program binary |
+| `vault_stake.so` | Compiled vault-stake program binary |
+| `checksums.txt` | SHA-256 of each `.so` |
+
+### Verify a Buffer Before Approving in Squads
+
+Before approving a Squads upgrade proposal, confirm the buffer on-chain was built from the tagged release:
+
+```bash
+# Download the .so from the GitHub release and hash it locally
+shasum -a 256 vault_mint.so
+
+# Compare against the hash printed by deploy.sh when the buffer was written,
+# and against checksums.txt attached to the release.
+# All three must match before approving the proposal.
+```
+
+Any discrepancy means the buffer was **not** built from the tagged release and the upgrade should be rejected.
 
 ### Mint Program Token and Token Accounts
 
@@ -733,6 +737,10 @@ $ solana program set-upgrade-authority 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKE
 
 ### Creating a Squads Upgrade Request
 
+Steps 1–3 (build, write buffer, transfer buffer authority) are handled by `scripts/deploy.sh`. Run the script and select **Build Programs** then **Write All Buffers**. The script prints the buffer address and SHA-256 hash, and offers to transfer buffer authority to the configured Squads vault automatically.
+
+If you prefer to run the steps manually:
+
 1. Build the programs:
 
 ```bash
@@ -749,9 +757,9 @@ $ solana program write-buffer target/deploy/vault_stake.so \
 Buffer: 5tWAz76wZXCB3GFzpdswa7E9ZkVP6R9KrsmBZ9sV3fQX
 ```
 
-Note the `Buffer` address.
+Note the `Buffer` address. Record its SHA-256 and verify it matches the [GitHub release](#github-release) artifact before proceeding.
 
-3. Transfer the the buffer address authority to the Squad vault PDA:
+3. Transfer the buffer address authority to the Squad vault PDA:
 
 ```bash
 $ solana program set-buffer-authority 5tWAz76wZXCB3GFzpdswa7E9ZkVP6R9KrsmBZ9sV3fQX \

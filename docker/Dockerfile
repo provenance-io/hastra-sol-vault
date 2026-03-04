@@ -1,7 +1,22 @@
-FROM solanafoundation/anchor:v0.32.1
+FROM solanafoundation/anchor:v0.31.1
 
-# Update node version to 20.18.0
-RUN nvm install v20.18.0
+# Update Rust toolchain to match local development (pinned to 1.90.0 for reproducibility).
+# Use 'toolchain install' rather than 'rustup update' to avoid the cross-device
+# rename error (os error 18) that occurs when building amd64 images on Apple Silicon
+# via QEMU emulation. This is safe on all platforms including GHA.
+RUN rustup toolchain install 1.90.0 --no-self-update && rustup default 1.90.0
+
+# Update Solana CLI to latest stable. The base image's bundled version ships with
+# BPF platform tools that use Rust 1.79.0-dev, which is too old for indexmap >= 2.12
+# (requires rustc >= 1.82). Installing a newer release updates the platform tools.
+RUN sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+ENV PATH=/root/.local/share/solana/install/active_release/bin:$PATH
+
+# nvm is a shell function; source it explicitly and install the required Node version.
+# Update PATH via ENV so all subsequent RUN steps use v20.19.0 instead of the
+# base image default (20.18.0), which is incompatible with yargs@18.
+RUN bash -c "source /root/.nvm/nvm.sh && nvm install v20.19.0 && nvm alias default v20.19.0"
+ENV PATH=/root/.nvm/versions/node/v20.19.0/bin:$PATH
 
 # Set working directory
 WORKDIR /workspace
@@ -9,7 +24,8 @@ WORKDIR /workspace
 # Copy package files first for better caching
 COPY package.json yarn.lock ./
 COPY Cargo.toml Cargo.lock ./
-COPY programs/*/Cargo.toml ./programs/
+COPY programs/vault-mint/Cargo.toml ./programs/vault-mint/
+COPY programs/vault-stake/Cargo.toml ./programs/vault-stake/
 
 # Install Node.js dependencies
 RUN yarn install --frozen-lockfile
