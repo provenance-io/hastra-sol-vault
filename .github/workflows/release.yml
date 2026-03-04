@@ -56,8 +56,16 @@ jobs:
         avm install ${anchor_version}
         avm use ${anchor_version}
 
+    - name: Set up Node.js and Yarn
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'yarn'
+
     - name: Install yarn dependencies
-      run: yarn install --frozen-lockfile
+      run: |
+        corepack enable
+        yarn install --frozen-lockfile
 
     - name: Build programs
       run: anchor build
