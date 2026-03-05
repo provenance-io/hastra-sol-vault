@@ -48,7 +48,7 @@ jobs:
         echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
 
     - name: Install avm
-      run: cargo install avm --locked --version 0.30.0
+      run: cargo install --git https://github.com/coral-xyz/anchor avm --force
 
     - name: Install Anchor
       run: |
