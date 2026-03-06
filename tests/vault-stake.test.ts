@@ -57,8 +57,6 @@ describe("vault-stake", () => {
     let freezeAdmin: Keypair;
     let rewardsAdmin: Keypair;
 
-    let unbondingPeriod: BN;
-
     let publishRewardsId = 0;
 
     const ONE_BIG_SHARE = createBigInt(1_000_000);
@@ -177,8 +175,6 @@ describe("vault-stake", () => {
             [Buffer.from("mint_authority")],
             mintProgram.programId
         );
-
-        unbondingPeriod = new BN(10); // seconds
 
         // Airdrop SOL
         await provider.connection.requestAirdrop(user.publicKey, 100 * LAMPORTS_PER_SOL);
@@ -383,7 +379,7 @@ describe("vault-stake", () => {
             const tooManyAdmins = Array(6).fill(Keypair.generate().publicKey);
             try {
                 await program.methods
-                    .initialize(unbondingPeriod, tooManyAdmins, [rewardsAdmin.publicKey])
+                    .initialize(tooManyAdmins, [rewardsAdmin.publicKey])
                     .accounts({
                         signer: provider.wallet.publicKey,
                         vaultTokenAccount: vaultTokenAccount,
@@ -402,26 +398,7 @@ describe("vault-stake", () => {
             const tooManyAdmins = Array(6).fill(Keypair.generate().publicKey);
             try {
                 await program.methods
-                    .initialize(unbondingPeriod, [freezeAdmin.publicKey], tooManyAdmins)
-                    .accounts({
-                        signer: provider.wallet.publicKey,
-                        vaultTokenAccount: vaultTokenAccount,
-                        vaultTokenMint: vaultedToken,
-                        mint: mintedToken,
-                        programData: programDataPda,
-                    })
-                    .rpc();
-                assert.fail("Should have thrown error");
-            } catch (err) {
-                expect(err).to.exist;
-            }
-        });
-
-        it("fails with invalid unbonding period", async () => {
-            const tooManyAdmins = Array(6).fill(Keypair.generate().publicKey);
-            try {
-                await program.methods
-                    .initialize(new BN(0), [freezeAdmin.publicKey], tooManyAdmins)
+                    .initialize([freezeAdmin.publicKey], tooManyAdmins)
                     .accounts({
                         signer: provider.wallet.publicKey,
                         vaultTokenAccount: vaultTokenAccount,
@@ -438,7 +415,7 @@ describe("vault-stake", () => {
 
         it("initializes the vault config", async () => {
             await program.methods
-                .initialize(unbondingPeriod, [freezeAdmin.publicKey], [rewardsAdmin.publicKey])
+                .initialize([freezeAdmin.publicKey], [rewardsAdmin.publicKey])
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultAuthority: vaultAuthorityPda,
@@ -460,14 +437,14 @@ describe("vault-stake", () => {
             assert.ok(config.freezeAdministrators[0].equals(freezeAdmin.publicKey));
             assert.equal(config.rewardsAdministrators.length, 1);
             assert.ok(config.rewardsAdministrators[0].equals(rewardsAdmin.publicKey));
-            assert.ok(config.unbondingPeriod.eq(unbondingPeriod));
+            assert.equal(config.unbondingPeriod.toNumber(), 0, "unbondingPeriod deprecated field should be 0");
             assert.ok(!config.paused);
         });
 
         it("fails when called twice", async () => {
             try {
                 await program.methods
-                    .initialize(unbondingPeriod, [freezeAdmin.publicKey], [rewardsAdmin.publicKey])
+                    .initialize([freezeAdmin.publicKey], [rewardsAdmin.publicKey])
                     .accounts({
                         signer: provider.wallet.publicKey,
                         vaultTokenAccount: vaultTokenAccount,
@@ -603,39 +580,20 @@ describe("vault-stake", () => {
             assert.equal(vaultBalanceBefore, ONE_BIG_TOKEN * createBigInt(20_001), "Vault should have all deposits");
             assert.isTrue(vaultBalanceBefore > (user1Assets + user2Assets), "There will be rounding dust");
 
-            // step 4 - attacker redeems
-            // first they need to unbond
-            const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                [Buffer.from("ticket"), user.publicKey.toBuffer()],
-                program.programId
-            );
-            await program.methods.unbond(new BN(user1Shares))
-                .accountsStrict({
-                    stakeConfig: stakeConfigPda,
-                    mint: mintedToken,
-                    signer: user.publicKey,
-                    userMintTokenAccount: userMintTokenAccount,
-                    ticket: ticketPda,
-                    systemProgram: anchor.web3.SystemProgram.programId,
-                })
-                .signers([user])
-                .rpc();
-
-            // wait for >10 seconds unbonding period
-            await new Promise(resolve => setTimeout(resolve, 15000));
-            await program.methods.redeem()
+            // step 4 - attacker redeems immediately (no unbonding period)
+            await program.methods.redeem(new BN(user1Shares))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
                     stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     vaultAuthority: vaultAuthorityPda,
                     signer: user.publicKey,
+                    ticket: program.programId, // no legacy ticket
                     userVaultTokenAccount: userVaultTokenAccount,
                     userMintTokenAccount: userMintTokenAccount,
                     mint: mintedToken,
                     vaultMint: vaultedToken,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
-                    ticket: ticketPda
                 }).signers([user])
                 .rpc()
 
@@ -664,37 +622,19 @@ describe("vault-stake", () => {
             assert.equal(user2MintTokenBefore, createBigInt(1_999_600), "User 2 should still have 1,999,600 shares");
             assert.equal(user2VaultBalanceBefore, BIG_ZERO, "User 2 should not have any vault tokens");
 
-            const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                [Buffer.from("ticket"), user2.publicKey.toBuffer()],
-                program.programId
-            );
-            await program.methods.unbond(new BN(user2MintTokenBefore))
-                .accountsStrict({
-                    stakeConfig: stakeConfigPda,
-                    mint: mintedToken,
-                    signer: user2.publicKey,
-                    userMintTokenAccount: user2MintTokenAccount,
-                    ticket: ticketPda,
-                    systemProgram: anchor.web3.SystemProgram.programId,
-                })
-                .signers([user2])
-                .rpc().catch(e => console.dir(e));
-
-            // wait for >10 seconds unbonding period
-            await new Promise(resolve => setTimeout(resolve, 15000));
-            await program.methods.redeem()
+            await program.methods.redeem(new BN(user2MintTokenBefore))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
                     stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     vaultAuthority: vaultAuthorityPda,
                     signer: user2.publicKey,
+                    ticket: program.programId, // no legacy ticket
                     userVaultTokenAccount: user2VaultTokenAccount,
                     userMintTokenAccount: user2MintTokenAccount,
                     mint: mintedToken,
                     vaultMint: vaultedToken,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
-                    ticket: ticketPda
                 }).signers([user2])
                 .rpc()
 
@@ -845,144 +785,119 @@ describe("vault-stake", () => {
         });
     });
 
-    describe("unbond", () => {
-        it("unbond ticket closes", async () => {
-            const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                [Buffer.from("ticket"), user.publicKey.toBuffer()],
-                program.programId
-            );
-            await program.methods.unbond(new BN(1000))
-                .accountsStrict({
-                    stakeConfig: stakeConfigPda,
-                    mint: mintedToken,
-                    signer: user.publicKey,
-                    userMintTokenAccount: userMintTokenAccount,
-                    ticket: ticketPda,
-                    systemProgram: anchor.web3.SystemProgram.programId,
-                })
-                .signers([user])
-                .rpc();
+    describe("redeem", () => {
+        it("redeems a partial amount immediately (no waiting)", async () => {
+            const redeemAmount = new BN(1000);
+            const mintBalanceBefore = (await getAccount(provider.connection, userMintTokenAccount)).amount;
+            const vaultBalanceBefore = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+            const userVaultBalanceBefore = (await getAccount(provider.connection, userVaultTokenAccount)).amount;
 
-            const t = await program.account.unbondingTicket.fetch(
-                ticketPda
-            );
-            assert.equal(t.requestedAmount.toNumber(), new BN(1000).toNumber(), "Unbonding ticket should reflect requested amount");
+            assert.ok(mintBalanceBefore >= BigInt(redeemAmount.toNumber()), "User must have enough PRIME to redeem");
 
-            // wait for >10 seconds unbonding period
-            await new Promise(resolve => setTimeout(resolve, 15000));
-            await program.methods.redeem()
+            await program.methods.redeem(redeemAmount)
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
                     stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     vaultAuthority: vaultAuthorityPda,
                     signer: user.publicKey,
+                    ticket: program.programId, // no legacy ticket
                     userVaultTokenAccount: userVaultTokenAccount,
                     userMintTokenAccount: userMintTokenAccount,
                     mint: mintedToken,
                     vaultMint: vaultedToken,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
-                    ticket: ticketPda
-                }).signers([user])
-                .rpc()
-
-            try {
-                await program.account.unbondingTicket.fetch(
-                    ticketPda
-                );
-                assert.fail("Redemption request should be closed");
-            } catch (err) {
-                expect(err).to.exist;
-                expect(err.message).to.include("Account does not exist or has no data");
-            }
-        });
-
-        it("unbond twice fails", async () => {
-            const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                [Buffer.from("ticket"), user.publicKey.toBuffer()],
-                program.programId
-            );
-            await program.methods.unbond(new BN(1000))
-                .accountsStrict({
-                    stakeConfig: stakeConfigPda,
-                    mint: mintedToken,
-                    signer: user.publicKey,
-                    userMintTokenAccount: userMintTokenAccount,
-                    ticket: ticketPda,
-                    systemProgram: anchor.web3.SystemProgram.programId,
                 })
                 .signers([user])
                 .rpc();
 
-            try {
-                await program.methods.unbond(new BN(1000))
-                    .accountsStrict({
-                        stakeConfig: stakeConfigPda,
-                        mint: mintedToken,
-                        signer: user.publicKey,
-                        userMintTokenAccount: userMintTokenAccount,
-                        ticket: ticketPda,
-                        systemProgram: anchor.web3.SystemProgram.programId,
-                    })
-                    .signers([user])
-                    .rpc();
-                assert.fail("Unbond request should have failed");
-            } catch (err) {
-                expect(err).to.exist;
-            }
+            const mintBalanceAfter = (await getAccount(provider.connection, userMintTokenAccount)).amount;
+            const vaultBalanceAfter = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+            const userVaultBalanceAfter = (await getAccount(provider.connection, userVaultTokenAccount)).amount;
+
+            assert.equal(mintBalanceAfter, mintBalanceBefore - BigInt(redeemAmount.toNumber()), "PRIME should be burned");
+            assert.ok(vaultBalanceAfter < vaultBalanceBefore, "Vault balance should decrease");
+            assert.ok(userVaultBalanceAfter > userVaultBalanceBefore, "User should receive wYLDS");
         });
 
-        it("redeem without unbond", async () => {
-            const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                [Buffer.from("ticket"), user.publicKey.toBuffer()],
-                program.programId
-            );
-
+        it("fails with zero amount", async () => {
             try {
-                await program.methods.redeem()
+                await program.methods.redeem(new BN(0))
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
                         vaultTokenAccount: vaultTokenAccount,
                         stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                         vaultAuthority: vaultAuthorityPda,
                         signer: user.publicKey,
+                        ticket: program.programId,
                         userVaultTokenAccount: userVaultTokenAccount,
                         userMintTokenAccount: userMintTokenAccount,
                         mint: mintedToken,
                         vaultMint: vaultedToken,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
-                        ticket: ticketPda
-                    }).signers([user])
-                    .rpc()
+                    })
+                    .signers([user])
+                    .rpc();
                 assert.fail("Should have thrown error");
             } catch (err) {
                 expect(err).to.exist;
+                expect(err.toString()).to.include("InvalidAmount");
             }
         });
 
-        it("closes out unbonding tickets", async () => {
-            const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                [Buffer.from("ticket"), user.publicKey.toBuffer()],
-                program.programId
-            );
+        it("fails with more than user balance", async () => {
+            const mintBalance = (await getAccount(provider.connection, userMintTokenAccount)).amount;
+            const tooMuch = new BN(mintBalance.toString()).add(new BN(1));
 
-            // wait for >10 seconds unbonding period which was created in the double bond test
-            await new Promise(resolve => setTimeout(resolve, 15000));
-            await program.methods.redeem()
+            try {
+                await program.methods.redeem(tooMuch)
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        vaultTokenAccount: vaultTokenAccount,
+                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+                        vaultAuthority: vaultAuthorityPda,
+                        signer: user.publicKey,
+                        ticket: program.programId,
+                        userVaultTokenAccount: userVaultTokenAccount,
+                        userMintTokenAccount: userMintTokenAccount,
+                        mint: mintedToken,
+                        vaultMint: vaultedToken,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    })
+                    .signers([user])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.include("InsufficientBalance");
+            }
+        });
+
+        it("redeems full balance in one call", async () => {
+            const mintBalance = (await getAccount(provider.connection, userMintTokenAccount)).amount;
+            if (mintBalance === BigInt(0)) {
+                return; // user already fully redeemed in a prior test; skip
+            }
+
+            await program.methods.redeem(new BN(mintBalance.toString()))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
                     stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     vaultAuthority: vaultAuthorityPda,
                     signer: user.publicKey,
+                    ticket: program.programId,
                     userVaultTokenAccount: userVaultTokenAccount,
                     userMintTokenAccount: userMintTokenAccount,
                     mint: mintedToken,
                     vaultMint: vaultedToken,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
-                    ticket: ticketPda
-                }).signers([user])
-                .rpc()
+                })
+                .signers([user])
+                .rpc();
+
+            const mintBalanceAfter = (await getAccount(provider.connection, userMintTokenAccount)).amount;
+            assert.equal(mintBalanceAfter, BigInt(0), "All PRIME should be burned");
         });
     });
 
@@ -1041,20 +956,57 @@ describe("vault-stake", () => {
                 expect(err.toString()).to.include("ProtocolPaused");
             }
         });
-        it("prevents unbond when paused", async () => {
+        it("prevents redeem when paused", async () => {
+            // First deposit some tokens so user has shares to redeem
+            const userMintBalance = (await getAccount(provider.connection, userMintTokenAccount)).amount;
+            if (userMintBalance === BigInt(0)) {
+                // Make a small deposit to give user shares for the redeem attempt
+                const userVaultBalance = (await getAccount(provider.connection, userVaultTokenAccount)).amount;
+                if (userVaultBalance > BigInt(0)) {
+                    await program.methods
+                        .pause(false) // temporarily unpause to deposit
+                        .accountsStrict({ stakeConfig: stakeConfigPda, signer: freezeAdmin.publicKey })
+                        .signers([freezeAdmin])
+                        .rpc();
+                    await program.methods
+                        .deposit(new BN(10_000_000)) // 1000 is too small when vault dust ~5B units; need > vault_dust / VIRTUAL_SHARES ≈ 5001 units
+                        .accountsStrict({
+                            stakeConfig: stakeConfigPda,
+                            vaultTokenAccount: vaultTokenAccount,
+                            stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+                            vaultAuthority: vaultAuthorityPda,
+                            mint: mintedToken,
+                            vaultMint: vaultedToken,
+                            mintAuthority: mintAuthorityPda,
+                            signer: user.publicKey,
+                            userVaultTokenAccount: userVaultTokenAccount,
+                            userMintTokenAccount: userMintTokenAccount,
+                            tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
+                        })
+                        .signers([user])
+                        .rpc();
+                    await program.methods
+                        .pause(true) // re-pause
+                        .accountsStrict({ stakeConfig: stakeConfigPda, signer: freezeAdmin.publicKey })
+                        .signers([freezeAdmin])
+                        .rpc();
+                }
+            }
+
             try {
-                const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                    [Buffer.from("ticket"), user.publicKey.toBuffer()],
-                    program.programId
-                );
-                await program.methods.unbond(new BN(1000))
+                await program.methods.redeem(new BN(1000))
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
-                        mint: mintedToken,
+                        vaultTokenAccount: vaultTokenAccount,
+                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+                        vaultAuthority: vaultAuthorityPda,
                         signer: user.publicKey,
+                        ticket: program.programId,
+                        userVaultTokenAccount: userVaultTokenAccount,
                         userMintTokenAccount: userMintTokenAccount,
-                        ticket: ticketPda,
-                        systemProgram: anchor.web3.SystemProgram.programId,
+                        mint: mintedToken,
+                        vaultMint: vaultedToken,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     })
                     .signers([user])
                     .rpc();
@@ -1625,20 +1577,6 @@ describe("vault-stake", () => {
             }
         });
 
-        it("unbonding update by upgrade authority", async () => {
-            await program.methods
-                .updateConfig(new BN(240))
-                .accountsStrict({
-                    stakeConfig: stakeConfigPda,
-                    signer: provider.wallet.publicKey,
-                    programData: programData,
-                })
-                .rpc();
-
-            //fetch config and verify
-            const config = await program.account.stakeConfig.fetch(stakeConfigPda);
-            assert.equal(config.unbondingPeriod.toNumber(), new BN(240).toNumber());
-        });
     });
 
     describe("overflow deposits", () => {

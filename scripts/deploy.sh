@@ -187,9 +187,6 @@ initialize_stake_program() {
   if [ -z "$REWARDS_ADMINISTRATORS" ]; then
     prompt_with_default REWARDS_ADMINISTRATORS "Enter comma-separated list of Rewards Administrator addresses"
   fi
-  if [ -z "$UNBONDING_PERIOD" ]; then
-    prompt_with_default UNBONDING_PERIOD "Enter Unbonding Period (in seconds)"
-  fi
   if [ -z "$STAKE_PROG_MINT_TOKEN" ]; then
     prompt_with_default STAKE_PROG_MINT_TOKEN "Enter Stake Program mint token (staking token minted, PRIME)"
   fi
@@ -199,7 +196,6 @@ initialize_stake_program() {
     --vault "$MINT_PROG_MINT_TOKEN" \
     --vault_token_account "$STAKE_PROG_VAULT_TOKEN_ACCOUNT" \
     --mint "$STAKE_PROG_MINT_TOKEN" \
-    --unbonding_period "$UNBONDING_PERIOD" \
     --freeze_administrators "$FREEZE_ADMINISTRATORS" \
     --rewards_administrators "$REWARDS_ADMINISTRATORS")
 

@@ -12,19 +12,11 @@ pub enum CustomErrorCode {
     InvalidAuthority = 4,
     #[msg("Insufficient balance")]
     InsufficientBalance = 5,
-    #[msg("Unbonding period not elapsed")]
-    UnbondingPeriodNotElapsed = 6,
-    #[msg("Insufficient unbonding balance")]
-    InsufficientUnbondingBalance = 7,
-    #[msg("Unbonding is currently in progress")]
-    UnbondingInProgress = 8,
 
     #[msg("Invalid mint provided")]
     InvalidMint = 9,
     #[msg("Invalid vault mint provided")]
     InvalidVaultMint = 10,
-    #[msg("Invalid ticket owner")]
-    InvalidTicketOwner = 11,
 
     #[msg("Invalid mint authority")]
     InvalidMintAuthority = 12,
@@ -52,8 +44,6 @@ pub enum CustomErrorCode {
     VaultAndMintCannotBeSame = 26,
     #[msg("Protocol is paused")]
     ProtocolPaused = 27,
-    #[msg("Invalid bonding period")]
-    InvalidBondingPeriod = 28,
     #[msg("Invalid token owner")]
     InvalidTokenOwner = 29,
     #[msg("Invalid mint program owner")]
