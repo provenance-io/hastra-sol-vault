@@ -1,8 +1,7 @@
 import * as anchor from "@coral-xyz/anchor";
-import yargs from "yargs";
 import {Program} from "@coral-xyz/anchor";
+import yargs from "yargs";
 import {VaultStake} from "../../target/types/vault_stake";
-import BN from "bn.js";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
@@ -92,7 +91,7 @@ const main = async () => {
     console.log(`Legacy Ticket PDA: ${ticketPda.toBase58()} (${legacyTicketInfo !== null ? "found — will be closed and rent returned" : "not found — skipped"})`);
 
     const tx = await program.methods
-        .redeem(new BN(args.amount, 10, "le"))
+        .redeem(new anchor.BN(args.amount, 10, "le"))
         .accountsStrict({
             stakeConfig: stakeConfigPda,
             stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,

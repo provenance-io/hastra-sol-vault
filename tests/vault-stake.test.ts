@@ -581,7 +581,7 @@ describe("vault-stake", () => {
             assert.isTrue(vaultBalanceBefore > (user1Assets + user2Assets), "There will be rounding dust");
 
             // step 4 - attacker redeems immediately (no unbonding period)
-            await program.methods.redeem(new BN(user1Shares))
+            await program.methods.redeem(new BN(user1Shares.toString()))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
@@ -622,7 +622,7 @@ describe("vault-stake", () => {
             assert.equal(user2MintTokenBefore, createBigInt(1_999_600), "User 2 should still have 1,999,600 shares");
             assert.equal(user2VaultBalanceBefore, BIG_ZERO, "User 2 should not have any vault tokens");
 
-            await program.methods.redeem(new BN(user2MintTokenBefore))
+            await program.methods.redeem(new BN(user2MintTokenBefore.toString()))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
@@ -876,7 +876,7 @@ describe("vault-stake", () => {
         it("redeems full balance in one call", async () => {
             const mintBalance = (await getAccount(provider.connection, userMintTokenAccount)).amount;
             if (mintBalance === BigInt(0)) {
-                return; // user already fully redeemed in a prior test; skip
+                assert.fail("Test precondition violated: expected non-zero mint balance before redeeming full balance");
             }
 
             await program.methods.redeem(new BN(mintBalance.toString()))

@@ -8,7 +8,7 @@ pub const VIRTUAL_ASSETS: u128 = 1_000_000; // multiplier to prevent inflation a
 pub struct StakeConfig {
     pub vault: Pubkey,
     pub mint: Pubkey,
-    // DEPRECATED: unbonding period removed in v2. Kept for on-chain account layout compatibility.
+    // DEPRECATED: unbonding period removed. Kept for on-chain account layout compatibility.
     pub unbonding_period: i64,
     pub freeze_administrators: Vec<Pubkey>,
     pub rewards_administrators: Vec<Pubkey>,
@@ -21,7 +21,7 @@ impl StakeConfig {
     pub const LEN: usize = 8 + 32 + 32 + 8 + (4 + (32 * MAX_ADMINISTRATORS)) + (4 + (32 * MAX_ADMINISTRATORS)) + 1 + 1;
 }
 
-// DEPRECATED: No new tickets are created (unbond instruction removed in v2).
+// DEPRECATED: No new tickets are created (unbond instruction removed).
 // Kept so Anchor can deserialize existing on-chain tickets for closure during redeem.
 #[account]
 pub struct UnbondingTicket {
