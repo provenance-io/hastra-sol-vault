@@ -121,4 +121,69 @@ pub mod vault_stake {
         processor::exchange_rate(ctx)
     }
 
+    // ========== PRICE CONFIG INSTRUCTIONS ==========
+
+    /// Creates the StakePriceConfig PDA with Chainlink program references and staleness parameters.
+    /// Must be called once after deployment before deposit or redeem can proceed.
+    /// Only callable by the program upgrade authority.
+    pub fn initialize_price_config(
+        ctx: Context<InitializePriceConfig>,
+        chainlink_program: Pubkey,
+        chainlink_verifier_account: Pubkey,
+        chainlink_access_controller: Pubkey,
+        feed_id: [u8; 32],
+        price_scale: u64,
+        price_max_staleness: i64,
+    ) -> Result<()> {
+        processor::initialize_price_config(
+            ctx,
+            chainlink_program,
+            chainlink_verifier_account,
+            chainlink_access_controller,
+            feed_id,
+            price_scale,
+            price_max_staleness,
+        )
+    }
+
+    /// Updates Chainlink program references and staleness parameters on an existing StakePriceConfig.
+    /// Does not reset the stored price or price_timestamp.
+    /// Only callable by the program upgrade authority.
+    pub fn update_price_config(
+        ctx: Context<UpdatePriceConfig>,
+        chainlink_program: Pubkey,
+        chainlink_verifier_account: Pubkey,
+        chainlink_access_controller: Pubkey,
+        feed_id: [u8; 32],
+        price_scale: u64,
+        price_max_staleness: i64,
+    ) -> Result<()> {
+        processor::update_price_config(
+            ctx,
+            chainlink_program,
+            chainlink_verifier_account,
+            chainlink_access_controller,
+            feed_id,
+            price_scale,
+            price_max_staleness,
+        )
+    }
+
+    /// Submits a signed Chainlink Data Streams report for on-chain verification.
+    /// On success, stores the verified price in StakePriceConfig for use by deposit and redeem.
+    /// Only callable by rewards administrators.
+    pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result<()> {
+        processor::verify_price(ctx, signed_report)
+    }
+
+    /// FOR TESTING ONLY — directly sets price and price_timestamp on StakePriceConfig.
+    /// Requires program upgrade authority. Use on localnet only; use verify_price in production.
+    pub fn set_price_for_testing(
+        ctx: Context<SetPriceForTesting>,
+        price: i128,
+        price_timestamp: i64,
+    ) -> Result<()> {
+        processor::set_price_for_testing(ctx, price, price_timestamp)
+    }
+
 }

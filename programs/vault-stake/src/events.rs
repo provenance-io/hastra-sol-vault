@@ -42,3 +42,14 @@ pub struct RewardsPublished {
     pub totals_last_update_slot: u64,
     pub id: u32,
 }
+
+#[event]
+pub struct PriceVerifiedEvent {
+    pub verifier: Pubkey,      // rewards admin who submitted the report
+    pub feed_id: [u8; 32],
+    pub price: i128,
+    pub price_scale: u64,
+    pub price_timestamp: i64,
+    pub expires_at: u64,
+    pub slot: u64,
+}

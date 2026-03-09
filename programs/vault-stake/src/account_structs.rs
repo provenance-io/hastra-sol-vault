@@ -151,6 +151,15 @@ pub struct Deposit<'info> {
     )]
     pub user_mint_token_account: Account<'info, TokenAccount>,
 
+    #[account(
+        seeds = [
+            b"stake_price_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_price_config.bump,
+    )]
+    pub stake_price_config: Account<'info, StakePriceConfig>,
+
     pub token_program: Program<'info, Token>,
 }
 
@@ -229,6 +238,15 @@ pub struct Redeem<'info> {
         constraint = vault_mint.key() == stake_config.vault @ CustomErrorCode::InvalidVaultMint
     )]
     pub vault_mint: Account<'info, Mint>,
+
+    #[account(
+        seeds = [
+            b"stake_price_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_price_config.bump,
+    )]
+    pub stake_price_config: Account<'info, StakePriceConfig>,
 
     pub token_program: Program<'info, Token>,
 }
@@ -438,7 +456,7 @@ pub struct PublishRewards<'info> {
 #[derive(Accounts)]
 pub struct ConversionView<'info> {
     #[account(
-        seeds = [b"stake_config"], 
+        seeds = [b"stake_config"],
         bump = stake_config.bump
     )]
     pub stake_config: Account<'info, StakeConfig>,
@@ -460,4 +478,144 @@ pub struct ConversionView<'info> {
         bump
     )]
     pub vault_authority: UncheckedAccount<'info>,
+
+    #[account(
+        seeds = [b"stake_price_config", stake_config.key().as_ref()],
+        bump = stake_price_config.bump,
+    )]
+    pub stake_price_config: Account<'info, StakePriceConfig>,
+}
+
+// ========== PRICE CONFIG ACCOUNT CONTEXTS ==========
+
+/// Creates the StakePriceConfig PDA.
+/// Only callable by the program upgrade authority.
+/// Must be called once after deployment before any deposit/redeem can occur.
+#[derive(Accounts)]
+pub struct InitializePriceConfig<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        init,
+        payer = signer,
+        space = StakePriceConfig::LEN,
+        seeds = [
+            b"stake_price_config",
+            stake_config.key().as_ref(),
+        ],
+        bump
+    )]
+    pub stake_price_config: Account<'info, StakePriceConfig>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Updates configuration parameters on an existing StakePriceConfig.
+/// Only callable by the program upgrade authority.
+/// Does NOT reset price or price_timestamp.
+#[derive(Accounts)]
+pub struct UpdatePriceConfig<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"stake_price_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_price_config.bump,
+    )]
+    pub stake_price_config: Account<'info, StakePriceConfig>,
+
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+}
+
+/// Submits a signed Chainlink Data Streams report for on-chain verification.
+/// On success, stores the benchmark_price and timestamp in StakePriceConfig.
+/// Only callable by rewards administrators.
+#[derive(Accounts)]
+pub struct VerifyPrice<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"stake_price_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_price_config.bump,
+    )]
+    pub stake_price_config: Account<'info, StakePriceConfig>,
+
+    /// CHECK: Validated by the Chainlink verifier program during CPI
+    pub chainlink_verifier_account: AccountInfo<'info>,
+
+    /// CHECK: Validated by the Chainlink verifier program during CPI
+    pub chainlink_access_controller: AccountInfo<'info>,
+
+    /// CHECK: PDA derived from the report's feed ID; validated by the Chainlink verifier program
+    pub chainlink_config_account: UncheckedAccount<'info>,
+
+    /// CHECK: Must match stake_price_config.chainlink_program — enforced in processor
+    pub chainlink_program: AccountInfo<'info>,
+
+    pub signer: Signer<'info>,
+}
+
+/// FOR TESTING ONLY — directly sets the stored price and timestamp on StakePriceConfig.
+/// This bypasses the Chainlink CPI and allows localnet tests to set an arbitrary price.
+/// Access is restricted to the program upgrade authority (same as initialize).
+/// DO NOT USE IN PRODUCTION — use verify_price with a real Chainlink report instead.
+#[derive(Accounts)]
+pub struct SetPriceForTesting<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"stake_price_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_price_config.bump,
+    )]
+    pub stake_price_config: Account<'info, StakePriceConfig>,
+
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
 }

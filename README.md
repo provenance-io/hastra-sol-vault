@@ -103,6 +103,93 @@ The staking program issues a staking token that represents your share of the sta
 
 Staking rewards are published by a rewards administrator to the staking program. The staking then calls the mint program to mint additional mint tokens (e.g. wYLDS) to the staking program pool. The value of the staker's stake tokens increases as the staking pool grows relative to the total staked mint tokens. Staking rewards are redeemed when the user unbonds their stake and redeems their share of mint tokens based on their stake token holdings.
 
+## Staking Program Price Oracle
+
+The staking program uses a [Chainlink Data Streams](https://docs.chain.link/data-streams) price feed to determine the PRIME/wYLDS exchange rate at deposit and redeem time. This replaces the previous ERC4626-style ratio calculation with an externally-verified oracle price, decoupling the exchange rate from vault balance movements (such as reward distributions).
+
+### Price Convention
+
+The stored price represents **wYLDS per 1 PRIME**, scaled by `price_scale`:
+
+```
+price = (wYLDS per 1 PRIME) × price_scale
+```
+
+| Operation | Formula |
+|-----------|---------|
+| Deposit (wYLDS → PRIME) | `PRIME_minted = wYLDS_deposited × price_scale / price` |
+| Redeem (PRIME → wYLDS) | `wYLDS_returned = PRIME_burned × price / price_scale` |
+| Exchange rate view | `rate = price × 1_000_000_000 / price_scale` (assets per share, scaled by 1e9) |
+
+### `StakePriceConfig` Account
+
+Price configuration lives in a dedicated PDA with seeds `[b"stake_price_config", stake_config.key()]`, keeping the existing `StakeConfig` account layout unchanged.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `chainlink_program` | `Pubkey` | Chainlink verifier program ID |
+| `chainlink_verifier_account` | `Pubkey` | Verifier state account |
+| `chainlink_access_controller` | `Pubkey` | Access controller account |
+| `feed_id` | `[u8; 32]` | Expected feed ID, validated on each `verify_price` call |
+| `price` | `i128` | Last verified benchmark price |
+| `price_scale` | `u64` | Scale factor matching Chainlink feed precision (e.g. `1_000_000_000_000_000_000` for 1e18) |
+| `price_timestamp` | `i64` | Unix timestamp when price was last set (`0` = not yet initialized) |
+| `price_max_staleness` | `i64` | Maximum age of stored price in seconds before deposit/redeem reject it |
+| `bump` | `u8` | PDA bump |
+
+### Price Instructions
+
+| Instruction | Authority | Description |
+|-------------|-----------|-------------|
+| `initialize_price_config` | Program upgrade authority | Creates the `StakePriceConfig` PDA. Must be called once after each program deployment before any deposit or redeem. |
+| `update_price_config` | Program upgrade authority | Updates Chainlink addresses, feed ID, price scale, or staleness without resetting the stored price. |
+| `verify_price` | Rewards administrators | Submits a signed Chainlink report for on-chain verification via CPI. On success, stores `benchmark_price` and current timestamp. |
+| `set_price_for_testing` | Program upgrade authority | Directly sets `price` and `price_timestamp`. For localnet testing only — not for production use. |
+
+### Staleness Protection
+
+Both `deposit` and `redeem` reject a stored price that is too old:
+
+- `price_timestamp == 0` → `PriceNotInitialized` (oracle not yet seeded)
+- `current_time − price_timestamp > price_max_staleness` → `PriceTooStale`
+
+The oracle check runs **before** the user balance check in `redeem`, so a stale oracle fails fast regardless of user balance.
+
+### Post-Upgrade Initialization
+
+After each program upgrade, two instructions must be called **before** allowing user transactions:
+
+1. **`initialize_price_config`** — creates the `StakePriceConfig` PDA and sets Chainlink parameters
+2. **`verify_price`** — seeds the initial price by submitting a fresh signed Chainlink report
+
+These two instructions have different authority requirements and therefore different execution paths.
+
+#### `initialize_price_config` — via Squads transaction proposal
+
+`initialize_price_config` calls `validate_program_update_authority`, which requires that the transaction signer **exactly matches** the program's on-chain upgrade authority. Since the upgrade authority is the Squads vault PDA (`ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K`), this instruction cannot be submitted by a local keypair — it must be submitted as a Squads instruction proposal so the vault PDA can sign it.
+
+> The `initialize_price_config` instruction also requires SOL to pay rent for the `StakePriceConfig` account. Ensure the Squads vault has enough SOL before submitting the proposal.
+
+**Steps:**
+
+1. Build a transaction calling `initialize_price_config` with the Squads vault PDA as the `signer`
+2. Create a Squads instruction proposal containing that transaction
+3. Collect multisig approvals from Squad members
+4. Execute the proposal — the Squads vault PDA signs on behalf of the multisig
+
+#### `verify_price` — called directly by a rewards administrator
+
+`verify_price` requires only that the signer is a member of the `rewards_administrators` list in `StakeConfig`. This can be called directly from a CLI script using a rewards admin keypair — no Squads involvement needed.
+
+```bash
+$ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
+    ANCHOR_WALLET=~/.config/solana/rewards-admin.json \
+    yarn run ts-node scripts/vault-stake/verify_price.ts \
+    --signed_report <HEX_ENCODED_CHAINLINK_REPORT>
+```
+
+---
+
 ## Administrative Features
 
 **Freeze System:**
@@ -421,6 +508,8 @@ Done in 3.10s.
 ### Option `6` — Initialize Stake Program
 
 Run this after the stake program's first Squads-executed deployment. Configures the unbonding period, administrators, and vault PDAs.
+
+> **After initialization**, also call `initialize_price_config` (via a Squads transaction proposal, since the upgrade authority is the Squads vault PDA) and then `verify_price` (directly by a rewards administrator) with a fresh Chainlink-signed report before any user deposit or redeem can succeed. See [Post-Upgrade Initialization](#post-upgrade-initialization) above.
 
 ```
 Enter Unbonding Period (in seconds) []: 300
