@@ -1,6 +1,6 @@
 import * as anchor from "@coral-xyz/anchor";
-import yargs from "yargs";
 import {Program} from "@coral-xyz/anchor";
+import yargs from "yargs";
 import {VaultStake} from "../../target/types/vault_stake";
 
 const provider = anchor.AnchorProvider.env();
@@ -34,14 +34,18 @@ const args = yargs(process.argv.slice(2))
         description: "User's mint token account address where the staking mint tokens (e.g. PRIME) will be burned. Must be associated token account for the mint token (e.g. PRIME)",
         required: true,
     })
-
+    .option("amount", {
+        type: "number",
+        description: "Amount to redeem. Must be less than or equal to the amount staked.",
+        required: true,
+    })
     .parseSync();
 
 const main = async () => {
     const signer = provider.wallet.publicKey;
 
     // Derive PDAs
-    const [stakeConfigPda, bump] = anchor.web3.PublicKey.findProgramAddressSync(
+    const [stakeConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("stake_config")],
         program.programId
     );
@@ -59,10 +63,17 @@ const main = async () => {
         program.programId
     );
 
+    // The unbonding flow was removed in v0.0.5. The ticket account is now optional:
+    //   - If a legacy UnbondingTicket PDA exists on-chain, pass its address so the
+    //     program closes it and returns rent to the signer.
+    //   - If no ticket exists, pass program.programId as the Anchor 0.31 None sentinel
+    //     (Anchor treats pubkey == programId as Option::None and skips all constraints).
     const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("ticket"), signer.toBuffer()],
         program.programId
     );
+    const legacyTicketInfo = await provider.connection.getAccountInfo(ticketPda);
+    const ticketAccount = legacyTicketInfo !== null ? ticketPda : program.programId;
 
     // Program args
     const mint = new anchor.web3.PublicKey(args.mint);
@@ -71,34 +82,31 @@ const main = async () => {
     const userVaultTokenAccount = new anchor.web3.PublicKey(args.user_vault_token_account);
     const userMintTokenAccount = new anchor.web3.PublicKey(args.user_mint_token_account);
 
-    console.log(`Signer: ${mint.toBase58()}`);
+    console.log(`Signer: ${signer.toBase58()}`);
     console.log(`Mint (token to be burned e.g. PRIME): ${mint.toBase58()}`);
     console.log(`Vault Token Account (e.g. wYLDS): ${vaultTokenAccount.toBase58()}`);
     console.log(`User Vault Token Account: ${userVaultTokenAccount.toBase58()}`);
     console.log(`Stake Config PDA: ${stakeConfigPda.toBase58()}`);
     console.log(`Vault Authority PDA: ${vaultAuthorityPda.toBase58()}`);
-    console.log(`Ticket PDA: ${ticketPda.toBase58()}`);
+    console.log(`Legacy Ticket PDA: ${ticketPda.toBase58()} (${legacyTicketInfo !== null ? "found — will be closed and rent returned" : "not found — skipped"})`);
 
     const tx = await program.methods
-        .redeem()
+        .redeem(new anchor.BN(args.amount, 10, "le"))
         .accountsStrict({
             stakeConfig: stakeConfigPda,
             stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
             vaultTokenAccount: vaultTokenAccount,
             vaultAuthority: vaultAuthorityPda,
             signer: signer,
+            ticket: ticketAccount,
             userVaultTokenAccount: userVaultTokenAccount,
             userMintTokenAccount: userMintTokenAccount,
             mint: mint,
             vaultMint: vaultMint,
             tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
-            ticket: ticketPda
         }).rpc();
 
     console.log("Transaction:", tx);
 };
 
 main().catch(console.error);
-
-
-

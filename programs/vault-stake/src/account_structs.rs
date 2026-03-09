@@ -79,24 +79,6 @@ pub struct Pause<'info> {
 }
 
 #[derive(Accounts)]
-pub struct UpdateConfig<'info> {
-    #[account(
-        mut,
-        seeds = [b"stake_config"],
-        bump = stake_config.bump
-    )]
-    pub stake_config: Account<'info, StakeConfig>,
-
-    /// CHECK: This is the program data account that contains the update authority
-    #[account(
-        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
-    )]
-    pub program_data: UncheckedAccount<'info>,
-
-    pub signer: Signer<'info>,
-}
-
-#[derive(Accounts)]
 pub struct Deposit<'info> {
     #[account(
         seeds = [b"stake_config"], 
@@ -173,45 +155,9 @@ pub struct Deposit<'info> {
 }
 
 #[derive(Accounts)]
-pub struct Unbond<'info> {
-    #[account(
-        seeds = [b"stake_config"], 
-        bump = stake_config.bump
-    )]
-    pub stake_config: Account<'info, StakeConfig>,
-
-    #[account(mut)]
-    pub signer: Signer<'info>,
-
-    #[account(
-        constraint = mint.key() == stake_config.mint @ CustomErrorCode::InvalidMint
-    )]
-    pub mint: Account<'info, Mint>,
-
-    #[account(
-        token::mint = stake_config.mint,
-        constraint = user_mint_token_account.mint == stake_config.mint @ CustomErrorCode::InvalidMint,
-        constraint = user_mint_token_account.owner == signer.key() @ CustomErrorCode::InvalidMintAuthority
-
-    )]
-    pub user_mint_token_account: Account<'info, TokenAccount>,
-
-    #[account(
-        init,
-        payer = signer,
-        space = UnbondingTicket::LEN,
-        seeds = [b"ticket", signer.key().as_ref()],
-        bump
-    )]
-    pub ticket: Account<'info, UnbondingTicket>,
-
-    pub system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
 pub struct Redeem<'info> {
     #[account(
-        seeds = [b"stake_config"], 
+        seeds = [b"stake_config"],
         bump = stake_config.bump
     )]
     pub stake_config: Account<'info, StakeConfig>,
@@ -245,19 +191,22 @@ pub struct Redeem<'info> {
     #[account(mut)]
     pub signer: Signer<'info>,
 
+    /// Optional legacy unbonding ticket from the old two-step flow.
+    /// If present (pass the ticket PDA address), it will be closed and rent returned to signer.
+    /// If no ticket exists, pass the program's own ID — Anchor 0.31 treats it as None and skips all constraints.
     #[account(
         mut,
-        close = signer, // return rent to user when done
+        close = signer,
         seeds = [b"ticket", signer.key().as_ref()],
         bump,
     )]
-    pub ticket: Account<'info, UnbondingTicket>,
+    pub ticket: Option<Account<'info, UnbondingTicket>>,
 
     #[account(
         mut,
         token::mint = stake_config.vault,
         constraint = user_vault_token_account.mint == stake_config.vault @ CustomErrorCode::InvalidVaultMint,
-        constraint = user_vault_token_account.owner == signer.key() @ CustomErrorCode::InvalidTicketOwner
+        constraint = user_vault_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner
     )]
     pub user_vault_token_account: Account<'info, TokenAccount>,
 
@@ -265,7 +214,7 @@ pub struct Redeem<'info> {
         mut,
         token::mint = stake_config.mint,
         constraint = user_mint_token_account.mint == stake_config.mint @ CustomErrorCode::InvalidMint,
-        constraint = user_mint_token_account.owner == signer.key() @ CustomErrorCode::InvalidTicketOwner
+        constraint = user_mint_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner
     )]
     pub user_mint_token_account: Account<'info, TokenAccount>,
 

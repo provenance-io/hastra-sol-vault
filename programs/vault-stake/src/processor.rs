@@ -3,7 +3,7 @@ use crate::error::*;
 use crate::events::*;
 use crate::guard::validate_program_update_authority;
 use crate::state::{calculate_assets_to_shares, calculate_exchange_rate, calculate_shares_to_assets,
-                   MAX_ADMINISTRATORS, MAX_UNBONDING_PERIOD, MIN_UNBONDING_PERIOD, VIRTUAL_ASSETS, VIRTUAL_SHARES};
+                   MAX_ADMINISTRATORS, VIRTUAL_ASSETS, VIRTUAL_SHARES};
 use anchor_lang::prelude::*;
 use anchor_spl::token::spl_token::instruction::AuthorityType;
 use anchor_spl::token::{self, Burn, MintTo, Transfer};
@@ -59,7 +59,6 @@ Proper PDA Authority: Vault is controlled by PDA, not externally
 
 pub fn initialize(
     ctx: Context<Initialize>,
-    unbonding_period: i64,
     freeze_administrators: Vec<Pubkey>,
     rewards_administrators: Vec<Pubkey>,
 ) -> Result<()> {
@@ -73,14 +72,6 @@ pub fn initialize(
         CustomErrorCode::TooManyAdministrators
     );
     require!(
-        unbonding_period >= MIN_UNBONDING_PERIOD,
-        CustomErrorCode::InvalidBondingPeriod
-    );
-    require!(
-        unbonding_period <= MAX_UNBONDING_PERIOD,
-        CustomErrorCode::InvalidBondingPeriod
-    );
-    require!(
         ctx.accounts.vault_token_mint.key() != ctx.accounts.mint.key(),
         CustomErrorCode::VaultAndMintCannotBeSame
     );
@@ -88,7 +79,7 @@ pub fn initialize(
     let config = &mut ctx.accounts.stake_config;
     config.vault = ctx.accounts.vault_token_mint.key();
     config.mint = ctx.accounts.mint.key();
-    config.unbonding_period = unbonding_period;
+    config.unbonding_period = 0; // DEPRECATED: unbonding period removed in v0.0.5
     config.freeze_administrators = freeze_administrators;
     config.rewards_administrators = rewards_administrators;
     config.bump = ctx.bumps.stake_config;
@@ -136,31 +127,6 @@ pub fn pause(ctx: Context<Pause>, pause: bool) -> Result<()> {
     config.paused = pause;
 
     msg!("Protocol paused: {}", pause);
-
-    Ok(())
-}
-
-pub fn update_config(ctx: Context<UpdateConfig>, new_unbonding_period: i64) -> Result<()> {
-    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
-    require!(
-        new_unbonding_period >= MIN_UNBONDING_PERIOD,
-        CustomErrorCode::InvalidBondingPeriod
-    );
-    require!(
-        new_unbonding_period <= MAX_UNBONDING_PERIOD,
-        CustomErrorCode::InvalidBondingPeriod
-    );
-
-    let config = &mut ctx.accounts.stake_config;
-    config.unbonding_period = new_unbonding_period;
-
-    emit!(UnbondingPeriodUpdated {
-        admin: ctx.accounts.signer.key(),
-        old_period: ctx.accounts.stake_config.unbonding_period,
-        new_period: new_unbonding_period,
-        mint: ctx.accounts.stake_config.mint,
-        vault: ctx.accounts.stake_config.vault,
-    });
 
     Ok(())
 }
@@ -258,84 +224,34 @@ pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
     Ok(())
 }
 
-// Create an unbonding ticket for the user. They are unbonding 'amount' of mint tokens.
-pub fn unbond(ctx: Context<Unbond>, amount: u64) -> Result<()> {
-    msg!("Starting unbond process");
+// Redeem stake tokens (PRIME) for vault tokens (wYLDS).
+// Burns the user's PRIME and transfers the proportional share of wYLDS from the vault.
+// Any legacy unbonding ticket (from the old two-step flow) is automatically closed
+// and rent returned to the user when the optional ticket account is provided.
+pub fn redeem(ctx: Context<Redeem>, amount: u64) -> Result<()> {
+    msg!("Starting redeem process");
     require!(amount > 0, CustomErrorCode::InvalidAmount);
     require!(
         !ctx.accounts.stake_config.paused,
         CustomErrorCode::ProtocolPaused
     );
 
-    let current_mint_amount = ctx.accounts.user_mint_token_account.amount;
+    let user_share_mint_balance = ctx.accounts.user_mint_token_account.amount;
     require!(
-        amount <= current_mint_amount,
-        CustomErrorCode::InsufficientUnbondingBalance
+        amount <= user_share_mint_balance,
+        CustomErrorCode::InsufficientBalance
     );
 
-    let ticket = &mut ctx.accounts.ticket;
-    ticket.owner = ctx.accounts.signer.key();
-    ticket.requested_amount = amount;
-    ticket.start_balance = current_mint_amount;
-    ticket.start_ts = Clock::get()?.unix_timestamp;
-
-    msg!("Emitting UnbondEvent");
-    emit!(UnbondEvent {
-        user: ctx.accounts.signer.key(),
-        amount,
-        mint: ctx.accounts.mint.key(),
-        vault: ctx.accounts.stake_config.vault,
-    });
-    msg!("Emitted UnbondingEvent");
-
-    Ok(())
-}
-
-// Redeem the user's unbonded tokens after the unbonding period has elapsed.
-// The user is allowed to redeem up to the amount they requested to unbond,
-// capped by their current mint token balance. They are entitled to their
-// share of the vault tokens based on the current exchange rate.
-// Burn the user's mint tokens and transfer the corresponding vault tokens
-// from the vault to the user.
-//
-pub fn redeem(ctx: Context<Redeem>) -> Result<()> {
-    msg!("Starting redeem process");
-    require!(
-        !ctx.accounts.stake_config.paused,
-        CustomErrorCode::ProtocolPaused
-    );
-
-    let now = Clock::get()?.unix_timestamp;
-    let ticket = &ctx.accounts.ticket;
-
-    require_keys_eq!(
-        ticket.owner,
-        ctx.accounts.signer.key(),
-        CustomErrorCode::InvalidTicketOwner
-    );
-
-    let stake_config = &ctx.accounts.stake_config;
     let total_assets = ctx.accounts.vault_token_account.amount;
     let total_shares = ctx.accounts.mint.supply;
     msg!("total_assets: {}", total_assets);
     msg!("total_shares: {}", total_shares);
-
-    require!(
-        now - ticket.start_ts >= stake_config.unbonding_period,
-        CustomErrorCode::UnbondingPeriodNotElapsed
-    );
-
-    let user_share_mint_balance = ctx.accounts.user_mint_token_account.amount;
-    let requested_shares_to_withdraw = ticket.requested_amount.min(user_share_mint_balance);
-    require!(
-        requested_shares_to_withdraw > 0,
-        CustomErrorCode::InsufficientUnbondingBalance
-    );
+    msg!("redeem amount (shares): {}", amount);
 
     // Calculate redemption amount using virtual offsets
     // Formula: assets = (shares * (vault_balance + VIRTUAL_ASSETS)) / (supply + VIRTUAL_SHARES)
-    // VIRTUAL_SHARES determines the minimum cost to execute an attack
-    let numerator = (requested_shares_to_withdraw as u128)
+    // VIRTUAL_SHARES/VIRTUAL_ASSETS prevent inflation attacks (ERC4626 virtual shares pattern)
+    let numerator = (amount as u128)
         .checked_mul(
             (total_assets as u128)
                 .checked_add(VIRTUAL_ASSETS)
@@ -357,6 +273,9 @@ pub fn redeem(ctx: Context<Redeem>) -> Result<()> {
 
     msg!("Amount to withdraw calculated: {}", amount_to_withdraw);
 
+    // Guard against dust amounts rounding down to zero
+    require!(amount_to_withdraw > 0, CustomErrorCode::InvalidAmount);
+
     require!(
         ctx.accounts.vault_token_account.amount >= amount_to_withdraw as u64,
         CustomErrorCode::InsufficientVaultBalance
@@ -369,7 +288,7 @@ pub fn redeem(ctx: Context<Redeem>) -> Result<()> {
     };
     token::burn(
         CpiContext::new(ctx.accounts.token_program.to_account_info(), burn_accounts),
-        requested_shares_to_withdraw,
+        amount,
     )?;
 
     let seeds: &[&[u8]] = &[b"vault_authority", &[ctx.bumps.vault_authority]];
@@ -392,7 +311,7 @@ pub fn redeem(ctx: Context<Redeem>) -> Result<()> {
         .checked_sub(amount_to_withdraw as u64)
         .ok_or(CustomErrorCode::Overflow)?;
     let result_total_shares = total_shares
-        .checked_sub(requested_shares_to_withdraw)
+        .checked_sub(amount)
         .ok_or(CustomErrorCode::Overflow)?;
     let totals_last_update_slot = Clock::get()?.slot;
 
@@ -400,12 +319,12 @@ pub fn redeem(ctx: Context<Redeem>) -> Result<()> {
     emit!(RedeemEvent {
         user: ctx.accounts.signer.key(),
         mint: ctx.accounts.mint.key(),
-        requested_mint_amount: requested_shares_to_withdraw,
+        requested_mint_amount: amount,
         mint_supply: ctx.accounts.mint.supply,
         vault: ctx.accounts.vault_token_account.key(),
         redeemed_vault_amount: amount_to_withdraw as u64,
         vault_balance: ctx.accounts.vault_token_account.amount,
-        shares_burned: requested_shares_to_withdraw,
+        shares_burned: amount,
         total_assets: result_total_assets,
         total_shares: result_total_shares,
         totals_last_update_slot,

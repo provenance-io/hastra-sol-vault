@@ -158,5 +158,4 @@ show_accounts_and_pdas() {
   echo "Freeze Authority PDA:                     $(get_pda "$VAULT_STAKE_PROGRAM_ID" "freeze_authority")"
   echo "Freeze Administrators:                    $FREEZE_ADMINISTRATORS"
   echo "Rewards Administrators:                   $REWARDS_ADMINISTRATORS"
-  echo "Unbonding Period (in seconds):            $UNBONDING_PERIOD"
 }
