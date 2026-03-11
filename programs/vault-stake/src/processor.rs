@@ -696,6 +696,7 @@ pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result
     msg!("price_timestamp: {}", price_config.price_timestamp);
     msg!("expires_at: {}", report.expires_at);
 
+    msg!("Emitting PriceVerifiedEvent");
     emit!(PriceVerifiedEvent {
         verifier: ctx.accounts.signer.key(),
         feed_id: report.feed_id.0,
