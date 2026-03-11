@@ -102,7 +102,7 @@ pub struct Deposit<'info> {
         constraint = vault_token_account.key() == stake_vault_token_account_config.vault_token_account @ CustomErrorCode::InvalidVaultTokenAccount,
         constraint = vault_token_account.owner == stake_vault_token_account_config.vault_authority @ CustomErrorCode::InvalidVaultAuthority
     )]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: Box<Account<'info, TokenAccount>>,
 
     /// CHECK: This is a PDA that acts as vault authority, validated by seeds constraint
     #[account(
@@ -158,7 +158,7 @@ pub struct Deposit<'info> {
         ],
         bump = stake_price_config.bump,
     )]
-    pub stake_price_config: Account<'info, StakePriceConfig>,
+    pub stake_price_config: Box<Account<'info, StakePriceConfig>>,
 
     pub token_program: Program<'info, Token>,
 }
@@ -187,7 +187,7 @@ pub struct Redeem<'info> {
         constraint = vault_token_account.key() == stake_vault_token_account_config.vault_token_account @ CustomErrorCode::InvalidVaultTokenAccount,
         constraint = vault_token_account.owner == stake_vault_token_account_config.vault_authority @ CustomErrorCode::InvalidVaultAuthority,
     )]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: Box<Account<'info, TokenAccount>>,
 
     /// CHECK: This is a PDA vault authority, validated by seeds and token account owner constraint
     #[account(
@@ -246,7 +246,7 @@ pub struct Redeem<'info> {
         ],
         bump = stake_price_config.bump,
     )]
-    pub stake_price_config: Account<'info, StakePriceConfig>,
+    pub stake_price_config: Box<Account<'info, StakePriceConfig>>,
 
     pub token_program: Program<'info, Token>,
 }
