@@ -8,7 +8,7 @@ use anchor_lang::solana_program::program::{get_return_data, invoke};
 use anchor_spl::token::spl_token::instruction::AuthorityType;
 use anchor_spl::token::{self, Burn, MintTo, Transfer};
 use chainlink_data_streams_report::feed_id::ID as FeedId;
-use chainlink_data_streams_report::report::v3::ReportDataV3;
+use chainlink_data_streams_report::report::v7::ReportDataV7;
 use chainlink_solana_data_streams::VerifierInstructions;
 use num_traits::ToPrimitive;
 
@@ -609,7 +609,7 @@ pub fn update_price_config(
 /// On successful verification:
 ///   1. The report's feed ID is checked against the configured feed ID.
 ///   2. The report's validity window is checked (valid_from_timestamp <= now <= expires_at).
-///   3. benchmark_price is stored as the new price and price_timestamp is updated.
+///   3. exchange_rate is stored as the new price and price_timestamp is updated.
 /// Only callable by rewards administrators.
 pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result<()> {
     // Authorization: signer must be a rewards administrator
@@ -659,7 +659,7 @@ pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result
 
     // Decode the verified report from return data
     let (_, return_data) = get_return_data().ok_or(CustomErrorCode::ChainlinkVerifyFailed)?;
-    let report = ReportDataV3::decode(&return_data)
+    let report = ReportDataV7::decode(&return_data)
         .map_err(|_| CustomErrorCode::ChainlinkVerifyFailed)?;
 
     let current_time = Clock::get()?.unix_timestamp;
@@ -680,10 +680,10 @@ pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result
         CustomErrorCode::InvalidFeedId
     );
 
-    // Store price — benchmark_price is an i192-equivalent BigInt; i128 covers all realistic
+    // Store price — exchange_rate is an i192-equivalent BigInt; i128 covers all realistic
     // token pair prices (up to ~1.7e38 with 18 decimal precision).
     let price_i128 = report
-        .benchmark_price
+        .exchange_rate
         .to_i128()
         .ok_or(CustomErrorCode::Overflow)?;
 

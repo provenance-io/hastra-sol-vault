@@ -77,7 +77,7 @@ pub struct StakePriceConfig {
     pub chainlink_verifier_account: Pubkey,  // Verifier state account
     pub chainlink_access_controller: Pubkey, // Access controller account
     pub feed_id: [u8; 32],                   // Expected feed ID — validated on every verify_price call
-    // price is the raw benchmark_price from the Chainlink V3 report, cast to i128.
+    // price is the raw exchange_rate from the Chainlink V7 (Redemption Rates) report, cast to i128.
     // Convention: price = (wYLDS per 1 PRIME) * price_scale
     //   e.g. if 1 PRIME = 1.5 wYLDS and price_scale = 1_000_000_000, price = 1_500_000_000
     pub price: i128,

@@ -166,16 +166,115 @@ These two instructions have different authority requirements and therefore diffe
 
 #### `initialize_price_config` — via Squads transaction proposal
 
-`initialize_price_config` calls `validate_program_update_authority`, which requires that the transaction signer **exactly matches** the program's on-chain upgrade authority. Since the upgrade authority is the Squads vault PDA (`ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K`), this instruction cannot be submitted by a local keypair — it must be submitted as a Squads instruction proposal so the vault PDA can sign it.
+`initialize_price_config` calls `validate_program_update_authority`, which requires that the transaction signer **exactly matches** the program's on-chain upgrade authority. Since the upgrade authority is the Squads vault PDA (`ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K`), this instruction cannot be submitted by a local keypair — it must be submitted as a Squads vault transaction proposal so the vault PDA co-signs the inner message when the proposal executes.
 
-> The `initialize_price_config` instruction also requires SOL to pay rent for the `StakePriceConfig` account. Ensure the Squads vault has enough SOL before submitting the proposal.
+> `initialize_price_config` creates the `StakePriceConfig` account, so the Squads vault PDA is also the rent payer. Ensure the vault has enough SOL before submitting the proposal.
 
-**Steps:**
+Use `scripts/vault-stake/initialize_price_config_proposal.ts` to build and submit the proposal. The script uses Anchor's `.instruction()` to build the instruction (without submitting), sets the vault PDA as the `signer` account, wraps it in an inner `TransactionMessage`, and creates a Squads vault transaction proposal — following the same pattern as `scripts/create-memo-proposal.ts`.
 
-1. Build a transaction calling `initialize_price_config` with the Squads vault PDA as the `signer`
-2. Create a Squads instruction proposal containing that transaction
-3. Collect multisig approvals from Squad members
-4. Execute the proposal — the Squads vault PDA signs on behalf of the multisig
+```bash
+$ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
+    ANCHOR_WALLET=~/.config/solana/squad-member.json \
+    yarn run ts-node scripts/vault-stake/initialize_price_config_proposal.ts \
+    --multisig_pda <SQUADS_MULTISIG_PDA> \
+    --chainlink_program <CHAINLINK_VERIFIER_PROGRAM_ID> \
+    --chainlink_access_controller <ACCESS_CONTROLLER_ACCOUNT> \
+    --feed_id <64_CHAR_HEX_FEED_ID> \
+    --price_scale 1000000000000000000 \
+    --price_max_staleness 300 \
+    [--vault_pda <VAULT_PDA>] \
+    [--transaction_index <N>]
+```
+
+For example, to initialize a price config for a feed with ID `0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef12`:
+
+```bash
+huh? ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
+ANCHOR_WALLET=~/.config/solana/hastra-devnet-prime2.json \
+yarn ts-node scripts/vault-stake/initialize_price_config_proposal_squads_v3.ts \
+     --multisig_pda FftEXgzqaJNm8A6ynAmyfixBpHZtEJNr22q4KvUydByB \
+     --chainlink_program Gt9S41PtjR58CbG9JhJ3J6vxesqrNAswbWYbLNTMZA3c \
+     --chainlink_access_controller 2k3DsgwBoqrnvXKVvd7jX7aptNxdcRBdcd5HkYsGgbrb \
+     --feed_id 000700f43b35146a1cb16373ac6225ad597535e928e6dc4d179c3b4225f2b6d3 \
+     --price_scale 1000000000000000000 \
+     --price_max_staleness 7200
+
+yarn run v1.22.19
+$ /Users/jd/provenanceio/git/hastra-sol-vault/node_modules/.bin/ts-node scripts/vault-stake/initialize_price_config_proposal_squads_v3.ts --multisig_pda FftEXgzqaJNm8A6ynAmyfixBpHZtEJNr22q4KvUydByB --chainlink_program Gt9S41PtjR58CbG9JhJ3J6vxesqrNAswbWYbLNTMZA3c --chainlink_access_controller 2k3DsgwBoqrnvXKVvd7jX7aptNxdcRBdcd5HkYsGgbrb --feed_id 000700f43b35146a1cb16373ac6225ad597535e928e6dc4d179c3b4225f2b6d3 --price_scale 1000000000000000000 --price_max_staleness 7200
+=== initialize_price_config Squads v3 Proposal ===
+
+Program ID:               97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY
+Multisig PDA:             FftEXgzqaJNm8A6ynAmyfixBpHZtEJNr22q4KvUydByB
+Vault PDA (signer):       ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K
+  ↑ verify this matches the on-chain upgrade authority
+Transaction PDA:          dw8sHHZRZASAhKdm1PotWNojgGAVgsALs2fMAzJGXnX
+Instruction PDA:          FPhLE3Go3yv5oJCkYBevZ9xAXxPBjt4MFXKQ6rzJFtzN
+Stake Config PDA:         4qZvMr1THcZzHFicLAv9MtAi7cBGzQ7EzaY4K4cyYF18
+Stake Price Config PDA:   Ev92L9D2CsPczeKHF3UWybQSweQCG4NRfexwJfVwyqsn
+Program Data:             6eJfxeJEXQqCAMJHECb1KxchE12E6MHjy1ypu5RznneH
+Next transaction index:   9
+Chainlink program:        Gt9S41PtjR58CbG9JhJ3J6vxesqrNAswbWYbLNTMZA3c
+Chainlink verifier:       84wpR6CDJJQ2qbyjfVEwZJ9nyYg6Yr1WVZPqujXokpkF
+Access controller:        2k3DsgwBoqrnvXKVvd7jX7aptNxdcRBdcd5HkYsGgbrb
+Feed ID (hex):            000700f43b35146a1cb16373ac6225ad597535e928e6dc4d179c3b4225f2b6d3
+Price scale:              1000000000000000000
+Max staleness (s):        7200
+
+Submitting step 1/3: createTransaction...
+  ✅ Jfm7JBh2i4HFXkApjC3yQdFUN9QG3sjiAF6L2RZwtBWUep5mLjiKKWCB7UkrSYNo3mHDANaivSakJaUj1wvHBPM
+Submitting step 2/3: addInstruction...
+  ✅ 25dFHZ6LR9fBtuYxWjMmvPQMyuaXvYpaNQChfWsyk1HYt77up493LEj8nXBDiWTumJYAXGHPzqp9CP8eWCx2p9g3
+Submitting step 3/3: activateTransaction...
+  ✅ 4QbdLEj1hvvXbBVN4aX4PWoEs2mLZ2epADT8WAgFcGiUiE45nHySUKDGYHkCELwRtnULKQvPcuttxpXk926UL2kb
+
+✅ Proposal #9 created and activated
+   Transaction PDA: dw8sHHZRZASAhKdm1PotWNojgGAVgsALs2fMAzJGXnX
+
+   Next steps:
+   1. Squad members approve at https://devnet.squads.so (open Squad FftEXg…)
+   2. Once the approval threshold is met, execute the proposal
+   3. After execution, call verify_price to seed the initial Chainlink price
+✨  Done in 7.65s.
+```
+
+The script prints the proposal index and a link. Squad members then approve and execute at `app.squads.so`.
+
+**Optional overrides**
+
+The script derives the vault PDA and next transaction index automatically from the multisig account. If either value looks wrong, pass them explicitly:
+
+| Flag | When to use | How to find the value |
+|------|-------------|----------------------|
+| `--vault_pda` | SDK-derived vault doesn't match the on-chain upgrade authority | Run `solana program show <PROGRAM_ID>` and look at `Upgrade Authority`, or check the Squads UI |
+| `--transaction_index` | Printed index is garbage (e.g. `10177396665948697218`) | Open the Squad on [app.squads.so](https://app.squads.so), go to **Transactions** — the next index is the highest existing number + 1 |
+
+Both symptoms appear when the multisig is **Squads v3** (`SMPLecH…`) rather than v4 (`SQDS4ep…`). Confirm the version before running:
+
+```bash
+solana account <SQUADS_MULTISIG_PDA>
+# Owner: SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf → Squads v4, use initialize_price_config_proposal.ts
+# Owner: SMPLecH534NA9acpos4G6x7uf3LWbCAwZQE9e8ZekMu → Squads v3, use initialize_price_config_proposal_squads_v3.ts (see below)
+```
+
+> ⚠️ If the multisig is **Squads v3**, the v4 script will fail with `AccountOwnedByWrongProgram` (error `0xbbf`) at `VaultTransactionCreate` even with the overrides. Use the v3-compatible script instead.
+
+**Squads v3 multisig**
+
+Use `scripts/vault-stake/initialize_price_config_proposal_squads_v3.ts` when `solana account` shows the multisig is owned by `SMPLecH…`. This script constructs Squads v3 instructions directly (no new dependencies) and submits three separate transactions: `createTransaction` → `addInstruction` → `activateTransaction`.
+
+```bash
+$ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
+    ANCHOR_WALLET=~/.config/solana/squad-member.json \
+    yarn run ts-node scripts/vault-stake/initialize_price_config_proposal_squads_v3.ts \
+    --multisig_pda <SQUADS_V3_MULTISIG_PDA> \
+    --chainlink_program <CHAINLINK_VERIFIER_PROGRAM_ID> \
+    --chainlink_access_controller <ACCESS_CONTROLLER_ACCOUNT> \
+    --feed_id <64_CHAR_HEX_FEED_ID> \
+    --price_scale 1000000000000000000 \
+    --price_max_staleness 7200
+```
+
+The script prints the vault PDA — verify it matches the program's on-chain upgrade authority before approving. Squad members approve at `devnet.squads.so`.
 
 #### `verify_price` — called directly by a rewards administrator
 
@@ -185,8 +284,32 @@ These two instructions have different authority requirements and therefore diffe
 $ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
     ANCHOR_WALLET=~/.config/solana/rewards-admin.json \
     yarn run ts-node scripts/vault-stake/verify_price.ts \
-    --signed_report <HEX_ENCODED_CHAINLINK_REPORT>
+    --signed_report <HEX_ENCODED_CHAINLINK_REPORT> \
+    --chainlink_config_account <CHAINLINK_FEED_CONFIG_ACCOUNT>
 ```
+
+`--signed_report` is the hex-encoded signed report from the Chainlink Data Streams API. `--chainlink_config_account` is the feed-specific config PDA owned by the Chainlink verifier program (provided by Chainlink for the feed). The Chainlink program addresses (`chainlink_program`, `chainlink_verifier_account`, `chainlink_access_controller`) are read automatically from the on-chain `StakePriceConfig`.
+
+#### `update_price_config` — via Squads transaction proposal
+
+`update_price_config` has the same upgrade-authority requirement as `initialize_price_config` and must also go through a Squads vault transaction proposal. It modifies the Chainlink addresses, feed ID, price scale, or staleness window on the existing `StakePriceConfig` account — it does **not** reset the stored price or timestamp, and no new account is created so no rent is required from the vault.
+
+Use `scripts/vault-stake/update_price_config_proposal.ts` to build and submit the proposal. The pattern is identical to `initialize_price_config_proposal.ts` except it calls `.updatePriceConfig()` and omits `system_program` from the accounts.
+
+```bash
+$ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
+    ANCHOR_WALLET=~/.config/solana/squad-member.json \
+    yarn run ts-node scripts/vault-stake/update_price_config_proposal.ts \
+    --multisig_pda <SQUADS_MULTISIG_PDA> \
+    --chainlink_program <CHAINLINK_VERIFIER_PROGRAM_ID> \
+    --chainlink_verifier_account <VERIFIER_STATE_ACCOUNT> \
+    --chainlink_access_controller <ACCESS_CONTROLLER_ACCOUNT> \
+    --feed_id <64_CHAR_HEX_FEED_ID> \
+    --price_scale 1000000000000000000 \
+    --price_max_staleness 300
+```
+
+The script prints the proposal index and a link. Squad members then approve and execute at `app.squads.so`. If the feed ID changed, call `verify_price` after execution to refresh the stored price.
 
 ---
 
@@ -566,7 +689,11 @@ The release will contain:
 |------|-------------|
 | `vault_mint.so` | Compiled vault-mint program binary |
 | `vault_stake.so` | Compiled vault-stake program binary |
-| `checksums.txt` | SHA-256 of each `.so` |
+| `vault_mint.json` | Anchor IDL for the vault-mint program |
+| `vault_stake.json` | Anchor IDL for the vault-stake program |
+| `vault_mint.ts` | TypeScript types generated from the vault-mint IDL |
+| `vault_stake.ts` | TypeScript types generated from the vault-stake IDL |
+| `checksums.txt` | SHA-256 of all release artifacts |
 
 ### Verify a Buffer Before Approving in Squads
 
@@ -892,6 +1019,45 @@ Once the Squad threshold is met, the **Execute** button becomes available in the
 upgrade.
 
 Squads shows the transaction signature that contains the upgrade. For example: https://explorer.solana.com/tx/65f4dUN86TDLW5PmENhssfRAL3Fk7Gv5c2XNt6wsF2gx74xBLCtJhhRn2V9Zh6RimGvosDyXkrYshB6NyHaBdDLq?cluster=devnet
+
+### Troubleshooting: "account data too small for instruction"
+
+If the upgrade proposal fails simulation with:
+
+```
+Program logged: "Instruction: ExecuteTransaction"
+Program invoked: BPF Upgradeable Loader
+  ProgramData account not large enough
+  Program returned error: "account data too small for instruction"
+```
+
+the new binary (in the buffer) is larger than the current on-chain `programData` account. The BPF loader's `Upgrade` instruction writes into the existing account without resizing it, so the account must be pre-extended to fit the new binary.
+
+**Why `solana program extend` fails here:** the CLI refuses to run unless the `--keypair` you pass is the program's upgrade authority. Since the upgrade authority is the Squads vault PDA (`ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K`), no keypair on disk can satisfy that check. The on-chain `ExtendProgram` instruction only requires a payer, however, so the CLI check can be bypassed by constructing the instruction directly.
+
+**Fix:** run `scripts/extend_program.ts` with any funded wallet as the payer:
+
+```bash
+$ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
+    ANCHOR_WALLET=~/.config/solana/id.json \
+    yarn ts-node scripts/extend_program.ts \
+    --program_id 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY \
+    --additional_bytes <DIFF>
+```
+
+`<DIFF>` is the difference between the buffer data length and the current `programData` data length:
+
+```bash
+# Check current programData size
+$ solana program show 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY --url devnet
+
+# Check buffer size
+$ solana program show <BUFFER_ADDRESS> --url devnet
+
+# additional_bytes = buffer "Data Length" − programData "Data Length"
+```
+
+After the extension lands, re-simulate the upgrade proposal in Squads — it should pass.
 
 
 
