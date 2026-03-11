@@ -2,6 +2,7 @@ import * as anchor from "@coral-xyz/anchor";
 import {Program} from "@coral-xyz/anchor";
 import yargs from "yargs";
 import {VaultStake} from "../../target/types/vault_stake";
+import {PublicKey} from "@solana/web3.js";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
@@ -63,7 +64,13 @@ const main = async () => {
         program.programId
     );
 
-    // The unbonding flow was removed in v0.0.5. The ticket account is now optional:
+    const [stakePriceConfigPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("stake_price_config"), stakeConfigPda.toBuffer()],
+        program.programId
+    );
+
+
+    // The unbonding flow was removed. The ticket account is now optional:
     //   - If a legacy UnbondingTicket PDA exists on-chain, pass its address so the
     //     program closes it and returns rent to the signer.
     //   - If no ticket exists, pass program.programId as the Anchor 0.31 None sentinel
@@ -95,6 +102,7 @@ const main = async () => {
         .accountsStrict({
             stakeConfig: stakeConfigPda,
             stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+            stakePriceConfig: stakePriceConfigPda,
             vaultTokenAccount: vaultTokenAccount,
             vaultAuthority: vaultAuthorityPda,
             signer: signer,
