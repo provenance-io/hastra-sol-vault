@@ -664,6 +664,7 @@ pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result
 
     let current_time = Clock::get()?.unix_timestamp;
 
+    msg!("Chainlink report verified - current_time: {}, valid_from_timestamp: {}, expires_at: {}", current_time, report.valid_from_timestamp, report.expires_at);
     // Validate the report is within its valid time window
     require!(
         current_time >= i64::from(report.valid_from_timestamp),
