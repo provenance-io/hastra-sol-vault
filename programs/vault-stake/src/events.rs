@@ -15,14 +15,6 @@ pub struct DepositEvent {
 }
 
 #[event]
-pub struct UnbondEvent {
-    pub user: Pubkey,
-    pub amount: u64,
-    pub mint: Pubkey,
-    pub vault: Pubkey,
-}
-
-#[event]
 pub struct RedeemEvent {
     pub user: Pubkey,
     pub mint: Pubkey,
@@ -38,15 +30,6 @@ pub struct RedeemEvent {
 }
 
 #[event]
-pub struct UnbondingPeriodUpdated {
-    pub admin: Pubkey,
-    pub old_period: i64,
-    pub new_period: i64,
-    pub mint: Pubkey,
-    pub vault: Pubkey,
-}
-
-#[event]
 pub struct RewardsPublished {
     pub admin: Pubkey,
     pub amount: u64,
@@ -58,4 +41,15 @@ pub struct RewardsPublished {
     pub total_shares: u64,
     pub totals_last_update_slot: u64,
     pub id: u32,
+}
+
+#[event]
+pub struct PriceVerifiedEvent {
+    pub verifier: Pubkey,      // rewards admin who submitted the report
+    pub feed_id: [u8; 32],
+    pub price: i128,
+    pub price_scale: u64,
+    pub price_timestamp: i64,
+    pub expires_at: u64,
+    pub slot: u64,
 }

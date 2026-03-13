@@ -103,6 +103,10 @@ get_stake_program_config_pda() {
   echo "$pda"
 }
 
+show_stake_price_config() {
+  yarn run --silent ts-node scripts/vault-stake/show_stake_price_config.ts
+}
+
 get_ata() {
   local mint="$1"
   local owner="$2"
@@ -158,5 +162,8 @@ show_accounts_and_pdas() {
   echo "Freeze Authority PDA:                     $(get_pda "$VAULT_STAKE_PROGRAM_ID" "freeze_authority")"
   echo "Freeze Administrators:                    $FREEZE_ADMINISTRATORS"
   echo "Rewards Administrators:                   $REWARDS_ADMINISTRATORS"
-  echo "Unbonding Period (in seconds):            $UNBONDING_PERIOD"
+
+  echo ""
+  echo "Stake Price Config:"
+  show_stake_price_config
 }

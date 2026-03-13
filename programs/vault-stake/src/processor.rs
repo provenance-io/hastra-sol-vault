@@ -2,64 +2,19 @@ use crate::account_structs::*;
 use crate::error::*;
 use crate::events::*;
 use crate::guard::validate_program_update_authority;
-use crate::state::{calculate_assets_to_shares, calculate_exchange_rate, calculate_shares_to_assets,
-                   MAX_ADMINISTRATORS, MAX_UNBONDING_PERIOD, MIN_UNBONDING_PERIOD, VIRTUAL_ASSETS, VIRTUAL_SHARES};
+use crate::state::MAX_ADMINISTRATORS;
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::program::{get_return_data, invoke};
 use anchor_spl::token::spl_token::instruction::AuthorityType;
 use anchor_spl::token::{self, Burn, MintTo, Transfer};
+use chainlink_data_streams_report::feed_id::ID as FeedId;
+use chainlink_data_streams_report::report::v7::ReportDataV7;
+use chainlink_solana_data_streams::VerifierInstructions;
+use num_traits::ToPrimitive;
 
-/*
-# Virtual Accounting to Prevent Inflation Attacks
-
-This implementation follows the ERC4626 virtual shares pattern.
-
-This adds a "virtual" offset to both shares and assets in calculations,
-making it economically infeasible for attackers to manipulate the exchange rate.
-Doing so would require them to deposit a large amount of tokens upfront,
-which would be cost-prohibitive.
-
-There are two constants defined for virtual accounting:
-- VIRTUAL_SHARES: A large number of shares added to the total supply (PRIME)
-- VIRTUAL_ASSETS: A small number of assets added to the vault balance (wYLDS)
-
-These are used in both deposit and redeem calculations to ensure fair share pricing.
-
-The implication to the mint token economics is minimal, as the virtual offsets are small
-relative to typical vault sizes and mint supplies.
-
-What this does affect is the look of the mint token's supply and the vault's balance. When
-viewing the mint token's supply, it will appear inflated
-due to the virtual offsets. However, this inflation is purely notional and does not impact
-the actual value or usability of the tokens. External systems and users should be aware of this when interpreting
-the token metrics. Especially the mint token supply, which will be a multiple of VIRTUAL_SHARES higher than expected.
-
-## How It Prevents Inflation Attacks:
-Without Virtual Accounting (Vulnerable):
-
-Attacker deposits 1 token (wYLDS) → gets 1 share (PRIME)
-Attacker transfers 10,000 tokens directly to vault (wYLDS)
-Exchange rate: 10,001 tokens / 1 share
-Victim deposits 10,000 tokens → gets 0 shares (due to rounding)
-Attacker withdraws, stealing victim's deposit
-
-With Virtual Accounting (Protected):
-
-Attacker deposits 1 token → gets 1,000,000 shares (due to virtual multiplier)
-Attacker transfers 10,000 tokens directly to vault
-Exchange rate: (10,001 + 1) / (1,000,000 + 1,000,000) ≈ 0.005 tokens per share
-Victim deposits 10,000 tokens → gets ~2,000,000 shares (fair value)
-Attack fails because the virtual offset prevents rate manipulation
-
-## Additional Protections:
-
-Checked Math: All arithmetic uses checked_* operations to prevent overflow
-Zero Amount Checks: Prevents meaningless transactions
-Proper PDA Authority: Vault is controlled by PDA, not externally
- */
 
 pub fn initialize(
     ctx: Context<Initialize>,
-    unbonding_period: i64,
     freeze_administrators: Vec<Pubkey>,
     rewards_administrators: Vec<Pubkey>,
 ) -> Result<()> {
@@ -73,14 +28,6 @@ pub fn initialize(
         CustomErrorCode::TooManyAdministrators
     );
     require!(
-        unbonding_period >= MIN_UNBONDING_PERIOD,
-        CustomErrorCode::InvalidBondingPeriod
-    );
-    require!(
-        unbonding_period <= MAX_UNBONDING_PERIOD,
-        CustomErrorCode::InvalidBondingPeriod
-    );
-    require!(
         ctx.accounts.vault_token_mint.key() != ctx.accounts.mint.key(),
         CustomErrorCode::VaultAndMintCannotBeSame
     );
@@ -88,7 +35,7 @@ pub fn initialize(
     let config = &mut ctx.accounts.stake_config;
     config.vault = ctx.accounts.vault_token_mint.key();
     config.mint = ctx.accounts.mint.key();
-    config.unbonding_period = unbonding_period;
+    config.unbonding_period = 0; // DEPRECATED: unbonding period removed in v0.0.5
     config.freeze_administrators = freeze_administrators;
     config.rewards_administrators = rewards_administrators;
     config.bump = ctx.bumps.stake_config;
@@ -140,31 +87,6 @@ pub fn pause(ctx: Context<Pause>, pause: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn update_config(ctx: Context<UpdateConfig>, new_unbonding_period: i64) -> Result<()> {
-    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
-    require!(
-        new_unbonding_period >= MIN_UNBONDING_PERIOD,
-        CustomErrorCode::InvalidBondingPeriod
-    );
-    require!(
-        new_unbonding_period <= MAX_UNBONDING_PERIOD,
-        CustomErrorCode::InvalidBondingPeriod
-    );
-
-    let config = &mut ctx.accounts.stake_config;
-    config.unbonding_period = new_unbonding_period;
-
-    emit!(UnbondingPeriodUpdated {
-        admin: ctx.accounts.signer.key(),
-        old_period: ctx.accounts.stake_config.unbonding_period,
-        new_period: new_unbonding_period,
-        mint: ctx.accounts.stake_config.mint,
-        vault: ctx.accounts.stake_config.vault,
-    });
-
-    Ok(())
-}
-
 pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
     require!(amount > 0, CustomErrorCode::InvalidAmount);
     require!(
@@ -179,27 +101,28 @@ pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
     msg!("Current total_shares: {}", total_shares);
     msg!("Deposit amount: {}", amount);
 
-    // Calculate shares using virtual shares and virtual assets
-    // This prevents the first depositor from manipulating the share price
-    // Formula: shares = (amount * (supply + VIRTUAL_SHARES)) / (vault_balance + VIRTUAL_ASSETS)
-    // This single formula works for ALL deposits, including the first one
-    // VIRTUAL_SHARES determines the minimum cost to execute an attack
-    let numerator = (amount as u128)
-        .checked_mul(
-            (total_shares as u128)
-                .checked_add(VIRTUAL_SHARES)
-                .ok_or(CustomErrorCode::Overflow)?,
-        )
-        .ok_or(CustomErrorCode::Overflow)?;
-    msg!("Numerator calculated: {}", numerator);
+    // Chainlink price-based share calculation.
+    // price convention: price = (wYLDS per 1 PRIME) * price_scale
+    // Formula: shares = deposit_wYLDS * price_scale / price
+    let price_config = &ctx.accounts.stake_price_config;
+    let current_time = Clock::get()?.unix_timestamp;
+    require!(
+        price_config.price_timestamp > 0,
+        CustomErrorCode::PriceNotInitialized
+    );
+    require!(
+        current_time
+            .checked_sub(price_config.price_timestamp)
+            .ok_or(CustomErrorCode::Overflow)?
+            <= price_config.price_max_staleness,
+        CustomErrorCode::PriceTooStale
+    );
+    require!(price_config.price > 0, CustomErrorCode::PriceNotInitialized);
 
-    let denominator = (total_assets as u128)
-        .checked_add(VIRTUAL_ASSETS)
-        .ok_or(CustomErrorCode::Overflow)?;
-    msg!("Denominator calculated: {}", denominator);
-
-    let shares_to_mint = numerator
-        .checked_div(denominator as u128)
+    let shares_to_mint = (amount as u128)
+        .checked_mul(price_config.price_scale as u128)
+        .ok_or(CustomErrorCode::Overflow)?
+        .checked_div(price_config.price as u128)
         .ok_or(CustomErrorCode::DivisionByZero)?;
     msg!("Shares to mint calculated: {}", shares_to_mint);
 
@@ -258,104 +181,59 @@ pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
     Ok(())
 }
 
-// Create an unbonding ticket for the user. They are unbonding 'amount' of mint tokens.
-pub fn unbond(ctx: Context<Unbond>, amount: u64) -> Result<()> {
-    msg!("Starting unbond process");
+// Redeem stake tokens (PRIME) for vault tokens (wYLDS).
+// Burns the user's PRIME and transfers the proportional share of wYLDS from the vault.
+// Any legacy unbonding ticket (from the old two-step flow) is automatically closed
+// and rent returned to the user when the optional ticket account is provided.
+pub fn redeem(ctx: Context<Redeem>, amount: u64) -> Result<()> {
+    msg!("Starting redeem process");
     require!(amount > 0, CustomErrorCode::InvalidAmount);
     require!(
         !ctx.accounts.stake_config.paused,
         CustomErrorCode::ProtocolPaused
     );
 
-    let current_mint_amount = ctx.accounts.user_mint_token_account.amount;
+    // Chainlink price-based asset calculation.
+    // price convention: price = (wYLDS per 1 PRIME) * price_scale
+    // Formula: wYLDS_returned = shares_burned * price / price_scale
+    // Check price validity before user balance so oracle failures surface clearly.
+    let price_config = &ctx.accounts.stake_price_config;
+    let current_time = Clock::get()?.unix_timestamp;
     require!(
-        amount <= current_mint_amount,
-        CustomErrorCode::InsufficientUnbondingBalance
+        price_config.price_timestamp > 0,
+        CustomErrorCode::PriceNotInitialized
     );
-
-    let ticket = &mut ctx.accounts.ticket;
-    ticket.owner = ctx.accounts.signer.key();
-    ticket.requested_amount = amount;
-    ticket.start_balance = current_mint_amount;
-    ticket.start_ts = Clock::get()?.unix_timestamp;
-
-    msg!("Emitting UnbondEvent");
-    emit!(UnbondEvent {
-        user: ctx.accounts.signer.key(),
-        amount,
-        mint: ctx.accounts.mint.key(),
-        vault: ctx.accounts.stake_config.vault,
-    });
-    msg!("Emitted UnbondingEvent");
-
-    Ok(())
-}
-
-// Redeem the user's unbonded tokens after the unbonding period has elapsed.
-// The user is allowed to redeem up to the amount they requested to unbond,
-// capped by their current mint token balance. They are entitled to their
-// share of the vault tokens based on the current exchange rate.
-// Burn the user's mint tokens and transfer the corresponding vault tokens
-// from the vault to the user.
-//
-pub fn redeem(ctx: Context<Redeem>) -> Result<()> {
-    msg!("Starting redeem process");
     require!(
-        !ctx.accounts.stake_config.paused,
-        CustomErrorCode::ProtocolPaused
+        current_time
+            .checked_sub(price_config.price_timestamp)
+            .ok_or(CustomErrorCode::Overflow)?
+            <= price_config.price_max_staleness,
+        CustomErrorCode::PriceTooStale
+    );
+    require!(price_config.price > 0, CustomErrorCode::PriceNotInitialized);
+
+    let user_share_mint_balance = ctx.accounts.user_mint_token_account.amount;
+    require!(
+        amount <= user_share_mint_balance,
+        CustomErrorCode::InsufficientBalance
     );
 
-    let now = Clock::get()?.unix_timestamp;
-    let ticket = &ctx.accounts.ticket;
-
-    require_keys_eq!(
-        ticket.owner,
-        ctx.accounts.signer.key(),
-        CustomErrorCode::InvalidTicketOwner
-    );
-
-    let stake_config = &ctx.accounts.stake_config;
     let total_assets = ctx.accounts.vault_token_account.amount;
     let total_shares = ctx.accounts.mint.supply;
     msg!("total_assets: {}", total_assets);
     msg!("total_shares: {}", total_shares);
+    msg!("redeem amount (shares): {}", amount);
 
-    require!(
-        now - ticket.start_ts >= stake_config.unbonding_period,
-        CustomErrorCode::UnbondingPeriodNotElapsed
-    );
-
-    let user_share_mint_balance = ctx.accounts.user_mint_token_account.amount;
-    let requested_shares_to_withdraw = ticket.requested_amount.min(user_share_mint_balance);
-    require!(
-        requested_shares_to_withdraw > 0,
-        CustomErrorCode::InsufficientUnbondingBalance
-    );
-
-    // Calculate redemption amount using virtual offsets
-    // Formula: assets = (shares * (vault_balance + VIRTUAL_ASSETS)) / (supply + VIRTUAL_SHARES)
-    // VIRTUAL_SHARES determines the minimum cost to execute an attack
-    let numerator = (requested_shares_to_withdraw as u128)
-        .checked_mul(
-            (total_assets as u128)
-                .checked_add(VIRTUAL_ASSETS)
-                .ok_or(CustomErrorCode::Overflow)?,
-        )
-        .ok_or(CustomErrorCode::Overflow)?;
-
-    msg!("Numerator calculated: {}", numerator);
-
-    let denominator = (total_shares as u128)
-        .checked_add(VIRTUAL_SHARES)
-        .ok_or(CustomErrorCode::Overflow)?;
-
-    msg!("Denominator calculated: {}", denominator);
-
-    let amount_to_withdraw = numerator
-        .checked_div(denominator)
+    let amount_to_withdraw = (amount as u128)
+        .checked_mul(price_config.price as u128)
+        .ok_or(CustomErrorCode::Overflow)?
+        .checked_div(price_config.price_scale as u128)
         .ok_or(CustomErrorCode::DivisionByZero)?;
 
     msg!("Amount to withdraw calculated: {}", amount_to_withdraw);
+
+    // Guard against dust amounts rounding down to zero
+    require!(amount_to_withdraw > 0, CustomErrorCode::InvalidAmount);
 
     require!(
         ctx.accounts.vault_token_account.amount >= amount_to_withdraw as u64,
@@ -369,7 +247,7 @@ pub fn redeem(ctx: Context<Redeem>) -> Result<()> {
     };
     token::burn(
         CpiContext::new(ctx.accounts.token_program.to_account_info(), burn_accounts),
-        requested_shares_to_withdraw,
+        amount,
     )?;
 
     let seeds: &[&[u8]] = &[b"vault_authority", &[ctx.bumps.vault_authority]];
@@ -392,7 +270,7 @@ pub fn redeem(ctx: Context<Redeem>) -> Result<()> {
         .checked_sub(amount_to_withdraw as u64)
         .ok_or(CustomErrorCode::Overflow)?;
     let result_total_shares = total_shares
-        .checked_sub(requested_shares_to_withdraw)
+        .checked_sub(amount)
         .ok_or(CustomErrorCode::Overflow)?;
     let totals_last_update_slot = Clock::get()?.slot;
 
@@ -400,12 +278,12 @@ pub fn redeem(ctx: Context<Redeem>) -> Result<()> {
     emit!(RedeemEvent {
         user: ctx.accounts.signer.key(),
         mint: ctx.accounts.mint.key(),
-        requested_mint_amount: requested_shares_to_withdraw,
+        requested_mint_amount: amount,
         mint_supply: ctx.accounts.mint.supply,
         vault: ctx.accounts.vault_token_account.key(),
         redeemed_vault_amount: amount_to_withdraw as u64,
         vault_balance: ctx.accounts.vault_token_account.amount,
-        shares_burned: requested_shares_to_withdraw,
+        shares_burned: amount,
         total_assets: result_total_assets,
         total_shares: result_total_shares,
         totals_last_update_slot,
@@ -608,51 +486,247 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
     Ok(())
 }
 
-/// Convert shares to underlying assets
+/// FOR TESTING ONLY — directly writes price and price_timestamp into StakePriceConfig.
+/// Requires program upgrade authority. Intended for localnet test environments where
+/// the Chainlink verifier is not available. DO NOT USE IN PRODUCTION.
+pub fn set_price_for_testing(
+    ctx: Context<SetPriceForTesting>,
+    price: i128,
+    price_timestamp: i64,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    let config = &mut ctx.accounts.stake_price_config;
+    config.price = price;
+    config.price_timestamp = price_timestamp;
+    msg!("set_price_for_testing: price={}, price_timestamp={}", price, price_timestamp);
+    Ok(())
+}
+
+/// Convert shares to underlying assets using the stored Chainlink price.
+/// assets = shares * price / price_scale
 /// Returns value via return_data for efficient CPI access
 pub fn shares_to_assets(ctx: Context<ConversionView>, shares: u64) -> Result<u64> {
-    let total_assets = ctx.accounts.vault_token_account.amount;
-    let total_shares = ctx.accounts.mint.supply;
+    let price_config = &ctx.accounts.stake_price_config;
+    require!(price_config.price > 0, CustomErrorCode::PriceNotInitialized);
 
-    let assets = calculate_shares_to_assets(shares, total_shares, total_assets)?;
+    let assets = (shares as u128)
+        .checked_mul(price_config.price as u128)
+        .ok_or(CustomErrorCode::Overflow)?
+        .checked_div(price_config.price_scale as u128)
+        .ok_or(CustomErrorCode::DivisionByZero)? as u64;
 
     msg!("shares_to_assets: {} shares = {} assets", shares, assets);
 
-    // Set return data so other programs can read via CPI
     anchor_lang::solana_program::program::set_return_data(&assets.to_le_bytes());
 
     Ok(assets)
 }
 
-/// Convert underlying assets to shares
+/// Convert underlying assets to shares using the stored Chainlink price.
+/// shares = assets * price_scale / price
 /// Returns value via return_data for efficient CPI access
 pub fn assets_to_shares(ctx: Context<ConversionView>, assets: u64) -> Result<u64> {
-    let total_assets = ctx.accounts.vault_token_account.amount;
-    let total_shares = ctx.accounts.mint.supply;
+    let price_config = &ctx.accounts.stake_price_config;
+    require!(price_config.price > 0, CustomErrorCode::PriceNotInitialized);
 
-    let shares = calculate_assets_to_shares(assets, total_shares, total_assets)?;
+    let shares = (assets as u128)
+        .checked_mul(price_config.price_scale as u128)
+        .ok_or(CustomErrorCode::Overflow)?
+        .checked_div(price_config.price as u128)
+        .ok_or(CustomErrorCode::DivisionByZero)? as u64;
 
     msg!("assets_to_shares: {} assets = {} shares", assets, shares);
 
-    // Set return data so other programs can read via CPI
     anchor_lang::solana_program::program::set_return_data(&shares.to_le_bytes());
 
     Ok(shares)
 }
 
-/// Get current exchange rate
-/// Returns rate scaled by 1e9 (1_000_000_000) for precision
-/// Example: if 1 share = 1.5 assets, returns 1_500_000_000
-pub fn exchange_rate(ctx: Context<ConversionView>) -> Result<u64> {
-    let total_assets = ctx.accounts.vault_token_account.amount;
-    let total_shares = ctx.accounts.mint.supply;
+/// Initializes the StakePriceConfig PDA.
+/// Must be called once after program upgrade, before any deposit or redeem.
+/// Only callable by the program upgrade authority.
+pub fn initialize_price_config(
+    ctx: Context<InitializePriceConfig>,
+    chainlink_program: Pubkey,
+    chainlink_verifier_account: Pubkey,
+    chainlink_access_controller: Pubkey,
+    feed_id: [u8; 32],
+    price_scale: u64,
+    price_max_staleness: i64,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
 
-    let rate = calculate_exchange_rate(total_shares, total_assets)?;
+    let config = &mut ctx.accounts.stake_price_config;
+    config.chainlink_program = chainlink_program;
+    config.chainlink_verifier_account = chainlink_verifier_account;
+    config.chainlink_access_controller = chainlink_access_controller;
+    config.feed_id = feed_id;
+    config.price_scale = price_scale;
+    config.price_max_staleness = price_max_staleness;
+    config.price = 0;
+    config.price_timestamp = 0;
+    config.bump = ctx.bumps.stake_price_config;
+
+    msg!("StakePriceConfig initialized");
+    msg!("chainlink_program: {}", chainlink_program);
+    msg!("price_scale: {}", price_scale);
+    msg!("price_max_staleness: {}s", price_max_staleness);
+
+    Ok(())
+}
+
+/// Updates configuration parameters on an existing StakePriceConfig.
+/// Only callable by the program upgrade authority.
+/// Does not reset the stored price or price_timestamp.
+pub fn update_price_config(
+    ctx: Context<UpdatePriceConfig>,
+    chainlink_program: Pubkey,
+    chainlink_verifier_account: Pubkey,
+    chainlink_access_controller: Pubkey,
+    feed_id: [u8; 32],
+    price_scale: u64,
+    price_max_staleness: i64,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+
+    let config = &mut ctx.accounts.stake_price_config;
+    config.chainlink_program = chainlink_program;
+    config.chainlink_verifier_account = chainlink_verifier_account;
+    config.chainlink_access_controller = chainlink_access_controller;
+    config.feed_id = feed_id;
+    config.price_scale = price_scale;
+    config.price_max_staleness = price_max_staleness;
+
+    msg!("StakePriceConfig updated");
+    msg!("chainlink_program: {}", chainlink_program);
+    msg!("price_scale: {}", price_scale);
+    msg!("price_max_staleness: {}s", price_max_staleness);
+
+    Ok(())
+}
+
+/// Submits a signed Chainlink Data Streams report to the on-chain verifier via CPI.
+/// On successful verification:
+///   1. The report's feed ID is checked against the configured feed ID.
+///   2. The report's validity window is checked (valid_from_timestamp <= now <= expires_at).
+///   3. exchange_rate is stored as the new price and price_timestamp is updated.
+/// Only callable by rewards administrators.
+pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result<()> {
+    // Authorization: signer must be a rewards administrator
+    require!(
+        ctx.accounts
+            .stake_config
+            .rewards_administrators
+            .contains(&ctx.accounts.signer.key()),
+        CustomErrorCode::InvalidRewardsAdministrator
+    );
+
+    let price_config = &ctx.accounts.stake_price_config;
+
+    // Validate that passed accounts match the stored config
+    require!(
+        ctx.accounts.chainlink_program.key() == price_config.chainlink_program,
+        CustomErrorCode::InvalidAuthority
+    );
+    require!(
+        ctx.accounts.chainlink_verifier_account.key() == price_config.chainlink_verifier_account,
+        CustomErrorCode::InvalidAuthority
+    );
+    require!(
+        ctx.accounts.chainlink_access_controller.key() == price_config.chainlink_access_controller,
+        CustomErrorCode::InvalidAuthority
+    );
+
+    // Build and invoke the Chainlink verify CPI
+    let chainlink_ix = VerifierInstructions::verify(
+        &ctx.accounts.chainlink_program.key(),
+        &ctx.accounts.chainlink_verifier_account.key(),
+        &ctx.accounts.chainlink_access_controller.key(),
+        &ctx.accounts.signer.key(),
+        &ctx.accounts.chainlink_config_account.key(),
+        signed_report,
+    );
+
+    invoke(
+        &chainlink_ix,
+        &[
+            ctx.accounts.chainlink_verifier_account.to_account_info(),
+            ctx.accounts.chainlink_access_controller.to_account_info(),
+            ctx.accounts.signer.to_account_info(),
+            ctx.accounts.chainlink_config_account.to_account_info(),
+        ],
+    )?;
+
+    // Decode the verified report from return data
+    let (_, return_data) = get_return_data().ok_or(CustomErrorCode::ChainlinkVerifyFailed)?;
+    let report = ReportDataV7::decode(&return_data)
+        .map_err(|_| CustomErrorCode::ChainlinkVerifyFailed)?;
+
+    let current_time = Clock::get()?.unix_timestamp;
+
+    msg!("Chainlink report verified - current_time: {}, valid_from_timestamp: {}, expires_at: {}", current_time, report.valid_from_timestamp, report.expires_at);
+    // Validate the report is within its valid time window
+    require!(
+        current_time >= i64::from(report.valid_from_timestamp),
+        CustomErrorCode::FutureReportValidFromTimestamp
+    );
+    require!(
+        current_time <= i64::from(report.expires_at),
+        CustomErrorCode::ReportStale
+    );
+
+    // Validate the report is for the expected feed
+    require!(
+        report.feed_id == FeedId(ctx.accounts.stake_price_config.feed_id),
+        CustomErrorCode::InvalidFeedId
+    );
+
+    // Store price — exchange_rate is an i192-equivalent BigInt; i128 covers all realistic
+    // token pair prices (up to ~1.7e38 with 18 decimal precision).
+    let price_i128 = report
+        .exchange_rate
+        .to_i128()
+        .ok_or(CustomErrorCode::Overflow)?;
+
+    let price_config = &mut ctx.accounts.stake_price_config;
+    price_config.price = price_i128;
+    price_config.price_timestamp = current_time;
+
+    msg!("Price verified and stored");
+    msg!("price: {}", price_config.price);
+    msg!("price_timestamp: {}", price_config.price_timestamp);
+    msg!("expires_at: {}", report.expires_at);
+
+    msg!("Emitting PriceVerifiedEvent");
+    emit!(PriceVerifiedEvent {
+        verifier: ctx.accounts.signer.key(),
+        feed_id: report.feed_id.0,
+        price: price_config.price,
+        price_scale: price_config.price_scale,
+        price_timestamp: current_time,
+        expires_at: report.expires_at as u64,
+        slot: Clock::get()?.slot,
+    });
+
+    Ok(())
+}
+
+/// Get current exchange rate from stored Chainlink price.
+/// Returns assets per share scaled by 1e9: price * 1_000_000_000 / price_scale
+/// Example: if 1 PRIME = 1.5 wYLDS, returns 1_500_000_000
+pub fn exchange_rate(ctx: Context<ConversionView>) -> Result<u64> {
+    let price_config = &ctx.accounts.stake_price_config;
+    require!(price_config.price > 0, CustomErrorCode::PriceNotInitialized);
+
+    const SCALE: u128 = 1_000_000_000;
+    let rate = (price_config.price as u128)
+        .checked_mul(SCALE)
+        .ok_or(CustomErrorCode::Overflow)?
+        .checked_div(price_config.price_scale as u128)
+        .ok_or(CustomErrorCode::DivisionByZero)? as u64;
 
     msg!("exchange_rate: {} (scaled by 1e9)", rate);
-    msg!("actual rate: {:.9}", rate as f64 / 1_000_000_000.0);
 
-    // Set return data so other programs can read via CPI
     anchor_lang::solana_program::program::set_return_data(&rate.to_le_bytes());
 
     Ok(rate)

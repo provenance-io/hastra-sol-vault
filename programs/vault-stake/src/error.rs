@@ -12,19 +12,11 @@ pub enum CustomErrorCode {
     InvalidAuthority = 4,
     #[msg("Insufficient balance")]
     InsufficientBalance = 5,
-    #[msg("Unbonding period not elapsed")]
-    UnbondingPeriodNotElapsed = 6,
-    #[msg("Insufficient unbonding balance")]
-    InsufficientUnbondingBalance = 7,
-    #[msg("Unbonding is currently in progress")]
-    UnbondingInProgress = 8,
 
     #[msg("Invalid mint provided")]
     InvalidMint = 9,
     #[msg("Invalid vault mint provided")]
     InvalidVaultMint = 10,
-    #[msg("Invalid ticket owner")]
-    InvalidTicketOwner = 11,
 
     #[msg("Invalid mint authority")]
     InvalidMintAuthority = 12,
@@ -52,8 +44,6 @@ pub enum CustomErrorCode {
     VaultAndMintCannotBeSame = 26,
     #[msg("Protocol is paused")]
     ProtocolPaused = 27,
-    #[msg("Invalid bonding period")]
-    InvalidBondingPeriod = 28,
     #[msg("Invalid token owner")]
     InvalidTokenOwner = 29,
     #[msg("Invalid mint program owner")]
@@ -66,5 +56,17 @@ pub enum CustomErrorCode {
     Overflow = 33,
     #[msg("Invalid vault token account")]
     InvalidVaultTokenAccount = 34,
-    
+    #[msg("Price has not been initialized; call verify_price first")]
+    PriceNotInitialized = 35,
+    #[msg("Stored price is too stale for deposit or redeem")]
+    PriceTooStale = 36,
+    #[msg("Chainlink report is outside its valid time window")]
+    ReportStale = 37,
+    #[msg("Report feed ID does not match configured feed ID")]
+    InvalidFeedId = 38,
+    #[msg("Chainlink verifier returned no report data")]
+    ChainlinkVerifyFailed = 39,
+    #[msg("Chainlink report valid_from_timestamp is ahead of current time - retry later")]
+    FutureReportValidFromTimestamp = 40,
+
 }

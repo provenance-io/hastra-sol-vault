@@ -1,15 +1,13 @@
 use anchor_lang::prelude::*;
 
-pub const MAX_UNBONDING_PERIOD: i64 = 31536000; // 365 days in seconds
-pub const MIN_UNBONDING_PERIOD: i64 = 1; // 1 second
 pub const MAX_ADMINISTRATORS: usize = 5; // max number of freeze/rewards administrators
-pub const VIRTUAL_SHARES: u128 = 1_000_000; // multiplier to prevent inflation attacks
-pub const VIRTUAL_ASSETS: u128 = 1_000_000; // multiplier to prevent inflation attacks
+
 
 #[account]
 pub struct StakeConfig {
     pub vault: Pubkey,
     pub mint: Pubkey,
+    // DEPRECATED: unbonding period removed. Kept for on-chain account layout compatibility.
     pub unbonding_period: i64,
     pub freeze_administrators: Vec<Pubkey>,
     pub rewards_administrators: Vec<Pubkey>,
@@ -22,6 +20,8 @@ impl StakeConfig {
     pub const LEN: usize = 8 + 32 + 32 + 8 + (4 + (32 * MAX_ADMINISTRATORS)) + (4 + (32 * MAX_ADMINISTRATORS)) + 1 + 1;
 }
 
+// DEPRECATED: No new tickets are created (unbond instruction removed).
+// Kept so Anchor can deserialize existing on-chain tickets for closure during redeem.
 #[account]
 pub struct UnbondingTicket {
     pub owner: Pubkey,
@@ -69,58 +69,27 @@ impl StakeVaultTokenAccountConfig {
     pub const LEN: usize = 8 + 32 + 32 + 1; // discriminator + pubkey + pubkey + bump
 }
 
-// ========== HELPER FUNCTIONS for VIRTUAL SHARES CALCS  ==========
-pub fn calculate_shares_to_assets(
-    shares: u64,
-    total_shares: u64,
-    vault_balance: u64,
-) -> Result<u64> {
-    if total_shares == 0 {
-        return Ok(0);
-    }
-
-    Ok((shares as u128)
-        .checked_mul((vault_balance as u128).checked_add(VIRTUAL_ASSETS).unwrap())
-        .unwrap()
-        .checked_div((total_shares as u128).checked_add(VIRTUAL_SHARES).unwrap())
-        .unwrap() as u64)
+// Price config is a separate account (not part of StakeConfig) so that the deployed program's
+// account layout remains unchanged. This follows the same pattern as StakeVaultTokenAccountConfig.
+#[account]
+pub struct StakePriceConfig {
+    pub chainlink_program: Pubkey,           // Chainlink verifier program ID
+    pub chainlink_verifier_account: Pubkey,  // Verifier state account
+    pub chainlink_access_controller: Pubkey, // Access controller account
+    pub feed_id: [u8; 32],                   // Expected feed ID — validated on every verify_price call
+    // price is the raw exchange_rate from the Chainlink V7 (Redemption Rates) report, cast to i128.
+    // Convention: price = (wYLDS per 1 PRIME) * price_scale
+    //   e.g. if 1 PRIME = 1.5 wYLDS and price_scale = 1_000_000_000, price = 1_500_000_000
+    pub price: i128,
+    pub price_scale: u64,        // Precision factor that matches the Chainlink feed (e.g. 1e9 or 1e18)
+    pub price_timestamp: i64,    // Unix timestamp of last successful verify_price (0 = never set)
+    pub price_max_staleness: i64, // Max seconds the stored price may be old before deposit/redeem reject it
+    pub bump: u8,
 }
 
-pub fn calculate_assets_to_shares(
-    assets: u64,
-    total_shares: u64,
-    vault_balance: u64,
-) -> Result<u64> {
-    if total_shares == 0 {
-        // First deposit calculation
-        return Ok(((assets as u128)
-            .checked_mul(VIRTUAL_SHARES)
-            .unwrap()
-            .checked_div(VIRTUAL_ASSETS)
-            .unwrap()) as u64);
-    }
-
-    Ok((assets as u128)
-        .checked_mul((total_shares as u128).checked_add(VIRTUAL_SHARES).unwrap())
-        .unwrap()
-        .checked_div((vault_balance as u128).checked_add(VIRTUAL_ASSETS).unwrap())
-        .unwrap() as u64)
+impl StakePriceConfig {
+    // 8 (discriminator) + 32 + 32 + 32 + 32 + 16 + 8 + 8 + 8 + 1 = 177
+    pub const LEN: usize = 8 + 32 + 32 + 32 + 32 + 16 + 8 + 8 + 8 + 1;
 }
 
-pub fn calculate_exchange_rate(
-    total_shares: u64,
-    vault_balance: u64,
-) -> Result<u64> {
-    // Returns assets per share, scaled by 1e9
-    const SCALE: u128 = 1_000_000_000;
 
-    if total_shares == 0 {
-        return Ok(SCALE as u64); // 1:1 rate initially
-    }
-
-    Ok((vault_balance as u128).checked_add(VIRTUAL_ASSETS).unwrap()
-        .checked_mul(SCALE)
-        .unwrap()
-        .checked_div((total_shares as u128).checked_add(VIRTUAL_SHARES).unwrap())
-        .unwrap() as u64)
-}

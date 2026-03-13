@@ -3,6 +3,7 @@ import {Program} from "@coral-xyz/anchor";
 import yargs from "yargs";
 import {VaultStake} from "../../target/types/vault_stake";
 import {getAssociatedTokenAddress} from "@solana/spl-token";
+import {PublicKey} from "@solana/web3.js";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
@@ -38,6 +39,11 @@ const main = async () => {
     // Derive PDAs
     const [stakeConfigPda, bump] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("stake_config")],
+        program.programId
+    );
+
+    const [stakePriceConfigPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("stake_price_config"), stakeConfigPda.toBuffer()],
         program.programId
     );
 
@@ -83,6 +89,7 @@ const main = async () => {
         .accountsStrict({
             stakeConfig: stakeConfigPda,
             stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+            stakePriceConfig: stakePriceConfigPda,
             vaultTokenAccount: vaultTokenAccount,
             vaultAuthority: vaultAuthorityPda,
             mint: mint,
