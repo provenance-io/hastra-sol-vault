@@ -66,4 +66,7 @@ pub enum CustomErrorCode {
     InvalidFeedId = 38,
     #[msg("Chainlink verifier returned no report data")]
     ChainlinkVerifyFailed = 39,
+    #[msg("Chainlink report valid_from_timestamp is ahead of current time - retry later")]
+    FutureReportValidFromTimestamp = 40,
+
 }

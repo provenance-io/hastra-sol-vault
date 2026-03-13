@@ -809,6 +809,8 @@ $ solana program set-upgrade-authority 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKE
 
 Steps 1–3 (build, write buffer, transfer buffer authority) are handled by `scripts/deploy.sh`. Run the script and select **Build Programs** then **Write All Buffers**. The script prints the buffer address and SHA-256 hash, and offers to transfer buffer authority to the configured Squads vault automatically.
 
+> The deploy.sh script also contains write buffer logic for the **vault-stake** program and the **vault-mint** program specifically. There is no need to write all buffers if only one program is being upgraded.
+
 If you prefer to run the steps manually:
 
 1. Build the programs:
@@ -841,8 +843,7 @@ Account Type: Buffer
 Authority: ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K
 ```
 
-4. Connect to [Devnet Squads](devnet.squads.so) with Squad owner and
-open the `FftEXgzqaJNm8A6ynAmyfixBpHZtEJNr22q4KvUydByB` Squad.
+4. Connect to [Devnet Squads](devnet.squads.so) with Squad owner and open the `FftEXgzqaJNm8A6ynAmyfixBpHZtEJNr22q4KvUydByB` Squad.
 
 5. Select **Developer | Programs** from the Squads menu.
 
@@ -1093,6 +1094,101 @@ yarn ts-node scripts/vault-stake/update_price_config_proposal_squads_v3.ts \
 ```
 
 ---
+
+# Quick Deploy Steps
+
+This section shows the steps to upgrade the programs from a built *.so file, without using the full `deploy.sh` script. This is useful for quick iterations during development. The `vault-stake` program is the one being deployed in this example.
+
+> This section assumes that the programs have been deployed and that the Squads squad is set up.
+
+## 1. Build the programs
+
+```bash
+$ anchor build
+```
+
+This will build the programs and place them in the `target/deploy` directory.
+
+ _Or_, copy the *.so files from [a GitHub release](https://github.com/provenance-io/hastra-sol-vault/releases)
+
+## 2. Deploy the program(s)
+
+Take the *.so file (from the `target/deploy` directory or a GitHub release).
+
+```bash
+$ solana program write-buffer vault_stake.so \
+         --keypair ~/.config/solana/<YOUR KEY>.json \
+         --url devnet
+         
+Buffer: CV926m5MZU6XPBqhDLs4zf4Dh9zN4dNTXdsjUNZPGGfK         
+```
+
+This wrote the program to the buffer `CV926m5MZU6XPBqhDLs4zf4Dh9zN4dNTXdsjUNZPGGfK`. This will be different for each program upgrade.
+
+## 3. Upgrade the program(s) via Squads
+
+* Connect to the Squads app with your wallet at `app.squads.so` (mainnet) or `devnet.squads.so` (devnet) and create a new proposal.
+
+* From the Squads dashboard navigate to `Developers | Programs` and select the Vault Stake program (i.e. `97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY`).
+
+* Click the `Add Upgrade` button.
+  * Name the upgrade
+  * Enter the buffer address `CV926m5MZU6XPBqhDLs4zf4Dh9zN4dNTXdsjUNZPGGfK`
+  * Enter where the SOL rent for the buffer is returned. Use your `<YOUR KEY>` public key used to write the buffer in Step 2.
+
+* Click the `Next` button and sign the proposal with your wallet.
+
+* You will be prompted to change the write buffer authority to the Squads multisig. Squads will show you command line instructions to do this like:
+```bash
+$ solana program set-buffer-authority CV926m5MZU6XPBqhDLs4zf4Dh9zN4dNTXdsjUNZPGGfK \
+         --keypair ~/.config/solana/<YOUR KEY>.json \
+         --new-buffer-authority ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K \ 
+         --url d
+         
+Account Type: Buffer
+Authority: ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K 
+```
+
+* Go back to the Squads dashboard and click the `Verify authority` to ensure the buffer authority is correct.
+
+* Now, click on your new upgrade in the `Upgrades` list. Confirm the upgrade by clicking the `Upgrade` button in the dialog presented.
+
+* Then, click the `Initiate upgrade` button to sign the upgrade proposal with your wallet and kick off voting.
+
+* Now the rest of the Squads squad members can vote on the proposal. Once approved, click the `Execute` button to sign and upgrade the program.
+
+## Initialize Chain Link Pricing
+
+> This section assumes that the Chainlink program has been deployed and that the Squads squad is set up. This only needs to be done once.
+
+* Follow the steps in the previous section to upgrade the program that contains the Chain Link pricing logic.
+
+* Then, set the Chain Link parameters via the `./scripts.vault-stake/initialize_price_config_proposal_squads_v3.ts` script:
+
+> `multisig_pda` is the Squads account and can be found on the Squads dashboard.
+
+```bash
+$ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
+ANCHOR_WALLET=~/.config/solana/<YOUR KEY>.json \
+yarn ts-node scripts/vault-stake/update_price_config_proposal_squads_v3.ts \
+     --multisig_pda FftEXgzqaJNm8A6ynAmyfixBpHZtEJNr22q4KvUydByB \
+     --chainlink_program Gt9S41PtjR58CbG9JhJ3J6vxesqrNAswbWYbLNTMZA3c \
+     --chainlink_access_controller 2k3DsgwBoqrnvXKVvd7jX7aptNxdcRBdcd5HkYsGgbrb \
+     --feed_id 000700f43b35146a1cb16373ac6225ad597535e928e6dc4d179c3b4225f2b6d3 \
+     --price_scale 1000000000000000000 \
+     --price_max_staleness 7200
+```
+
+This will create a new proposal that must be voted on by the Squads squad members following Squads voting and execution steps.
+
+[Refer to the Chain Link Pricing Specific Post-Upgrade Initialization section for detailed information](#chain-link-pricing-specific-post-upgrade-initialization). You will need the correct feed ID and Chain Link program ID and Chainlink Access Controller for the network you are deploying to. 
+
+To change the Chain Link configuration, refer to the [Update Price Config section](#update_price_config--via-squads-transaction-proposal).
+
+To publish a Chain Link price report, refer to the [Verify Price section](#verify_price--called-directly-by-a-rewards-administrator).
+
+
+
 
 
 

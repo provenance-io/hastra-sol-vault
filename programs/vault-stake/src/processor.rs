@@ -668,7 +668,7 @@ pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result
     // Validate the report is within its valid time window
     require!(
         current_time >= i64::from(report.valid_from_timestamp),
-        CustomErrorCode::ReportStale
+        CustomErrorCode::FutureReportValidFromTimestamp
     );
     require!(
         current_time <= i64::from(report.expires_at),
