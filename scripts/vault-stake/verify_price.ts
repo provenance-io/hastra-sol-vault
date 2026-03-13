@@ -70,6 +70,8 @@ async function main() {
     console.log("Chainlink Config Account:  ", chainlinkConfigAccount.toBase58());
     console.log("Signed report:             ", signedReportBytes.length, "bytes (uncompressed),",
         compressedReport.length, "bytes (compressed)");
+    console.log("Compressed report:         ", compressedReport.length, "bytes (compressed)",
+        "0x" + compressedReport.toString("hex"));
     console.log();
 
     const tx = await program.methods
