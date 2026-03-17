@@ -147,12 +147,6 @@ pub fn request_redeem(ctx: Context<RequestRedeem>, amount: u64) -> Result<()> {
     let user_balance = ctx.accounts.user_mint_token_account.amount;
     require!(user_balance >= amount, CustomErrorCode::InsufficientBalance);
 
-    let vault_balance = ctx.accounts.redeem_vault_authority.lamports();
-    require!(
-        vault_balance > 100_000, // ~0.0001 SOL buffer
-        CustomErrorCode::InsufficientRedeemVaultFunds
-    );
-
     // amount_to_redeem = min(user wYLDS balance, requested)
     // We do this to prevent the program from over-burning when the
     // redeem is completed. The complete redeem will also check the
