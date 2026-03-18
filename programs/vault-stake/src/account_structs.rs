@@ -191,7 +191,7 @@ pub struct Unbond<'info> {
     #[account(
         token::mint = stake_config.mint,
         constraint = user_mint_token_account.mint == stake_config.mint @ CustomErrorCode::InvalidMint,
-        constraint = user_mint_token_account.owner == signer.key() @ CustomErrorCode::InvalidMintAuthority
+        constraint = user_mint_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner
 
     )]
     pub user_mint_token_account: Account<'info, TokenAccount>,
