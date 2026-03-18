@@ -152,11 +152,12 @@ pub fn update_config(ctx: Context<UpdateConfig>, new_unbonding_period: i64) -> R
     );
 
     let config = &mut ctx.accounts.stake_config;
+    let old_unbonding_period = config.unbonding_period;
     config.unbonding_period = new_unbonding_period;
 
     emit!(UnbondingPeriodUpdated {
         admin: ctx.accounts.signer.key(),
-        old_period: ctx.accounts.stake_config.unbonding_period,
+        old_period: old_unbonding_period,
         new_period: new_unbonding_period,
         mint: ctx.accounts.stake_config.mint,
         vault: ctx.accounts.stake_config.vault,
