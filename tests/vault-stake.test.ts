@@ -1287,6 +1287,7 @@ describe("vault-stake", () => {
         it("publish rewards", async () => {
 
             const rateBefore = await exchangeRate();
+            const vaultBalanceBefore = (await getAccount(provider.connection, vaultTokenAccount)).amount;
 
             const amount = 100_000_000_000;
             const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
@@ -1297,7 +1298,7 @@ describe("vault-stake", () => {
                 ],
                 program.programId);
 
-            await program.methods
+            const sig = await program.methods
                 .publishRewards(publishRewardsId, new BN(amount))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
@@ -1316,10 +1317,36 @@ describe("vault-stake", () => {
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
                 .signers([rewardsAdmin])
-                .rpc();
+                .rpc({ commitment: "confirmed" });
 
             const rateAfter = await exchangeRate();
             assert.isTrue(rateAfter > rateBefore, "Exchange rate should increase after publishing rewards");
+
+            // Regression test: RewardsPublished event total_assets must reflect the post-CPI
+            // vault balance (after reload()), not the stale pre-CPI cached value.
+            const vaultBalanceAfter = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+            const expectedTotalAssets = vaultBalanceBefore + createBigInt(amount);
+            assert.equal(vaultBalanceAfter, expectedTotalAssets, "Vault balance should increase by reward amount");
+
+            const tx = await provider.connection.getTransaction(sig, {
+                commitment: "confirmed",
+                maxSupportedTransactionVersion: 0,
+            });
+            const eventParser = new anchor.EventParser(program.programId, program.coder);
+            const events = [...eventParser.parseLogs(tx.meta.logMessages)];
+            const event = events.find(e => e.name === "rewardsPublished");
+
+            assert.isDefined(event, "RewardsPublished event should be emitted");
+            assert.equal(
+                (event.data.totalAssets as BN).toString(),
+                expectedTotalAssets.toString(),
+                "RewardsPublished event total_assets must equal post-CPI vault balance, not pre-CPI stale value"
+            );
+            assert.equal(
+                (event.data.amount as BN).toNumber(),
+                amount,
+                "RewardsPublished event amount should match published reward"
+            );
         });
 
         it("prevents duplicate publish rewards", async () => {
