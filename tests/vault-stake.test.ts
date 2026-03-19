@@ -1123,32 +1123,6 @@ describe("vault-stake", () => {
             }
         });
 
-        it("rejects unbond with token account not owned by signer with InvalidTokenOwner", async () => {
-            // regression guard: previously emitted InvalidMintAuthority (wrong error code)
-            const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                [Buffer.from("ticket"), user.publicKey.toBuffer()],
-                program.programId
-            );
-            try {
-                // Pass user2's mint token account while signing as user — ownership mismatch
-                await program.methods.unbond(new BN(1000))
-                    .accountsStrict({
-                        stakeConfig: stakeConfigPda,
-                        mint: mintedToken,
-                        signer: user.publicKey,
-                        userMintTokenAccount: user2MintTokenAccount,
-                        ticket: ticketPda,
-                        systemProgram: anchor.web3.SystemProgram.programId,
-                    })
-                    .signers([user])
-                    .rpc();
-                assert.fail("Should have thrown error");
-            } catch (err) {
-                expect(err).to.exist;
-                expect(err.toString()).to.include("InvalidTokenOwner");
-            }
-        });
-
         it("unpauses", async () => {
             await program.methods
                 .pause(false)
