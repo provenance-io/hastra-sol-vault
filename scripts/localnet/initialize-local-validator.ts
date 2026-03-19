@@ -290,6 +290,11 @@ async function main() {
         stakeProgram.programId
     );
 
+    const [stakeVaultTokenAccountConfigPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("stake_vault_token_account_config"), stakeConfigPda.toBuffer()],
+        stakeProgram.programId
+    );
+
     console.log("  Stake Config PDA:        ", stakeConfigPda.toBase58());
     console.log("  Stake Mint Authority:    ", stakeMintAuthority.toBase58());
     console.log("  Stake Freeze Authority:  ", stakeFreezeAuthority.toBase58());
@@ -321,7 +326,6 @@ async function main() {
 
         const tx = await stakeProgram.methods
             .initialize(
-                unbondingPeriod,
                 [freezeAdmin.publicKey],
                 [rewardsAdmin.publicKey]
             )
@@ -329,6 +333,7 @@ async function main() {
                 stakeConfig: stakeConfigPda,
                 vaultAuthority: stakeVaultAuthority,
                 vaultTokenAccount: stakeVaultTokenAccount,
+                stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                 vaultTokenMint: wyldsToken,
                 mint: primeToken,
                 signer: upgradeAuthority.publicKey,

@@ -448,6 +448,17 @@ pub struct PublishRewards<'info> {
     )]
     pub reward_record: Account<'info, RewardPublicationRecord>,
 
+    /// Reward cap config — enforces max_reward_bps limit on each publish.
+    /// If this account has not yet been initialized, publish_rewards will default to 20% (2000 BPS).
+    #[account(
+        seeds = [
+            b"stake_reward_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_reward_config.bump,
+    )]
+    pub stake_reward_config: Account<'info, StakeRewardConfig>,
+
     pub system_program: Program<'info, System>,
     
     pub token_program: Program<'info, Token>,
@@ -610,6 +621,71 @@ pub struct SetPriceForTesting<'info> {
         bump = stake_price_config.bump,
     )]
     pub stake_price_config: Account<'info, StakePriceConfig>,
+
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+}
+
+/// Initializes the StakeRewardConfig PDA for a given StakeConfig.
+/// Creates the account that enforces the maximum reward distribution cap (max_reward_bps).
+/// Only callable by the program upgrade authority.
+/// Must be called once after program deployment (or as part of the Squads upgrade proposal).
+#[derive(Accounts)]
+pub struct InitializeRewardConfig<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        init,
+        payer = signer,
+        space = StakeRewardConfig::LEN,
+        seeds = [
+            b"stake_reward_config",
+            stake_config.key().as_ref(),
+        ],
+        bump
+    )]
+    pub stake_reward_config: Account<'info, StakeRewardConfig>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Updates max_reward_bps on an existing StakeRewardConfig.
+/// Only callable by the program upgrade authority.
+#[derive(Accounts)]
+pub struct UpdateMaxRewardBps<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"stake_reward_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_reward_config.bump,
+    )]
+    pub stake_reward_config: Account<'info, StakeRewardConfig>,
 
     pub signer: Signer<'info>,
 

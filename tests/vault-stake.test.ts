@@ -58,6 +58,7 @@ describe("vault-stake", () => {
     let rewardsAdmin: Keypair;
 
     let stakePriceConfigPda: PublicKey;
+    let stakeRewardConfigPda: PublicKey;
 
     // Price config constants for testing.
     // price_scale = 1e9; price = 1e9 → 1:1 ratio (1 PRIME per 1 wYLDS, 1 wYLDS per 1 PRIME).
@@ -229,6 +230,14 @@ describe("vault-stake", () => {
         [stakePriceConfigPda] = PublicKey.findProgramAddressSync(
             [
                 Buffer.from("stake_price_config"),
+                stakeConfigPda.toBuffer()
+            ],
+            program.programId
+        );
+
+        [stakeRewardConfigPda] = PublicKey.findProgramAddressSync(
+            [
+                Buffer.from("stake_reward_config"),
                 stakeConfigPda.toBuffer()
             ],
             program.programId
@@ -477,6 +486,22 @@ describe("vault-stake", () => {
             assert.equal(priceConfig.priceScale.toString(), TEST_PRICE_SCALE.toString());
             assert.equal(priceConfig.priceMaxStaleness.toString(), "3600");
             assert.equal(priceConfig.priceTimestamp.toString(), "0", "price not set until verify_price is called");
+        });
+
+        it("initializes reward config with 20% default", async () => {
+            await program.methods
+                .initializeRewardConfig(new BN(2_000))
+                .accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    stakeRewardConfig: stakeRewardConfigPda,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
+
+            const rewardConfig = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+            assert.equal(rewardConfig.maxRewardBps.toNumber(), 2_000, "default max_reward_bps should be 2000 (20%)");
         });
 
         it("set initial price for testing via set_price_for_testing", async () => {
@@ -1176,6 +1201,7 @@ describe("vault-stake", () => {
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
+                    stakeRewardConfig: stakeRewardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
@@ -1348,7 +1374,8 @@ describe("vault-stake", () => {
             const rateBefore = await exchangeRate();
             const vaultBalanceBefore = (await getAccount(provider.connection, vaultTokenAccount)).amount;
 
-            const amount = 100_000_000_000;
+            // Use 10% of vault balance to stay within the 20% reward cap
+            const amount = Number(vaultBalanceBefore / BigInt(10));
             const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("reward_record"),
@@ -1372,6 +1399,7 @@ describe("vault-stake", () => {
                     vaultAuthority: vaultAuthorityPda,
                     mint: mintedToken,
                     rewardRecord: rewardsRecordPda,
+                    stakeRewardConfig: stakeRewardConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
@@ -1432,6 +1460,7 @@ describe("vault-stake", () => {
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
+                    stakeRewardConfig: stakeRewardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
@@ -1468,6 +1497,7 @@ describe("vault-stake", () => {
                     vaultAuthority: vaultAuthorityPda,
                     mint: mintedToken,
                     rewardRecord: rewardsRecordPda1,
+                    stakeRewardConfig: stakeRewardConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
@@ -1497,6 +1527,7 @@ describe("vault-stake", () => {
                     vaultAuthority: vaultAuthorityPda,
                     mint: mintedToken,
                     rewardRecord: rewardsRecordPda2,
+                    stakeRewardConfig: stakeRewardConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
@@ -1537,6 +1568,7 @@ describe("vault-stake", () => {
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
+                    stakeRewardConfig: stakeRewardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
@@ -1545,6 +1577,175 @@ describe("vault-stake", () => {
                 assert.fail("Should have thrown error");
             } catch (err) {
                 expect(err).to.exist;
+            }
+        });
+    });
+
+    describe("reward cap (StakeRewardConfig)", () => {
+        // Helpers to build publishRewards accounts without duplicating boilerplate
+        const publishRewardsAccounts = (rewardsRecordPda: PublicKey) => ({
+            stakeConfig: stakeConfigPda,
+            stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+            mintConfig: configPda,
+            externalMintAuthority: externalMintAuthorityPda,
+            mintProgram: mintProgram.programId,
+            admin: rewardsAdmin.publicKey,
+            rewardsMint: vaultedToken,
+            rewardsMintAuthority: rewardsMintAuthorityPda,
+            vaultTokenAccount: vaultTokenAccount,
+            vaultAuthority: vaultAuthorityPda,
+            mint: mintedToken,
+            rewardRecord: rewardsRecordPda,
+            stakeRewardConfig: stakeRewardConfigPda,
+            tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+            systemProgram: anchor.web3.SystemProgram.programId,
+        });
+
+        const makeRewardsRecordPda = (id: number, amount: number) =>
+            anchor.web3.PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("reward_record"),
+                    Buffer.from(new Uint32Array([id]).buffer),
+                    Buffer.from(new BigUint64Array([createBigInt(amount)]).buffer),
+                ],
+                program.programId
+            )[0];
+
+        it("rejects reward above 20% of total_assets with RewardExceedsMaxDelta", async () => {
+            const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+            // 21% of total assets — just over the 20% cap
+            const overCapAmount = Number((totalAssets * BigInt(21)) / BigInt(100)) + 1;
+            const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("reward_record"),
+                    Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
+                    Buffer.from(new BigUint64Array([createBigInt(overCapAmount)]).buffer),
+                ],
+                program.programId
+            );
+            try {
+                await program.methods
+                    .publishRewards(publishRewardsId, new BN(overCapAmount))
+                    .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown RewardExceedsMaxDelta");
+            } catch (err) {
+                expect(err.toString()).to.include("RewardExceedsMaxDelta");
+            }
+        });
+
+        it("allows reward at exactly 20% of total_assets", async () => {
+            const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+            // exactly 20% (floor division — safe within cap)
+            const exactCapAmount = Number(totalAssets / BigInt(5));
+            const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, exactCapAmount);
+            await program.methods
+                .publishRewards(publishRewardsId, new BN(exactCapAmount))
+                .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                .signers([rewardsAdmin])
+                .rpc();
+            // no error = passed
+        });
+
+        it("upgrade authority can update max_reward_bps and emit MaxRewardBpsUpdated event", async () => {
+            const newBps = 5_000; // 50%
+            const sig = await program.methods
+                .updateMaxRewardBps(new BN(newBps))
+                .accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    stakeRewardConfig: stakeRewardConfigPda,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                })
+                .rpc({ commitment: "confirmed" });
+
+            const rewardConfig = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+            assert.equal(rewardConfig.maxRewardBps.toNumber(), newBps);
+
+            const tx = await provider.connection.getTransaction(sig, {
+                commitment: "confirmed",
+                maxSupportedTransactionVersion: 0,
+            });
+            const eventParser = new anchor.EventParser(program.programId, program.coder);
+            const events = [...eventParser.parseLogs(tx.meta.logMessages)];
+            const event = events.find(e => e.name === "maxRewardBpsUpdated");
+            assert.isDefined(event, "MaxRewardBpsUpdated event should be emitted");
+            assert.equal((event.data.oldBps as BN).toNumber(), 2_000, "old_bps should be previous value");
+            assert.equal((event.data.newBps as BN).toNumber(), newBps, "new_bps should match");
+        });
+
+        it("allows reward above previous 20% cap after raising to 50%", async () => {
+            const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+            // 30% — over old 20% cap but under new 50% cap
+            const amount = Number((totalAssets * BigInt(30)) / BigInt(100));
+            const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, amount);
+            await program.methods
+                .publishRewards(publishRewardsId, new BN(amount))
+                .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                .signers([rewardsAdmin])
+                .rpc();
+            // restore cap to 20% for remaining tests
+            await program.methods
+                .updateMaxRewardBps(new BN(2_000))
+                .accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    stakeRewardConfig: stakeRewardConfigPda,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                })
+                .rpc();
+        });
+
+        it("non-upgrade-authority cannot update max_reward_bps", async () => {
+            try {
+                await program.methods
+                    .updateMaxRewardBps(new BN(9_000))
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        stakeRewardConfig: stakeRewardConfigPda,
+                        signer: rewardsAdmin.publicKey,
+                        programData: programDataPda,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+            }
+        });
+
+        it("rejects max_reward_bps of 0", async () => {
+            try {
+                await program.methods
+                    .updateMaxRewardBps(new BN(0))
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        stakeRewardConfig: stakeRewardConfigPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programDataPda,
+                    })
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err.toString()).to.include("InvalidMaxRewardBps");
+            }
+        });
+
+        it("rejects max_reward_bps above 10_000 (100%)", async () => {
+            try {
+                await program.methods
+                    .updateMaxRewardBps(new BN(10_001))
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        stakeRewardConfig: stakeRewardConfigPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programDataPda,
+                    })
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err.toString()).to.include("InvalidMaxRewardBps");
             }
         });
     });
@@ -1697,6 +1898,7 @@ describe("vault-stake", () => {
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
+                    stakeRewardConfig: stakeRewardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })

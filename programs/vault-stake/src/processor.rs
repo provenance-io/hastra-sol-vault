@@ -2,7 +2,7 @@ use crate::account_structs::*;
 use crate::error::*;
 use crate::events::*;
 use crate::guard::validate_program_update_authority;
-use crate::state::MAX_ADMINISTRATORS;
+use crate::state::{MAX_ADMINISTRATORS, StakeRewardConfig};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::{get_return_data, invoke};
 use anchor_spl::token::spl_token::instruction::AuthorityType;
@@ -429,6 +429,24 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
     );
     require!(amount > 0, CustomErrorCode::InvalidAmount);
 
+    // Enforce reward cap: amount must not exceed max_reward_bps % of current total_assets.
+    // Skip when vault is empty (bootstrap) — first reward is always allowed.
+    let total_assets = ctx.accounts.vault_token_account.amount;
+    let total_shares = ctx.accounts.mint.supply;
+    if total_assets > 0 && total_shares > 0 {
+        let effective_bps = if ctx.accounts.stake_reward_config.max_reward_bps == 0 {
+            StakeRewardConfig::DEFAULT_BPS
+        } else {
+            ctx.accounts.stake_reward_config.max_reward_bps
+        };
+        let max_allowed = (total_assets as u128)
+            .checked_mul(effective_bps as u128)
+            .and_then(|v| v.checked_div(StakeRewardConfig::MAX_BPS as u128))
+            .and_then(|v| v.to_u64())
+            .ok_or(CustomErrorCode::Overflow)?;
+        require!(amount <= max_allowed, CustomErrorCode::RewardExceedsMaxDelta);
+    }
+
     // Initialize the reward record
     let reward_record = &mut ctx.accounts.reward_record;
     reward_record.id = id;
@@ -604,6 +622,49 @@ pub fn update_price_config(
     msg!("price_scale: {}", price_scale);
     msg!("price_max_staleness: {}s", price_max_staleness);
 
+    Ok(())
+}
+
+/// Initializes the StakeRewardConfig PDA for the given StakeConfig.
+/// Sets max_reward_bps to DEFAULT_BPS (2000 = 20%) unless overridden.
+/// Must be called once after deployment — include in the Squads upgrade proposal.
+/// Only callable by the program upgrade authority.
+pub fn initialize_reward_config(ctx: Context<InitializeRewardConfig>, max_reward_bps: u64) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    require!(
+        max_reward_bps > 0 && max_reward_bps <= StakeRewardConfig::MAX_BPS,
+        CustomErrorCode::InvalidMaxRewardBps
+    );
+
+    let config = &mut ctx.accounts.stake_reward_config;
+    config.max_reward_bps = max_reward_bps;
+    config.bump = ctx.bumps.stake_reward_config;
+
+    msg!("StakeRewardConfig initialized: max_reward_bps={}", max_reward_bps);
+    Ok(())
+}
+
+/// Updates max_reward_bps on an existing StakeRewardConfig.
+/// Only callable by the program upgrade authority.
+pub fn update_max_reward_bps(ctx: Context<UpdateMaxRewardBps>, new_bps: u64) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    require!(
+        new_bps > 0 && new_bps <= StakeRewardConfig::MAX_BPS,
+        CustomErrorCode::InvalidMaxRewardBps
+    );
+
+    let config = &mut ctx.accounts.stake_reward_config;
+    let old_bps = config.max_reward_bps;
+    config.max_reward_bps = new_bps;
+
+    emit!(MaxRewardBpsUpdated {
+        admin: ctx.accounts.signer.key(),
+        old_bps,
+        new_bps,
+        stake_config: ctx.accounts.stake_config.key(),
+    });
+
+    msg!("max_reward_bps updated: {} -> {}", old_bps, new_bps);
     Ok(())
 }
 

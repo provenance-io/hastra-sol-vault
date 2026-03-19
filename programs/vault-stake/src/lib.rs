@@ -38,7 +38,7 @@ pub mod state;
 use account_structs::*;
 use anchor_lang::prelude::*;
 
-declare_id!("97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY");
+declare_id!("FkiVzeqHryWWMtELBZTHDo4A894yr6h783CKxpm4vEL8");
 
 #[program]
 pub mod vault_stake {
@@ -184,6 +184,25 @@ pub mod vault_stake {
         price_timestamp: i64,
     ) -> Result<()> {
         processor::set_price_for_testing(ctx, price, price_timestamp)
+    }
+
+    /// Initializes the StakeRewardConfig PDA that enforces the max reward distribution cap.
+    /// Call once after deployment — bundle with the Squads upgrade proposal.
+    /// max_reward_bps: 10_000 = 100%, 2_000 = 20% (recommended default).
+    pub fn initialize_reward_config(
+        ctx: Context<InitializeRewardConfig>,
+        max_reward_bps: u64,
+    ) -> Result<()> {
+        processor::initialize_reward_config(ctx, max_reward_bps)
+    }
+
+    /// Updates the maximum reward distribution cap on an existing StakeRewardConfig.
+    /// Only callable by the program upgrade authority.
+    pub fn update_max_reward_bps(
+        ctx: Context<UpdateMaxRewardBps>,
+        new_bps: u64,
+    ) -> Result<()> {
+        processor::update_max_reward_bps(ctx, new_bps)
     }
 
 }
