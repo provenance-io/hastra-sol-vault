@@ -186,4 +186,23 @@ pub mod vault_stake {
         processor::set_price_for_testing(ctx, price, price_timestamp)
     }
 
+    /// Initializes the StakeRewardConfig PDA that enforces the max reward distribution cap.
+    /// Call once after deployment — bundle with the Squads upgrade proposal.
+    /// max_reward_bps: 10_000 = 100%, 2_000 = 20% (recommended default).
+    pub fn initialize_reward_config(
+        ctx: Context<InitializeRewardConfig>,
+        max_reward_bps: u64,
+    ) -> Result<()> {
+        processor::initialize_reward_config(ctx, max_reward_bps)
+    }
+
+    /// Updates the maximum reward distribution cap on an existing StakeRewardConfig.
+    /// Only callable by the program upgrade authority.
+    pub fn update_max_reward_bps(
+        ctx: Context<UpdateMaxRewardBps>,
+        new_bps: u64,
+    ) -> Result<()> {
+        processor::update_max_reward_bps(ctx, new_bps)
+    }
+
 }

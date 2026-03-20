@@ -53,3 +53,11 @@ pub struct PriceVerifiedEvent {
     pub expires_at: u64,
     pub slot: u64,
 }
+
+#[event]
+pub struct MaxRewardBpsUpdated {
+    pub admin: Pubkey,
+    pub old_bps: u64,
+    pub new_bps: u64,
+    pub stake_config: Pubkey,
+}

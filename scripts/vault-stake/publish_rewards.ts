@@ -65,6 +65,14 @@ const main = async () => {
         program.programId
     );
 
+    const [stakeRewardConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("stake_reward_config"),
+            stakeConfigPda.toBuffer()
+        ],
+        program.programId
+    );
+
     const [vaultAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("vault_authority")],
         program.programId
@@ -130,6 +138,7 @@ const main = async () => {
             vaultAuthority: vaultAuthorityPda,
             mint: mint,
             rewardRecord: rewardsRecordPda,
+            stakeRewardConfig: stakeRewardConfigPda,
             tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
             systemProgram: anchor.web3.SystemProgram.programId,
         }).rpc();

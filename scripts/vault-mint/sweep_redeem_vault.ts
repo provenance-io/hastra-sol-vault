@@ -62,7 +62,6 @@ const main = async () => {
             redeemVaultAuthority: redeemVaultAuthorityPda,
             redeemVaultTokenAccount: redeemVaultTokenAccount,
             vaultTokenAccount: vaultTokenAccount,
-            programData: programData,
             tokenProgram: TOKEN_PROGRAM_ID
         })
         .rpc();

@@ -68,5 +68,9 @@ pub enum CustomErrorCode {
     ChainlinkVerifyFailed = 39,
     #[msg("Chainlink report valid_from_timestamp is ahead of current time - retry later")]
     FutureReportValidFromTimestamp = 40,
+    #[msg("Reward amount exceeds maximum allowed delta (max_reward_bps of total assets)")]
+    RewardExceedsMaxDelta = 41,
+    #[msg("Invalid max reward BPS: must be greater than 0 and at most 10_000")]
+    InvalidMaxRewardBps = 42,
 
 }

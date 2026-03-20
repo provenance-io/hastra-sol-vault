@@ -141,7 +141,7 @@ pub struct Deposit<'info> {
         constraint = user_vault_token_account.mint == stake_config.vault @ CustomErrorCode::InvalidVaultMint,
         constraint = user_vault_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner
     )]
-    pub user_vault_token_account: Account<'info, TokenAccount>,
+    pub user_vault_token_account: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -149,7 +149,7 @@ pub struct Deposit<'info> {
         constraint = user_mint_token_account.mint == stake_config.mint @ CustomErrorCode::InvalidMint,
         constraint = user_mint_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner
     )]
-    pub user_mint_token_account: Account<'info, TokenAccount>,
+    pub user_mint_token_account: Box<Account<'info, TokenAccount>>,
 
     #[account(
         seeds = [
@@ -217,7 +217,7 @@ pub struct Redeem<'info> {
         constraint = user_vault_token_account.mint == stake_config.vault @ CustomErrorCode::InvalidVaultMint,
         constraint = user_vault_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner
     )]
-    pub user_vault_token_account: Account<'info, TokenAccount>,
+    pub user_vault_token_account: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -225,7 +225,7 @@ pub struct Redeem<'info> {
         constraint = user_mint_token_account.mint == stake_config.mint @ CustomErrorCode::InvalidMint,
         constraint = user_mint_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner
     )]
-    pub user_mint_token_account: Account<'info, TokenAccount>,
+    pub user_mint_token_account: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -418,7 +418,7 @@ pub struct PublishRewards<'info> {
         constraint = vault_token_account.key() == stake_vault_token_account_config.vault_token_account @ CustomErrorCode::InvalidVaultTokenAccount,
         constraint = vault_token_account.owner == stake_vault_token_account_config.vault_authority @ CustomErrorCode::InvalidVaultAuthority
     )]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: Box<Account<'info, TokenAccount>>,
 
     /// CHECK: This is a PDA that acts as vault authority, validated by seeds constraint
     #[account(
@@ -447,6 +447,21 @@ pub struct PublishRewards<'info> {
         bump
     )]
     pub reward_record: Account<'info, RewardPublicationRecord>,
+
+    /// Reward cap config — enforces max_reward_bps limit on each publish.
+    /// Created on first use with DEFAULT_BPS (2000 = 20%) if not yet initialized.
+    /// This allows seamless upgrades without a separate initialization step.
+    #[account(
+        init_if_needed,
+        payer = admin,
+        space = StakeRewardConfig::LEN,
+        seeds = [
+            b"stake_reward_config",
+            stake_config.key().as_ref(),
+        ],
+        bump
+    )]
+    pub stake_reward_config: Account<'info, StakeRewardConfig>,
 
     pub system_program: Program<'info, System>,
     
@@ -610,6 +625,71 @@ pub struct SetPriceForTesting<'info> {
         bump = stake_price_config.bump,
     )]
     pub stake_price_config: Account<'info, StakePriceConfig>,
+
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+}
+
+/// Initializes the StakeRewardConfig PDA for a given StakeConfig.
+/// Creates the account that enforces the maximum reward distribution cap (max_reward_bps).
+/// Only callable by the program upgrade authority.
+/// Must be called once after program deployment (or as part of the Squads upgrade proposal).
+#[derive(Accounts)]
+pub struct InitializeRewardConfig<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        init,
+        payer = signer,
+        space = StakeRewardConfig::LEN,
+        seeds = [
+            b"stake_reward_config",
+            stake_config.key().as_ref(),
+        ],
+        bump
+    )]
+    pub stake_reward_config: Account<'info, StakeRewardConfig>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Updates max_reward_bps on an existing StakeRewardConfig.
+/// Only callable by the program upgrade authority.
+#[derive(Accounts)]
+pub struct UpdateMaxRewardBps<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"stake_reward_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_reward_config.bump,
+    )]
+    pub stake_reward_config: Account<'info, StakeRewardConfig>,
 
     pub signer: Signer<'info>,
 

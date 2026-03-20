@@ -290,6 +290,11 @@ async function main() {
         stakeProgram.programId
     );
 
+    const [stakeVaultTokenAccountConfigPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("stake_vault_token_account_config"), stakeConfigPda.toBuffer()],
+        stakeProgram.programId
+    );
+
     console.log("  Stake Config PDA:        ", stakeConfigPda.toBase58());
     console.log("  Stake Mint Authority:    ", stakeMintAuthority.toBase58());
     console.log("  Stake Freeze Authority:  ", stakeFreezeAuthority.toBase58());
@@ -311,8 +316,6 @@ async function main() {
     // Initialize Stake Program
     console.log("⚙️  Initializing Stake Program...");
 
-    const unbondingPeriod = new anchor.BN(120); // 2 minutes
-
     try {
         const [programDataPda] = PublicKey.findProgramAddressSync(
             [stakeProgram.programId.toBuffer()],
@@ -321,7 +324,6 @@ async function main() {
 
         const tx = await stakeProgram.methods
             .initialize(
-                unbondingPeriod,
                 [freezeAdmin.publicKey],
                 [rewardsAdmin.publicKey]
             )
@@ -329,6 +331,7 @@ async function main() {
                 stakeConfig: stakeConfigPda,
                 vaultAuthority: stakeVaultAuthority,
                 vaultTokenAccount: stakeVaultTokenAccount,
+                stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                 vaultTokenMint: wyldsToken,
                 mint: primeToken,
                 signer: upgradeAuthority.publicKey,
@@ -427,7 +430,6 @@ async function main() {
             freezeAuthority: stakeFreezeAuthority.toBase58(),
             vaultAuthority: stakeVaultAuthority.toBase58(),
             vaultTokenAccount: stakeVaultTokenAccount.toBase58(),
-            unbondingPeriod: unbondingPeriod.toNumber(),
         },
     };
 
@@ -462,8 +464,7 @@ REDEEM_VAULT_TOKEN_ACCOUNT=${redeemVaultTokenAccount.toBase58()}
 # Stake Program
 STAKE_PROGRAM_ID=${stakeProgram.programId.toBase58()}
 STAKE_CONFIG_PDA=${stakeConfigPda.toBase58()}
-STAKE_VAULT_TOKEN_ACCOUNT=${stakeVaultTokenAccount.toBase58()}
-UNBONDING_PERIOD=${unbondingPeriod.toNumber()}`;
+STAKE_VAULT_TOKEN_ACCOUNT=${stakeVaultTokenAccount.toBase58()}`;
 
     fs.writeFileSync(envPath, envContent);
     console.log("  ✅ Environment file:", envPath);
