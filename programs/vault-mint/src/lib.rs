@@ -36,7 +36,7 @@ use account_structs::*;
 use anchor_lang::prelude::*;
 use state::ProofNode;
 
-declare_id!("EwuBjgJYhprYV1CwEjTbiNeaxoxMdnfGMTPv3saXR21b");
+declare_id!("9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV");
 
 #[program]
 pub mod vault_mint {
