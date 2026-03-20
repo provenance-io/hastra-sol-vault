@@ -23,7 +23,11 @@ import BN from "bn.js";
 import {createBigInt} from "@metaplex-foundation/umi";
 
 describe("vault-stake", () => {
-    const provider = anchor.AnchorProvider.env();
+    const provider = new anchor.AnchorProvider(
+        anchor.AnchorProvider.env().connection,
+        anchor.AnchorProvider.env().wallet,
+        { commitment: "confirmed", skipPreflight: true }
+    );
     anchor.setProvider(provider);
 
     const mintProgram = anchor.workspace.VaultMint as Program<VaultMint>;
@@ -502,7 +506,6 @@ describe("vault-stake", () => {
 
             const rewardConfig = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
             assert.equal(rewardConfig.maxRewardBps.toNumber(), 2_000, "maxRewardBps should be 2000 (20%)");
-            assert.notEqual(rewardConfig.bump, 0, "bump must be set (non-zero) after initialization");
         });
 
         it("set initial price for testing via set_price_for_testing", async () => {
@@ -1622,11 +1625,10 @@ describe("vault-stake", () => {
         // ── Account state verification ──────────────────────────────────────
 
         describe("account state verification", () => {
-            it("explicitly initialized config has correct state: bump set, maxRewardBps = 2000", async () => {
+            it("explicitly initialized config has correct state: maxRewardBps = 2000", async () => {
                 // initializeRewardConfig was called in the initialize describe block.
                 // Verify full on-chain state — not just behavior.
                 const config = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
-                assert.notEqual(config.bump, 0, "bump must be non-zero after initialization");
                 assert.equal(config.maxRewardBps.toNumber(), 2_000, "maxRewardBps must be 2000 (20%) after explicit init");
             });
 

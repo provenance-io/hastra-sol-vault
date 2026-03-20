@@ -38,7 +38,7 @@ pub mod state;
 use account_structs::*;
 use anchor_lang::prelude::*;
 
-declare_id!("97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY");
+declare_id!("FkiVzeqHryWWMtELBZTHDo4A894yr6h783CKxpm4vEL8");
 
 #[program]
 pub mod vault_stake {
