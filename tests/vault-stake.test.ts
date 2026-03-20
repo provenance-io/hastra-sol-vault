@@ -501,7 +501,8 @@ describe("vault-stake", () => {
                 .rpc();
 
             const rewardConfig = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
-            assert.equal(rewardConfig.maxRewardBps.toNumber(), 2_000, "default max_reward_bps should be 2000 (20%)");
+            assert.equal(rewardConfig.maxRewardBps.toNumber(), 2_000, "maxRewardBps should be 2000 (20%)");
+            assert.notEqual(rewardConfig.bump, 0, "bump must be set (non-zero) after initialization");
         });
 
         it("set initial price for testing via set_price_for_testing", async () => {
@@ -1611,142 +1612,231 @@ describe("vault-stake", () => {
                 program.programId
             )[0];
 
-        it("rejects reward above 20% of total_assets with RewardExceedsMaxDelta", async () => {
-            const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
-            // 21% of total assets — just over the 20% cap
-            const overCapAmount = Number((totalAssets * BigInt(21)) / BigInt(100)) + 1;
-            const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                [
-                    Buffer.from("reward_record"),
-                    Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
-                    Buffer.from(new BigUint64Array([createBigInt(overCapAmount)]).buffer),
-                ],
-                program.programId
-            );
-            try {
+        const updateMaxRewardBpsAccounts = () => ({
+            stakeConfig: stakeConfigPda,
+            stakeRewardConfig: stakeRewardConfigPda,
+            signer: provider.wallet.publicKey,
+            programData: programDataPda,
+        });
+
+        // ── Account state verification ──────────────────────────────────────
+
+        describe("account state verification", () => {
+            it("explicitly initialized config has correct state: bump set, maxRewardBps = 2000", async () => {
+                // initializeRewardConfig was called in the initialize describe block.
+                // Verify full on-chain state — not just behavior.
+                const config = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.notEqual(config.bump, 0, "bump must be non-zero after initialization");
+                assert.equal(config.maxRewardBps.toNumber(), 2_000, "maxRewardBps must be 2000 (20%) after explicit init");
+            });
+
+            it("publish_rewards does not mutate config state (init_if_needed is idempotent)", async () => {
+                // Verify that calling publish_rewards (which uses init_if_needed) on an
+                // already-initialized account does not change the stored bump or maxRewardBps.
+                const configBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+                const safeAmount = Number(totalAssets / BigInt(10)); // 10% — within 20% cap
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, safeAmount);
                 await program.methods
-                    .publishRewards(publishRewardsId, new BN(overCapAmount))
+                    .publishRewards(publishRewardsId, new BN(safeAmount))
                     .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
                     .signers([rewardsAdmin])
                     .rpc();
-                assert.fail("Should have thrown RewardExceedsMaxDelta");
-            } catch (err) {
-                expect(err.toString()).to.include("RewardExceedsMaxDelta");
-            }
-        });
-
-        it("allows reward at exactly 20% of total_assets", async () => {
-            const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
-            // exactly 20% (floor division — safe within cap)
-            const exactCapAmount = Number(totalAssets / BigInt(5));
-            const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, exactCapAmount);
-            await program.methods
-                .publishRewards(publishRewardsId, new BN(exactCapAmount))
-                .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
-                .signers([rewardsAdmin])
-                .rpc();
-            // no error = passed
-        });
-
-        it("upgrade authority can update max_reward_bps and emit MaxRewardBpsUpdated event", async () => {
-            const newBps = 5_000; // 50%
-            const sig = await program.methods
-                .updateMaxRewardBps(new BN(newBps))
-                .accountsStrict({
-                    stakeConfig: stakeConfigPda,
-                    stakeRewardConfig: stakeRewardConfigPda,
-                    signer: provider.wallet.publicKey,
-                    programData: programDataPda,
-                })
-                .rpc({ commitment: "confirmed" });
-
-            const rewardConfig = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
-            assert.equal(rewardConfig.maxRewardBps.toNumber(), newBps);
-
-            const tx = await provider.connection.getTransaction(sig, {
-                commitment: "confirmed",
-                maxSupportedTransactionVersion: 0,
+                const configAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(configAfter.bump, configBefore.bump, "bump must not change across publish_rewards calls");
+                assert.equal(
+                    configAfter.maxRewardBps.toString(),
+                    configBefore.maxRewardBps.toString(),
+                    "maxRewardBps must not change across publish_rewards calls"
+                );
             });
-            const eventParser = new anchor.EventParser(program.programId, program.coder);
-            const events = [...eventParser.parseLogs(tx.meta.logMessages)];
-            const event = events.find(e => e.name === "maxRewardBpsUpdated");
-            assert.isDefined(event, "MaxRewardBpsUpdated event should be emitted");
-            assert.equal((event.data.oldBps as BN).toNumber(), 2_000, "old_bps should be previous value");
-            assert.equal((event.data.newBps as BN).toNumber(), newBps, "new_bps should match");
+
+            it("cannot call initializeRewardConfig a second time (account already exists)", async () => {
+                try {
+                    await program.methods
+                        .initializeRewardConfig(new BN(1_000))
+                        .accountsStrict({
+                            stakeConfig: stakeConfigPda,
+                            stakeRewardConfig: stakeRewardConfigPda,
+                            signer: provider.wallet.publicKey,
+                            programData: programDataPda,
+                            systemProgram: SystemProgram.programId,
+                        })
+                        .rpc();
+                    assert.fail("Should have thrown — account already initialized");
+                } catch (err) {
+                    // Anchor throws "already in use" when init is used on an existing account
+                    expect(err.toString()).to.include("already in use");
+                }
+            });
         });
 
-        it("allows reward above previous 20% cap after raising to 50%", async () => {
-            const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
-            // 30% — over old 20% cap but under new 50% cap
-            const amount = Number((totalAssets * BigInt(30)) / BigInt(100));
-            const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, amount);
-            await program.methods
-                .publishRewards(publishRewardsId, new BN(amount))
-                .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
-                .signers([rewardsAdmin])
-                .rpc();
-            // restore cap to 20% for remaining tests
-            await program.methods
-                .updateMaxRewardBps(new BN(2_000))
-                .accountsStrict({
-                    stakeConfig: stakeConfigPda,
-                    stakeRewardConfig: stakeRewardConfigPda,
-                    signer: provider.wallet.publicKey,
-                    programData: programDataPda,
-                })
-                .rpc();
-        });
+        // ── Default 20% cap enforcement ─────────────────────────────────────
+        // These tests verify the default maxRewardBps=2000 (20%) cap behavior.
+        // The same behavior applies when the account is auto-created via init_if_needed
+        // (maxRewardBps=0), because the processor treats 0 as DEFAULT_BPS=2000.
 
-        it("non-upgrade-authority cannot update max_reward_bps", async () => {
-            try {
+        describe("default 20% cap enforcement", () => {
+            it("rejects reward above 20% of total_assets with RewardExceedsMaxDelta", async () => {
+                const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+                const overCapAmount = Number((totalAssets * BigInt(21)) / BigInt(100)) + 1; // 21%
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, overCapAmount);
+                try {
+                    await program.methods
+                        .publishRewards(publishRewardsId, new BN(overCapAmount))
+                        .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown RewardExceedsMaxDelta");
+                } catch (err) {
+                    expect(err.toString()).to.include("RewardExceedsMaxDelta");
+                }
+            });
+
+            it("allows reward at exactly 20% of total_assets", async () => {
+                const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+                const exactCapAmount = Number(totalAssets / BigInt(5)); // exactly 20%
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, exactCapAmount);
                 await program.methods
-                    .updateMaxRewardBps(new BN(9_000))
-                    .accountsStrict({
-                        stakeConfig: stakeConfigPda,
-                        stakeRewardConfig: stakeRewardConfigPda,
-                        signer: rewardsAdmin.publicKey,
-                        programData: programDataPda,
-                    })
+                    .publishRewards(publishRewardsId, new BN(exactCapAmount))
+                    .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
                     .signers([rewardsAdmin])
                     .rpc();
-                assert.fail("Should have thrown error");
-            } catch (err) {
-                expect(err).to.exist;
-            }
+            });
         });
 
-        it("rejects max_reward_bps of 0", async () => {
-            try {
-                await program.methods
-                    .updateMaxRewardBps(new BN(0))
-                    .accountsStrict({
-                        stakeConfig: stakeConfigPda,
-                        stakeRewardConfig: stakeRewardConfigPda,
-                        signer: provider.wallet.publicKey,
-                        programData: programDataPda,
-                    })
-                    .rpc();
-                assert.fail("Should have thrown error");
-            } catch (err) {
-                expect(err.toString()).to.include("InvalidMaxRewardBps");
-            }
-        });
+        // ── Config changes via update_max_reward_bps ─────────────────────────
 
-        it("rejects max_reward_bps above 10_000 (100%)", async () => {
-            try {
+        describe("update config", () => {
+            it("upgrade authority can raise cap: emits event and updates stored state", async () => {
+                const configBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const oldBps = configBefore.maxRewardBps.toNumber();
+                const newBps = 5_000; // 50%
+
+                const sig = await program.methods
+                    .updateMaxRewardBps(new BN(newBps))
+                    .accountsStrict(updateMaxRewardBpsAccounts())
+                    .rpc({ commitment: "confirmed" });
+
+                // Verify on-chain state updated
+                const configAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(configAfter.maxRewardBps.toNumber(), newBps, "stored maxRewardBps must reflect new value");
+                assert.equal(configAfter.bump, configBefore.bump, "bump must not change on update");
+
+                // Verify MaxRewardBpsUpdated event
+                const tx = await provider.connection.getTransaction(sig, {
+                    commitment: "confirmed",
+                    maxSupportedTransactionVersion: 0,
+                });
+                const eventParser = new anchor.EventParser(program.programId, program.coder);
+                const events = [...eventParser.parseLogs(tx.meta.logMessages)];
+                const event = events.find(e => e.name === "maxRewardBpsUpdated");
+                assert.isDefined(event, "MaxRewardBpsUpdated event must be emitted");
+                assert.equal((event.data.oldBps as BN).toNumber(), oldBps, "event old_bps must reflect previous stored value");
+                assert.equal((event.data.newBps as BN).toNumber(), newBps, "event new_bps must match update argument");
+            });
+
+            it("raised cap (50%) allows reward between old and new cap: 30% reward succeeds", async () => {
+                // Precondition: cap is now 50% from the previous test
+                const configCheck = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(configCheck.maxRewardBps.toNumber(), 5_000, "precondition: cap should be 50%");
+
+                const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+                const amount = Number((totalAssets * BigInt(30)) / BigInt(100)); // 30%: blocked at 20%, allowed at 50%
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, amount);
                 await program.methods
-                    .updateMaxRewardBps(new BN(10_001))
-                    .accountsStrict({
-                        stakeConfig: stakeConfigPda,
-                        stakeRewardConfig: stakeRewardConfigPda,
-                        signer: provider.wallet.publicKey,
-                        programData: programDataPda,
-                    })
+                    .publishRewards(publishRewardsId, new BN(amount))
+                    .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                    .signers([rewardsAdmin])
                     .rpc();
-                assert.fail("Should have thrown error");
-            } catch (err) {
-                expect(err.toString()).to.include("InvalidMaxRewardBps");
-            }
+            });
+
+            it("upgrade authority can lower cap: stored state and event both reflect change", async () => {
+                const configBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const oldBps = configBefore.maxRewardBps.toNumber();
+                const newBps = 2_000; // restore to 20%
+
+                const sig = await program.methods
+                    .updateMaxRewardBps(new BN(newBps))
+                    .accountsStrict(updateMaxRewardBpsAccounts())
+                    .rpc({ commitment: "confirmed" });
+
+                const configAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(configAfter.maxRewardBps.toNumber(), newBps, "stored maxRewardBps must reflect lowered value");
+
+                const tx = await provider.connection.getTransaction(sig, {
+                    commitment: "confirmed",
+                    maxSupportedTransactionVersion: 0,
+                });
+                const eventParser = new anchor.EventParser(program.programId, program.coder);
+                const events = [...eventParser.parseLogs(tx.meta.logMessages)];
+                const event = events.find(e => e.name === "maxRewardBpsUpdated");
+                assert.isDefined(event, "MaxRewardBpsUpdated event must be emitted on lower");
+                assert.equal((event.data.oldBps as BN).toNumber(), oldBps, "event old_bps must be previous cap");
+                assert.equal((event.data.newBps as BN).toNumber(), newBps, "event new_bps must be new cap");
+            });
+
+            it("lowered cap re-enforces limit: reward above new cap is rejected", async () => {
+                // Precondition: cap is back to 20%
+                const configCheck = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(configCheck.maxRewardBps.toNumber(), 2_000, "precondition: cap should be restored to 20%");
+
+                const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+                const overCapAmount = Number((totalAssets * BigInt(30)) / BigInt(100)); // 30% — over 20% cap
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, overCapAmount);
+                try {
+                    await program.methods
+                        .publishRewards(publishRewardsId, new BN(overCapAmount))
+                        .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown RewardExceedsMaxDelta after restoring 20% cap");
+                } catch (err) {
+                    expect(err.toString()).to.include("RewardExceedsMaxDelta");
+                }
+            });
+
+            it("non-upgrade-authority cannot update max_reward_bps", async () => {
+                try {
+                    await program.methods
+                        .updateMaxRewardBps(new BN(9_000))
+                        .accountsStrict({
+                            stakeConfig: stakeConfigPda,
+                            stakeRewardConfig: stakeRewardConfigPda,
+                            signer: rewardsAdmin.publicKey,
+                            programData: programDataPda,
+                        })
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown error");
+                } catch (err) {
+                    expect(err).to.exist;
+                }
+            });
+
+            it("rejects max_reward_bps of 0 with InvalidMaxRewardBps", async () => {
+                try {
+                    await program.methods
+                        .updateMaxRewardBps(new BN(0))
+                        .accountsStrict(updateMaxRewardBpsAccounts())
+                        .rpc();
+                    assert.fail("Should have thrown error");
+                } catch (err) {
+                    expect(err.toString()).to.include("InvalidMaxRewardBps");
+                }
+            });
+
+            it("rejects max_reward_bps above 10_000 (100%) with InvalidMaxRewardBps", async () => {
+                try {
+                    await program.methods
+                        .updateMaxRewardBps(new BN(10_001))
+                        .accountsStrict(updateMaxRewardBpsAccounts())
+                        .rpc();
+                    assert.fail("Should have thrown error");
+                } catch (err) {
+                    expect(err.toString()).to.include("InvalidMaxRewardBps");
+                }
+            });
         });
     });
 
