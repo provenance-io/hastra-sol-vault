@@ -316,8 +316,6 @@ async function main() {
     // Initialize Stake Program
     console.log("⚙️  Initializing Stake Program...");
 
-    const unbondingPeriod = new anchor.BN(120); // 2 minutes
-
     try {
         const [programDataPda] = PublicKey.findProgramAddressSync(
             [stakeProgram.programId.toBuffer()],
