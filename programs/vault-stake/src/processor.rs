@@ -429,6 +429,13 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
     );
     require!(amount > 0, CustomErrorCode::InvalidAmount);
 
+    // Lazily initialize StakeRewardConfig on first use (init_if_needed).
+    // bump == 0 means just created; set bump and leave max_reward_bps = 0
+    // so the cap check below treats it as DEFAULT_BPS.
+    if ctx.accounts.stake_reward_config.bump == 0 {
+        ctx.accounts.stake_reward_config.bump = ctx.bumps.stake_reward_config;
+    }
+
     // Enforce reward cap: amount must not exceed max_reward_bps % of current total_assets.
     // Skip when vault is empty (bootstrap) — first reward is always allowed.
     let total_assets = ctx.accounts.vault_token_account.amount;

@@ -449,13 +449,17 @@ pub struct PublishRewards<'info> {
     pub reward_record: Account<'info, RewardPublicationRecord>,
 
     /// Reward cap config — enforces max_reward_bps limit on each publish.
-    /// If this account has not yet been initialized, publish_rewards will default to 20% (2000 BPS).
+    /// Created on first use with DEFAULT_BPS (2000 = 20%) if not yet initialized.
+    /// This allows seamless upgrades without a separate initialization step.
     #[account(
+        init_if_needed,
+        payer = admin,
+        space = StakeRewardConfig::LEN,
         seeds = [
             b"stake_reward_config",
             stake_config.key().as_ref(),
         ],
-        bump = stake_reward_config.bump,
+        bump
     )]
     pub stake_reward_config: Account<'info, StakeRewardConfig>,
 
