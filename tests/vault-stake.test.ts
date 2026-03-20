@@ -29,6 +29,34 @@ describe("vault-stake", () => {
     const mintProgram = anchor.workspace.VaultMint as Program<VaultMint>;
     const program = anchor.workspace.VaultStake as Program<VaultStake>;
 
+    // Helper: parse events from a confirmed transaction's log messages.
+    // Derives the actual on-chain program ID from the transaction logs rather
+    // than relying on the workspace program ID, making this robust to
+    // `anchor keys sync` changing the declared ID in the IDL.
+    const parseEvents = async (sig: string) => {
+        const tx = await provider.connection.getTransaction(sig, {
+            commitment: "confirmed",
+            maxSupportedTransactionVersion: 0,
+        });
+        if (!tx?.meta?.logMessages) {
+            console.log("DEBUG parseEvents: no logMessages for sig", sig);
+            return [];
+        }
+        // Extract the actual program ID from the first invoke log line.
+        const invokeLine = tx.meta.logMessages.find(l => l.includes("invoke [1]"));
+        const actualProgramId = invokeLine
+            ? new anchor.web3.PublicKey(invokeLine.split(" ")[1])
+            : program.programId;
+        console.log("DEBUG parseEvents: workspace programId =", program.programId.toBase58());
+        console.log("DEBUG parseEvents: actualProgramId     =", actualProgramId.toBase58());
+        console.log("DEBUG parseEvents: logMessages =", JSON.stringify(tx.meta.logMessages, null, 2));
+        const eventParser = new anchor.EventParser(actualProgramId, program.coder);
+        const events = [...eventParser.parseLogs(tx.meta.logMessages)];
+        console.log("DEBUG parseEvents: parsed events =", JSON.stringify(events.map(e => e.name)));
+        return events;
+    };
+
+
     let mintedToken: PublicKey;
     let vaultedToken: PublicKey;
     let vaultTokenAccount: PublicKey;
@@ -1375,17 +1403,17 @@ describe("vault-stake", () => {
             const vaultBalanceBefore = (await getAccount(provider.connection, vaultTokenAccount)).amount;
 
             // Use 10% of vault balance to stay within the 20% reward cap
-            const amount = Number(vaultBalanceBefore / BigInt(10));
+            const amount = vaultBalanceBefore / BigInt(10);
             const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("reward_record"),
                     Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
-                    Buffer.from(new BigUint64Array([createBigInt(amount)]).buffer)
+                    Buffer.from(new BigUint64Array([amount]).buffer)
                 ],
                 program.programId);
 
             const sig = await program.methods
-                .publishRewards(publishRewardsId, new BN(amount))
+                .publishRewards(publishRewardsId, new BN(amount.toString()))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
@@ -1409,16 +1437,11 @@ describe("vault-stake", () => {
             // Regression test: RewardsPublished event total_assets must reflect the post-CPI
             // vault balance (after reload()), not the stale pre-CPI cached value.
             const vaultBalanceAfter = (await getAccount(provider.connection, vaultTokenAccount)).amount;
-            const expectedTotalAssets = vaultBalanceBefore + createBigInt(amount);
+            const expectedTotalAssets = vaultBalanceBefore + amount;
             assert.equal(vaultBalanceAfter, expectedTotalAssets, "Vault balance should increase by reward amount");
 
-            const tx = await provider.connection.getTransaction(sig, {
-                commitment: "confirmed",
-                maxSupportedTransactionVersion: 0,
-            });
-            const eventParser = new anchor.EventParser(program.programId, program.coder);
-            const events = [...eventParser.parseLogs(tx.meta.logMessages)];
-            const event = events.find(e => e.name === "RewardsPublished");
+            const events = await parseEvents(sig);
+            const event = events.find(e => e.name === "rewardsPublished");
 
             assert.isDefined(event, "RewardsPublished event should be emitted");
             assert.equal(
@@ -1427,8 +1450,8 @@ describe("vault-stake", () => {
                 "RewardsPublished event total_assets must equal post-CPI vault balance, not pre-CPI stale value"
             );
             assert.equal(
-                (event.data.amount as BN).toNumber(),
-                amount,
+                (event.data.amount as BN).toString(),
+                amount.toString(),
                 "RewardsPublished event amount should match published reward"
             );
         });
@@ -1601,15 +1624,17 @@ describe("vault-stake", () => {
             systemProgram: anchor.web3.SystemProgram.programId,
         });
 
-        const makeRewardsRecordPda = (id: number, amount: number) =>
-            anchor.web3.PublicKey.findProgramAddressSync(
+        const makeRewardsRecordPda = (id: number, amount: bigint | number) => {
+            const amountBigInt = typeof amount === "bigint" ? amount : BigInt(amount);
+            return anchor.web3.PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("reward_record"),
                     Buffer.from(new Uint32Array([id]).buffer),
-                    Buffer.from(new BigUint64Array([createBigInt(amount)]).buffer),
+                    Buffer.from(new BigUint64Array([amountBigInt]).buffer),
                 ],
                 program.programId
             )[0];
+        };
 
         const updateMaxRewardBpsAccounts = () => ({
             stakeConfig: stakeConfigPda,
@@ -1633,10 +1658,10 @@ describe("vault-stake", () => {
                 // already-initialized account does not change the stored bump or maxRewardBps.
                 const configBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
                 const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
-                const safeAmount = Number(totalAssets / BigInt(10)); // 10% — within 20% cap
+                const safeAmount = totalAssets / BigInt(10); // 10% — within 20% cap
                 const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, safeAmount);
                 await program.methods
-                    .publishRewards(publishRewardsId, new BN(safeAmount))
+                    .publishRewards(publishRewardsId, new BN(safeAmount.toString()))
                     .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
                     .signers([rewardsAdmin])
                     .rpc();
@@ -1677,11 +1702,11 @@ describe("vault-stake", () => {
         describe("default 20% cap enforcement", () => {
             it("rejects reward above 20% of total_assets with RewardExceedsMaxDelta", async () => {
                 const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
-                const overCapAmount = Number((totalAssets * BigInt(21)) / BigInt(100)) + 1; // 21%
+                const overCapAmount = (totalAssets * BigInt(21)) / BigInt(100) + BigInt(1); // 21%
                 const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, overCapAmount);
                 try {
                     await program.methods
-                        .publishRewards(publishRewardsId, new BN(overCapAmount))
+                        .publishRewards(publishRewardsId, new BN(overCapAmount.toString()))
                         .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
                         .signers([rewardsAdmin])
                         .rpc();
@@ -1693,10 +1718,10 @@ describe("vault-stake", () => {
 
             it("allows reward at exactly 20% of total_assets", async () => {
                 const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
-                const exactCapAmount = Number(totalAssets / BigInt(5)); // exactly 20%
+                const exactCapAmount = totalAssets / BigInt(5); // exactly 20%
                 const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, exactCapAmount);
                 await program.methods
-                    .publishRewards(publishRewardsId, new BN(exactCapAmount))
+                    .publishRewards(publishRewardsId, new BN(exactCapAmount.toString()))
                     .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
                     .signers([rewardsAdmin])
                     .rpc();
@@ -1722,13 +1747,8 @@ describe("vault-stake", () => {
                 assert.equal(configAfter.bump, configBefore.bump, "bump must not change on update");
 
                 // Verify MaxRewardBpsUpdated event
-                const tx = await provider.connection.getTransaction(sig, {
-                    commitment: "confirmed",
-                    maxSupportedTransactionVersion: 0,
-                });
-                const eventParser = new anchor.EventParser(program.programId, program.coder);
-                const events = [...eventParser.parseLogs(tx.meta.logMessages)];
-                const event = events.find(e => e.name === "MaxRewardBpsUpdated");
+                const events = await parseEvents(sig);
+                const event = events.find(e => e.name === "maxRewardBpsUpdated");
                 assert.isDefined(event, "MaxRewardBpsUpdated event must be emitted");
                 assert.equal((event.data.oldBps as BN).toNumber(), oldBps, "event old_bps must reflect previous stored value");
                 assert.equal((event.data.newBps as BN).toNumber(), newBps, "event new_bps must match update argument");
@@ -1740,10 +1760,10 @@ describe("vault-stake", () => {
                 assert.equal(configCheck.maxRewardBps.toNumber(), 5_000, "precondition: cap should be 50%");
 
                 const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
-                const amount = Number((totalAssets * BigInt(30)) / BigInt(100)); // 30%: blocked at 20%, allowed at 50%
+                const amount = (totalAssets * BigInt(30)) / BigInt(100); // 30%: blocked at 20%, allowed at 50%
                 const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, amount);
                 await program.methods
-                    .publishRewards(publishRewardsId, new BN(amount))
+                    .publishRewards(publishRewardsId, new BN(amount.toString()))
                     .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
                     .signers([rewardsAdmin])
                     .rpc();
@@ -1762,13 +1782,8 @@ describe("vault-stake", () => {
                 const configAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
                 assert.equal(configAfter.maxRewardBps.toNumber(), newBps, "stored maxRewardBps must reflect lowered value");
 
-                const tx = await provider.connection.getTransaction(sig, {
-                    commitment: "confirmed",
-                    maxSupportedTransactionVersion: 0,
-                });
-                const eventParser = new anchor.EventParser(program.programId, program.coder);
-                const events = [...eventParser.parseLogs(tx.meta.logMessages)];
-                const event = events.find(e => e.name === "MaxRewardBpsUpdated");
+                const events = await parseEvents(sig);
+                const event = events.find(e => e.name === "maxRewardBpsUpdated");
                 assert.isDefined(event, "MaxRewardBpsUpdated event must be emitted on lower");
                 assert.equal((event.data.oldBps as BN).toNumber(), oldBps, "event old_bps must be previous cap");
                 assert.equal((event.data.newBps as BN).toNumber(), newBps, "event new_bps must be new cap");
@@ -1780,11 +1795,11 @@ describe("vault-stake", () => {
                 assert.equal(configCheck.maxRewardBps.toNumber(), 2_000, "precondition: cap should be restored to 20%");
 
                 const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
-                const overCapAmount = Number((totalAssets * BigInt(30)) / BigInt(100)); // 30% — over 20% cap
+                const overCapAmount = (totalAssets * BigInt(30)) / BigInt(100); // 30% — over 20% cap
                 const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, overCapAmount);
                 try {
                     await program.methods
-                        .publishRewards(publishRewardsId, new BN(overCapAmount))
+                        .publishRewards(publishRewardsId, new BN(overCapAmount.toString()))
                         .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
                         .signers([rewardsAdmin])
                         .rpc();
