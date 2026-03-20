@@ -23,11 +23,7 @@ import BN from "bn.js";
 import {createBigInt} from "@metaplex-foundation/umi";
 
 describe("vault-stake", () => {
-    const provider = new anchor.AnchorProvider(
-        anchor.AnchorProvider.env().connection,
-        anchor.AnchorProvider.env().wallet,
-        { commitment: "confirmed", skipPreflight: true }
-    );
+    const provider = anchor.AnchorProvider.env();
     anchor.setProvider(provider);
 
     const mintProgram = anchor.workspace.VaultMint as Program<VaultMint>;
@@ -1408,7 +1404,7 @@ describe("vault-stake", () => {
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
                 .signers([rewardsAdmin])
-                .rpc({ commitment: "confirmed" });
+                .rpc({ commitment: "confirmed", skipPreflight: true });
 
             // Regression test: RewardsPublished event total_assets must reflect the post-CPI
             // vault balance (after reload()), not the stale pre-CPI cached value.
@@ -1718,7 +1714,7 @@ describe("vault-stake", () => {
                 const sig = await program.methods
                     .updateMaxRewardBps(new BN(newBps))
                     .accountsStrict(updateMaxRewardBpsAccounts())
-                    .rpc({ commitment: "confirmed" });
+                    .rpc({ commitment: "confirmed", skipPreflight: true });
 
                 // Verify on-chain state updated
                 const configAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
@@ -1761,7 +1757,7 @@ describe("vault-stake", () => {
                 const sig = await program.methods
                     .updateMaxRewardBps(new BN(newBps))
                     .accountsStrict(updateMaxRewardBpsAccounts())
-                    .rpc({ commitment: "confirmed" });
+                    .rpc({ commitment: "confirmed", skipPreflight: true });
 
                 const configAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
                 assert.equal(configAfter.maxRewardBps.toNumber(), newBps, "stored maxRewardBps must reflect lowered value");

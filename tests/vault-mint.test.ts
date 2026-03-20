@@ -18,11 +18,7 @@ import {allocationsToMerkleTree, makeLeaf} from "../scripts/cryptolib";
 import {MerkleTree} from "merkletreejs";
 
 describe("vault-mint", () => {
-    const provider = new anchor.AnchorProvider(
-        anchor.AnchorProvider.env().connection,
-        anchor.AnchorProvider.env().wallet,
-        { commitment: "confirmed", skipPreflight: true }
-    );
+    const provider = anchor.AnchorProvider.env();
     anchor.setProvider(provider);
 
     const program = anchor.workspace.VaultMint as Program<VaultMint>;
