@@ -434,10 +434,9 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
     ctx.accounts.stake_reward_config.bump = ctx.bumps.stake_reward_config;
 
     // Enforce reward cap: amount must not exceed max_reward_bps % of current total_assets.
-    // Skip when vault is empty (bootstrap) — first reward is always allowed.
+    // Skip only when the vault is truly empty (bootstrap) — cap applies whenever assets exist.
     let total_assets = ctx.accounts.vault_token_account.amount;
-    let total_shares = ctx.accounts.mint.supply;
-    if total_assets > 0 && total_shares > 0 {
+    if total_assets > 0 {
         let effective_bps = if ctx.accounts.stake_reward_config.max_reward_bps == 0 {
             StakeRewardConfig::DEFAULT_BPS
         } else {
