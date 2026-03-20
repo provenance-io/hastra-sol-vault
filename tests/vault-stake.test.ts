@@ -1418,7 +1418,7 @@ describe("vault-stake", () => {
             });
             const eventParser = new anchor.EventParser(program.programId, program.coder);
             const events = [...eventParser.parseLogs(tx.meta.logMessages)];
-            const event = events.find(e => e.name === "rewardsPublished");
+            const event = events.find(e => e.name === "RewardsPublished");
 
             assert.isDefined(event, "RewardsPublished event should be emitted");
             assert.equal(
@@ -1728,7 +1728,7 @@ describe("vault-stake", () => {
                 });
                 const eventParser = new anchor.EventParser(program.programId, program.coder);
                 const events = [...eventParser.parseLogs(tx.meta.logMessages)];
-                const event = events.find(e => e.name === "maxRewardBpsUpdated");
+                const event = events.find(e => e.name === "MaxRewardBpsUpdated");
                 assert.isDefined(event, "MaxRewardBpsUpdated event must be emitted");
                 assert.equal((event.data.oldBps as BN).toNumber(), oldBps, "event old_bps must reflect previous stored value");
                 assert.equal((event.data.newBps as BN).toNumber(), newBps, "event new_bps must match update argument");
@@ -1768,7 +1768,7 @@ describe("vault-stake", () => {
                 });
                 const eventParser = new anchor.EventParser(program.programId, program.coder);
                 const events = [...eventParser.parseLogs(tx.meta.logMessages)];
-                const event = events.find(e => e.name === "maxRewardBpsUpdated");
+                const event = events.find(e => e.name === "MaxRewardBpsUpdated");
                 assert.isDefined(event, "MaxRewardBpsUpdated event must be emitted on lower");
                 assert.equal((event.data.oldBps as BN).toNumber(), oldBps, "event old_bps must be previous cap");
                 assert.equal((event.data.newBps as BN).toNumber(), newBps, "event new_bps must be new cap");
