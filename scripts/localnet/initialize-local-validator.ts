@@ -430,7 +430,6 @@ async function main() {
             freezeAuthority: stakeFreezeAuthority.toBase58(),
             vaultAuthority: stakeVaultAuthority.toBase58(),
             vaultTokenAccount: stakeVaultTokenAccount.toBase58(),
-            unbondingPeriod: unbondingPeriod.toNumber(),
         },
     };
 
@@ -465,8 +464,7 @@ REDEEM_VAULT_TOKEN_ACCOUNT=${redeemVaultTokenAccount.toBase58()}
 # Stake Program
 STAKE_PROGRAM_ID=${stakeProgram.programId.toBase58()}
 STAKE_CONFIG_PDA=${stakeConfigPda.toBase58()}
-STAKE_VAULT_TOKEN_ACCOUNT=${stakeVaultTokenAccount.toBase58()}
-UNBONDING_PERIOD=${unbondingPeriod.toNumber()}`;
+STAKE_VAULT_TOKEN_ACCOUNT=${stakeVaultTokenAccount.toBase58()}`;
 
     fs.writeFileSync(envPath, envContent);
     console.log("  ✅ Environment file:", envPath);
