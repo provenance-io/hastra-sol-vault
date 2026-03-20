@@ -629,8 +629,9 @@ pub fn update_price_config(
 }
 
 /// Initializes the StakeRewardConfig PDA for the given StakeConfig.
-/// Sets max_reward_bps to DEFAULT_BPS (2000 = 20%) unless overridden.
-/// Must be called once after deployment — include in the Squads upgrade proposal.
+/// Explicitly sets `max_reward_bps` to the provided value (subject to MAX_BPS validation).
+/// This is an optional, proactive setup step; the config may also be lazily created by
+/// `publish_rewards` via `init_if_needed` using the program's default cap semantics.
 /// Only callable by the program upgrade authority.
 pub fn initialize_reward_config(ctx: Context<InitializeRewardConfig>, max_reward_bps: u64) -> Result<()> {
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
