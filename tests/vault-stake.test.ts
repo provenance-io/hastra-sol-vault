@@ -516,9 +516,9 @@ describe("vault-stake", () => {
             assert.equal(priceConfig.priceTimestamp.toString(), "0", "price not set until verify_price is called");
         });
 
-        it("initializes reward config with 20% default", async () => {
+        it("initializes reward config with 0.75% default", async () => {
             await program.methods
-                .initializeRewardConfig(new BN(2_000))
+                .initializeRewardConfig(new BN(75))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     stakeRewardConfig: stakeRewardConfigPda,
@@ -529,7 +529,7 @@ describe("vault-stake", () => {
                 .rpc();
 
             const rewardConfig = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
-            assert.equal(rewardConfig.maxRewardBps.toNumber(), 2_000, "maxRewardBps should be 2000 (20%)");
+            assert.equal(rewardConfig.maxRewardBps.toNumber(), 75, "maxRewardBps should be 75 (0.75%)");
         });
 
         it("set initial price for testing via set_price_for_testing", async () => {
@@ -1205,17 +1205,19 @@ describe("vault-stake", () => {
 
         it("prevents publish rewards redeem when MINT PROGRAM is paused", async () => {
             try {
-                const amount = 1_000_000_000;
+                // Use 0.5% of vault balance — within the 0.75% cap so the cap isn't hit before ProtocolPaused
+                const vaultBalance = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+                const amount = (vaultBalance * BigInt(50)) / BigInt(10_000);
                 const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
                     [
                         Buffer.from("reward_record"),
                         Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
-                        Buffer.from(new BigUint64Array([createBigInt(amount)]).buffer)
+                        Buffer.from(new BigUint64Array([amount]).buffer)
                     ],
                     program.programId);
 
                 await program.methods
-                    .publishRewards(publishRewardsId, new BN(amount))
+                    .publishRewards(publishRewardsId, new BN(amount.toString()))
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
                         stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
@@ -1402,8 +1404,8 @@ describe("vault-stake", () => {
             const rateBefore = await exchangeRate();
             const vaultBalanceBefore = (await getAccount(provider.connection, vaultTokenAccount)).amount;
 
-            // Use 10% of vault balance to stay within the 20% reward cap
-            const amount = vaultBalanceBefore / BigInt(10);
+            // Use 0.5% of vault balance to stay within the 0.75% reward cap
+            const amount = (vaultBalanceBefore * BigInt(50)) / BigInt(10_000);
             const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("reward_record"),
@@ -1496,12 +1498,14 @@ describe("vault-stake", () => {
         });
 
         it("publish reward multiples", async () => {
-            const amount = 1_000_000_000;
+            // Use 0.5% of vault balance — safely within the 0.75% cap for each call
+            const vaultBalance = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+            const amount = (vaultBalance * BigInt(50)) / BigInt(10_000);
             const [rewardsRecordPda1] = anchor.web3.PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("reward_record"),
                     Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
-                    Buffer.from(new BigUint64Array([createBigInt(amount)]).buffer)
+                    Buffer.from(new BigUint64Array([amount]).buffer)
                 ],
                 program.programId);
 
@@ -1531,7 +1535,7 @@ describe("vault-stake", () => {
                 [
                     Buffer.from("reward_record"),
                     Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
-                    Buffer.from(new BigUint64Array([createBigInt(amount)]).buffer)
+                    Buffer.from(new BigUint64Array([amount]).buffer)
                 ],
                 program.programId);
 
@@ -1560,8 +1564,8 @@ describe("vault-stake", () => {
             const reward1 = await program.account.rewardPublicationRecord.fetch(rewardsRecordPda1);
             const reward2 = await program.account.rewardPublicationRecord.fetch(rewardsRecordPda2);
 
-            assert.equal(reward1.amount.toNumber(), amount, "First reward amount should match");
-            assert.equal(reward2.amount.toNumber(), amount, "Second reward amount should match");
+            assert.equal(reward1.amount.toString(), amount.toString(), "First reward amount should match");
+            assert.equal(reward2.amount.toString(), amount.toString(), "Second reward amount should match");
             assert.equal(reward2.id, publishRewardsId, "Second reward id should match current reward id");
         });
 
@@ -1646,11 +1650,11 @@ describe("vault-stake", () => {
         // ── Account state verification ──────────────────────────────────────
 
         describe("account state verification", () => {
-            it("explicitly initialized config has correct state: maxRewardBps = 2000", async () => {
+            it("explicitly initialized config has correct state: maxRewardBps = 75", async () => {
                 // initializeRewardConfig was called in the initialize describe block.
                 // Verify full on-chain state — not just behavior.
                 const config = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
-                assert.equal(config.maxRewardBps.toNumber(), 2_000, "maxRewardBps must be 2000 (20%) after explicit init");
+                assert.equal(config.maxRewardBps.toNumber(), 75, "maxRewardBps must be 75 (0.75%) after explicit init");
             });
 
             it("publish_rewards does not mutate config state (init_if_needed is idempotent)", async () => {
@@ -1658,7 +1662,7 @@ describe("vault-stake", () => {
                 // already-initialized account does not change the stored bump or maxRewardBps.
                 const configBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
                 const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
-                const safeAmount = totalAssets / BigInt(10); // 10% — within 20% cap
+                const safeAmount = (totalAssets * BigInt(50)) / BigInt(10_000); // 0.5% — within 0.75% cap
                 const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, safeAmount);
                 await program.methods
                     .publishRewards(publishRewardsId, new BN(safeAmount.toString()))
@@ -1694,15 +1698,15 @@ describe("vault-stake", () => {
             });
         });
 
-        // ── Default 20% cap enforcement ─────────────────────────────────────
-        // These tests verify the default maxRewardBps=2000 (20%) cap behavior.
+        // ── Default 0.75% cap enforcement ─────────────────────────────────────
+        // These tests verify the default maxRewardBps=75 (0.75%) cap behavior.
         // The same behavior applies when the account is auto-created via init_if_needed
-        // (maxRewardBps=0), because the processor treats 0 as DEFAULT_BPS=2000.
+        // (maxRewardBps=0), because the processor treats 0 as DEFAULT_BPS=75.
 
-        describe("default 20% cap enforcement", () => {
-            it("rejects reward above 20% of total_assets with RewardExceedsMaxDelta", async () => {
+        describe("default 0.75% cap enforcement", () => {
+            it("rejects reward above 0.75% of total_assets with RewardExceedsMaxDelta", async () => {
                 const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
-                const overCapAmount = (totalAssets * BigInt(21)) / BigInt(100) + BigInt(1); // 21%
+                const overCapAmount = (totalAssets * BigInt(76)) / BigInt(10_000) + BigInt(1); // just over 0.75%
                 const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, overCapAmount);
                 try {
                     await program.methods
@@ -1716,9 +1720,9 @@ describe("vault-stake", () => {
                 }
             });
 
-            it("allows reward at exactly 20% of total_assets", async () => {
+            it("allows reward at exactly 0.75% of total_assets", async () => {
                 const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
-                const exactCapAmount = totalAssets / BigInt(5); // exactly 20%
+                const exactCapAmount = (totalAssets * BigInt(75)) / BigInt(10_000); // exactly 0.75%
                 const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, exactCapAmount);
                 await program.methods
                     .publishRewards(publishRewardsId, new BN(exactCapAmount.toString()))

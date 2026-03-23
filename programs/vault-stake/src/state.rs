@@ -72,18 +72,21 @@ impl StakeVaultTokenAccountConfig {
 // Reward cap config is a separate account (not part of StakeConfig) so that the deployed program's
 // account layout remains unchanged. This follows the same pattern as StakeVaultTokenAccountConfig
 // and StakePriceConfig.
-// max_reward_bps is expressed in basis points (10_000 = 100%). Default at initialization: 2_000 (20%).
+// max_reward_bps is expressed in basis points (10_000 = 100%). Default at initialization: 75 (0.75%).
+// Rationale: expected yield rate is ~0.28% of vault balance per distribution (vault_balance * 0.0028).
+// The cap is set at 75 BPS (~2.7x the expected rate) to allow headroom while tightly limiting blast
+// radius of a compromised rewards admin key.
 // publish_rewards will reject any reward amount that exceeds total_assets * max_reward_bps / 10_000.
 #[account]
 pub struct StakeRewardConfig {
-    pub max_reward_bps: u64, // max reward per publish as % of total_assets, in BPS (2000 = 20%)
+    pub max_reward_bps: u64, // max reward per publish as % of total_assets, in BPS (75 = 0.75%)
     pub bump: u8,
 }
 
 impl StakeRewardConfig {
     pub const LEN: usize = 8 + 8 + 1; // discriminator + max_reward_bps (u64) + bump
     pub const MAX_BPS: u64 = 10_000;
-    pub const DEFAULT_BPS: u64 = 2_000; // 20%, matching ETH StakingVault default
+    pub const DEFAULT_BPS: u64 = 75; // 0.75% — ~2.7x expected yield rate of 0.28%
 }
 
 // Price config is a separate account (not part of StakeConfig) so that the deployed program's
