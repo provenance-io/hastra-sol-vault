@@ -512,6 +512,7 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
 /// FOR TESTING ONLY — directly writes price and price_timestamp into StakePriceConfig.
 /// Requires program upgrade authority. Intended for localnet test environments where
 /// the Chainlink verifier is not available. DO NOT USE IN PRODUCTION.
+#[cfg(feature = "testing")]
 pub fn set_price_for_testing(
     ctx: Context<SetPriceForTesting>,
     price: i128,

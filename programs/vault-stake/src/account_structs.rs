@@ -608,6 +608,7 @@ pub struct VerifyPrice<'info> {
 /// This bypasses the Chainlink CPI and allows localnet tests to set an arbitrary price.
 /// Access is restricted to the program upgrade authority (same as initialize).
 /// DO NOT USE IN PRODUCTION — use verify_price with a real Chainlink report instead.
+#[cfg(feature = "testing")]
 #[derive(Accounts)]
 pub struct SetPriceForTesting<'info> {
     #[account(

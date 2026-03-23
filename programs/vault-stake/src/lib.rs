@@ -178,6 +178,7 @@ pub mod vault_stake {
 
     /// FOR TESTING ONLY — directly sets price and price_timestamp on StakePriceConfig.
     /// Requires program upgrade authority. Use on localnet only; use verify_price in production.
+    #[cfg(feature = "testing")]
     pub fn set_price_for_testing(
         ctx: Context<SetPriceForTesting>,
         price: i128,
