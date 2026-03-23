@@ -52,6 +52,11 @@ jobs:
     - name: Anchor build
       run: anchor build
 
+    - name: Rebuild vault-stake with testing feature
+      run: |
+        cd programs/vault-stake
+        cargo build-sbf --features testing
+
     - name: Setup solana node
       run: |
         solana-test-validator --reset &
@@ -65,7 +70,7 @@ jobs:
         solana airdrop 1000
 
     - name: Anchor test
-      run: anchor test --skip-local-validator
+      run: anchor test --skip-local-validator --skip-build
 
     - name: Stop local validator
       run: kill ${VALIDATOR_PID}
