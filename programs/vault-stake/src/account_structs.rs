@@ -120,7 +120,7 @@ pub struct Deposit<'info> {
         constraint = vault_token_account.key() == stake_vault_token_account_config.vault_token_account @ CustomErrorCode::InvalidVaultTokenAccount,
         constraint = vault_token_account.owner == stake_vault_token_account_config.vault_authority @ CustomErrorCode::InvalidVaultAuthority
     )]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: Box<Account<'info, TokenAccount>>,
 
     /// CHECK: This is a PDA that acts as vault authority, validated by seeds constraint
     #[account(
@@ -159,7 +159,7 @@ pub struct Deposit<'info> {
         constraint = user_vault_token_account.mint == stake_config.vault @ CustomErrorCode::InvalidVaultMint,
         constraint = user_vault_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner
     )]
-    pub user_vault_token_account: Account<'info, TokenAccount>,
+    pub user_vault_token_account: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -167,7 +167,7 @@ pub struct Deposit<'info> {
         constraint = user_mint_token_account.mint == stake_config.mint @ CustomErrorCode::InvalidMint,
         constraint = user_mint_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner
     )]
-    pub user_mint_token_account: Account<'info, TokenAccount>,
+    pub user_mint_token_account: Box<Account<'info, TokenAccount>>,
 
     pub token_program: Program<'info, Token>,
 }
@@ -191,7 +191,7 @@ pub struct Unbond<'info> {
     #[account(
         token::mint = stake_config.mint,
         constraint = user_mint_token_account.mint == stake_config.mint @ CustomErrorCode::InvalidMint,
-        constraint = user_mint_token_account.owner == signer.key() @ CustomErrorCode::InvalidMintAuthority
+        constraint = user_mint_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner
 
     )]
     pub user_mint_token_account: Account<'info, TokenAccount>,
@@ -232,7 +232,7 @@ pub struct Redeem<'info> {
         constraint = vault_token_account.key() == stake_vault_token_account_config.vault_token_account @ CustomErrorCode::InvalidVaultTokenAccount,
         constraint = vault_token_account.owner == stake_vault_token_account_config.vault_authority @ CustomErrorCode::InvalidVaultAuthority,
     )]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: Box<Account<'info, TokenAccount>>,
 
     /// CHECK: This is a PDA vault authority, validated by seeds and token account owner constraint
     #[account(
@@ -259,7 +259,7 @@ pub struct Redeem<'info> {
         constraint = user_vault_token_account.mint == stake_config.vault @ CustomErrorCode::InvalidVaultMint,
         constraint = user_vault_token_account.owner == signer.key() @ CustomErrorCode::InvalidTicketOwner
     )]
-    pub user_vault_token_account: Account<'info, TokenAccount>,
+    pub user_vault_token_account: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -267,7 +267,7 @@ pub struct Redeem<'info> {
         constraint = user_mint_token_account.mint == stake_config.mint @ CustomErrorCode::InvalidMint,
         constraint = user_mint_token_account.owner == signer.key() @ CustomErrorCode::InvalidTicketOwner
     )]
-    pub user_mint_token_account: Account<'info, TokenAccount>,
+    pub user_mint_token_account: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -451,7 +451,7 @@ pub struct PublishRewards<'info> {
         constraint = vault_token_account.key() == stake_vault_token_account_config.vault_token_account @ CustomErrorCode::InvalidVaultTokenAccount,
         constraint = vault_token_account.owner == stake_vault_token_account_config.vault_authority @ CustomErrorCode::InvalidVaultAuthority
     )]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: Box<Account<'info, TokenAccount>>,
 
     /// CHECK: This is a PDA that acts as vault authority, validated by seeds constraint
     #[account(

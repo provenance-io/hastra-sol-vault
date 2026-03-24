@@ -152,11 +152,12 @@ pub fn update_config(ctx: Context<UpdateConfig>, new_unbonding_period: i64) -> R
     );
 
     let config = &mut ctx.accounts.stake_config;
+    let old_unbonding_period = config.unbonding_period;
     config.unbonding_period = new_unbonding_period;
 
     emit!(UnbondingPeriodUpdated {
         admin: ctx.accounts.signer.key(),
-        old_period: ctx.accounts.stake_config.unbonding_period,
+        old_period: old_unbonding_period,
         new_period: new_unbonding_period,
         mint: ctx.accounts.stake_config.mint,
         vault: ctx.accounts.stake_config.vault,
@@ -586,6 +587,8 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
         signer, // Sign with vault-stake's PDA
     );
     vault_mint::cpi::external_program_mint(cpi_ctx, amount)?;
+    // reload the vault token account to get the updated amount for publishing the event
+    ctx.accounts.vault_token_account.reload()?;
 
     let totals_last_update_slot = Clock::get()?.slot;
 

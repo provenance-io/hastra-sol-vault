@@ -1631,7 +1631,6 @@ describe("vault-mint", () => {
                     redeemVaultAuthority: redeemVaultAuthorityPda,
                     redeemVaultTokenAccount: redeemVaultTokenAccount,
                     vaultTokenAccount: vaultTokenAccount,
-                    programData: programData,
                     tokenProgram: TOKEN_PROGRAM_ID,
                 })
                 .signers([rewardsAdmin])
@@ -1664,7 +1663,6 @@ describe("vault-mint", () => {
                         redeemVaultAuthority: redeemVaultAuthorityPda,
                         redeemVaultTokenAccount: redeemVaultTokenAccount,
                         vaultTokenAccount: sweepDestinationTokenAccount,
-                        programData: programData,
                         tokenProgram: TOKEN_PROGRAM_ID,
                     })
                     .signers([rewardsAdmin])
@@ -1675,7 +1673,8 @@ describe("vault-mint", () => {
             }
         });
 
-        it("disallow sweep redeem vault token account update by NON rewards admin", async () => {
+        it("disallows sweep redeem vault by upgrade authority who is not a rewards admin", async () => {
+            // upgrade authority (provider.wallet) is not in rewards_administrators — must be rejected
             try {
                 await program.methods
                     .sweepRedeemVaultFunds(new BN(5_000_000))
@@ -1685,7 +1684,6 @@ describe("vault-mint", () => {
                         redeemVaultAuthority: redeemVaultAuthorityPda,
                         redeemVaultTokenAccount: redeemVaultTokenAccount,
                         vaultTokenAccount: vaultTokenAccount,
-                        programData: programData,
                         tokenProgram: TOKEN_PROGRAM_ID,
                     })
                     .rpc();
@@ -1705,7 +1703,6 @@ describe("vault-mint", () => {
                         redeemVaultAuthority: redeemVaultAuthorityPda,
                         redeemVaultTokenAccount: redeemVaultTokenAccount,
                         vaultTokenAccount: vaultTokenAccount,
-                        programData: programData,
                         tokenProgram: TOKEN_PROGRAM_ID,
                     })
                     .signers([rewardsAdmin])

@@ -1065,6 +1065,32 @@ describe("vault-stake", () => {
             }
         });
 
+        it("rejects unbond with token account not owned by signer with InvalidTokenOwner", async () => {
+            // regression guard: previously emitted InvalidMintAuthority (wrong error code)
+            const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [Buffer.from("ticket"), user.publicKey.toBuffer()],
+                program.programId
+            );
+            try {
+                // Pass user2's mint token account while signing as user — ownership mismatch
+                await program.methods.unbond(new BN(1000))
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        mint: mintedToken,
+                        signer: user.publicKey,
+                        userMintTokenAccount: user2MintTokenAccount,
+                        ticket: ticketPda,
+                        systemProgram: anchor.web3.SystemProgram.programId,
+                    })
+                    .signers([user])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.include("InvalidTokenOwner");
+            }
+        });
+
         it("unpauses", async () => {
             await program.methods
                 .pause(false)
@@ -1287,6 +1313,7 @@ describe("vault-stake", () => {
         it("publish rewards", async () => {
 
             const rateBefore = await exchangeRate();
+            const vaultBalanceBefore = (await getAccount(provider.connection, vaultTokenAccount)).amount;
 
             const amount = 100_000_000_000;
             const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
@@ -1297,7 +1324,7 @@ describe("vault-stake", () => {
                 ],
                 program.programId);
 
-            await program.methods
+            const sig = await program.methods
                 .publishRewards(publishRewardsId, new BN(amount))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
@@ -1316,10 +1343,36 @@ describe("vault-stake", () => {
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
                 .signers([rewardsAdmin])
-                .rpc();
+                .rpc({ commitment: "confirmed" });
 
             const rateAfter = await exchangeRate();
             assert.isTrue(rateAfter > rateBefore, "Exchange rate should increase after publishing rewards");
+
+            // Regression test: RewardsPublished event total_assets must reflect the post-CPI
+            // vault balance (after reload()), not the stale pre-CPI cached value.
+            const vaultBalanceAfter = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+            const expectedTotalAssets = vaultBalanceBefore + createBigInt(amount);
+            assert.equal(vaultBalanceAfter, expectedTotalAssets, "Vault balance should increase by reward amount");
+
+            const tx = await provider.connection.getTransaction(sig, {
+                commitment: "confirmed",
+                maxSupportedTransactionVersion: 0,
+            });
+            const eventParser = new anchor.EventParser(program.programId, program.coder);
+            const events = [...eventParser.parseLogs(tx.meta.logMessages)];
+            const event = events.find(e => e.name === "rewardsPublished");
+
+            assert.isDefined(event, "RewardsPublished event should be emitted");
+            assert.equal(
+                (event.data.totalAssets as BN).toString(),
+                expectedTotalAssets.toString(),
+                "RewardsPublished event total_assets must equal post-CPI vault balance, not pre-CPI stale value"
+            );
+            assert.equal(
+                (event.data.amount as BN).toNumber(),
+                amount,
+                "RewardsPublished event amount should match published reward"
+            );
         });
 
         it("prevents duplicate publish rewards", async () => {
@@ -1625,19 +1678,105 @@ describe("vault-stake", () => {
             }
         });
 
-        it("unbonding update by upgrade authority", async () => {
-            await program.methods
-                .updateConfig(new BN(240))
+        it("unbonding update by upgrade authority updates state and emits correct old and new periods", async () => {
+            const configBefore = await program.account.stakeConfig.fetch(stakeConfigPda);
+            const expectedOldPeriod = configBefore.unbondingPeriod;
+            const newPeriod = new BN(240);
+
+            assert.notEqual(
+                expectedOldPeriod.toNumber(),
+                newPeriod.toNumber(),
+                "Precondition: old and new periods must differ"
+            );
+
+            const sig = await program.methods
+                .updateConfig(newPeriod)
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     signer: provider.wallet.publicKey,
                     programData: programData,
                 })
-                .rpc();
+                .rpc({ commitment: "confirmed" });
 
-            //fetch config and verify
-            const config = await program.account.stakeConfig.fetch(stakeConfigPda);
-            assert.equal(config.unbondingPeriod.toNumber(), new BN(240).toNumber());
+            const tx = await provider.connection.getTransaction(sig, {
+                commitment: "confirmed",
+                maxSupportedTransactionVersion: 0,
+            });
+
+            const eventParser = new anchor.EventParser(program.programId, program.coder);
+            const events = [...eventParser.parseLogs(tx.meta.logMessages)];
+            const event = events.find(e => e.name === "unbondingPeriodUpdated");
+
+            // Verify on-chain state was updated
+            const configAfter = await program.account.stakeConfig.fetch(stakeConfigPda);
+            assert.equal(configAfter.unbondingPeriod.toNumber(), newPeriod.toNumber());
+
+            // Verify event was emitted with correct old and new values (regression guard for old_period bug)
+            assert.isDefined(event, "UnbondingPeriodUpdated event should have been emitted");
+            assert.equal(
+                (event.data.oldPeriod as BN).toNumber(),
+                expectedOldPeriod.toNumber(),
+                "Event old_period must reflect the period before the update, not the new value"
+            );
+            assert.equal(
+                (event.data.newPeriod as BN).toNumber(),
+                newPeriod.toNumber(),
+                "Event new_period must reflect the requested new period"
+            );
+            assert.notEqual(
+                (event.data.oldPeriod as BN).toNumber(),
+                (event.data.newPeriod as BN).toNumber(),
+                "Event must not report old_period == new_period"
+            );
+        });
+
+        it("disallows unbonding update by non upgrade authority", async () => {
+            try {
+                await program.methods
+                    .updateConfig(new BN(300))
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        signer: rewardsAdmin.publicKey,
+                        programData: programData,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+            }
+        });
+
+        it("rejects unbonding period below minimum", async () => {
+            try {
+                await program.methods
+                    .updateConfig(new BN(0))
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programData,
+                    })
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+            }
+        });
+
+        it("rejects unbonding period above maximum", async () => {
+            try {
+                await program.methods
+                    .updateConfig(new BN(31536001))
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programData,
+                    })
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+            }
         });
     });
 

@@ -541,12 +541,6 @@ pub struct SweepRedeemVaultFunds<'info> {
     )]
     pub vault_token_account: Account<'info, TokenAccount>,
 
-    /// CHECK: This is the program data account that contains the update authority
-    #[account(
-        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
-    )]
-    pub program_data: UncheckedAccount<'info>,
-
     pub signer: Signer<'info>,
     
     pub token_program: Program<'info, Token>,
