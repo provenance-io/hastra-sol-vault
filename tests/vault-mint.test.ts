@@ -891,6 +891,32 @@ describe("vault-mint", () => {
             }
         });
 
+        it("prevents createRewardsEpoch when paused", async () => {
+            // Use a throw-away epoch index that won't collide with the rewards test suite
+            const pausedEpochIndex = 999;
+            const [pausedEpochPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [Buffer.from("epoch"), new anchor.BN(pausedEpochIndex).toArrayLike(Buffer, "le", 8)],
+                program.programId
+            );
+            const dummyRoot = Array.from(Buffer.alloc(32, 0xab));
+
+            try {
+                await program.methods
+                    .createRewardsEpoch(new anchor.BN(pausedEpochIndex), dummyRoot, new BN(0))
+                    .accountsStrict({
+                        config: configPda,
+                        admin: rewardsAdmin.publicKey,
+                        epoch: pausedEpochPda,
+                        systemProgram: anchor.web3.SystemProgram.programId,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown ProtocolPaused");
+            } catch (err) {
+                expect(err.toString()).to.include("ProtocolPaused");
+            }
+        });
+
         it("unpauses", async () => {
             await program.methods
                 .pause(false)
@@ -1351,7 +1377,76 @@ describe("vault-mint", () => {
                 expect(err).to.exist;
             }
         });
-    });
+
+        it("rejects claim when wrong epoch PDA is passed (seeds constraint)", async () => {
+            // Create epoch 2 with its own distinct merkle tree.
+            // user2 has an allocation in epoch 2 only.
+            const epoch2Index = 2;
+            const epoch2Allocations = {
+                allocations: [{ account: user.publicKey.toBase58(), amount: 500 }]
+            };
+            const epoch2Data = allocationsToMerkleTree(JSON.stringify(epoch2Allocations), epoch2Index);
+            const epoch2Root = epoch2Data.tree.getRoot();
+            const epoch2Total = new anchor.BN(500);
+
+            const [epoch2Pda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [Buffer.from("epoch"), new anchor.BN(epoch2Index).toArrayLike(Buffer, "le", 8)],
+                program.programId
+            );
+            // Claim record for user against epoch 2 (different key from epoch 1 claim record)
+            const [claimPdaEpoch2] = anchor.web3.PublicKey.findProgramAddressSync(
+                [Buffer.from("claim"), epoch2Pda.toBuffer(), user.publicKey.toBuffer()],
+                program.programId
+            );
+
+            await program.methods
+                .createRewardsEpoch(new anchor.BN(epoch2Index), Array.from(epoch2Root), epoch2Total)
+                .accountsStrict({
+                    config: configPda,
+                    admin: rewardsAdmin.publicKey,
+                    epoch: epoch2Pda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                })
+                .signers([rewardsAdmin])
+                .rpc();
+
+            // user has a valid proof for epoch 1, but passes epoch 2's PDA.
+            // The seeds constraint verifies epoch2Pda IS the canonical PDA for index 2
+            // (so ConstraintSeeds passes), but the merkle proof — built against epoch 1's
+            // root — fails against epoch 2's root, proving the epoch account is actually
+            // used for verification and cannot be swapped arbitrarily.
+            const userAllocation = merkleData.allocations.find(
+                a => a.user.toBase58() === user.publicKey.toBase58()
+            );
+            const leaf = makeLeaf(user.publicKey, userAllocation!.amount, epochIndex);
+            const treeProof = merkleData.tree.getProof(leaf);
+            const proof = treeProof.map(p => ({
+                sibling: Array.from(p.data),
+                isLeft: p.position === "left",
+            }));
+
+            try {
+                await program.methods
+                    .claimRewards(userAllocation!.amount, proof)
+                    .accountsStrict({
+                        config: configPda,
+                        user: user.publicKey,
+                        epoch: epoch2Pda,          // ← wrong epoch PDA
+                        claimRecord: claimPdaEpoch2,
+                        mintAuthority: mintAuthorityPda,
+                        mint: mintedToken,
+                        userMintTokenAccount: userMintTokenAccount,
+                        systemProgram: anchor.web3.SystemProgram.programId,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    })
+                    .signers([user])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err.toString()).to.include("InvalidMerkleProof");
+            }
+        });
+    }); // end describe("rewards")
 
     describe("updateability", () => {
         let programData: PublicKey;
