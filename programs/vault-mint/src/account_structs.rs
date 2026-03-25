@@ -285,6 +285,10 @@ pub struct ClaimRewards<'info> {
     pub config: Account<'info, Config>,
     #[account(mut)]
     pub user: Signer<'info>,
+    #[account(
+        seeds = [b"epoch", epoch.index.to_le_bytes().as_ref()],
+        bump
+    )]
     pub epoch: Account<'info, RewardsEpoch>,
     #[account(
         init,
