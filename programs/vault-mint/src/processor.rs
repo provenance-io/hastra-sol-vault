@@ -399,6 +399,10 @@ pub fn create_rewards_epoch(
     total: u64,
 ) -> Result<()> {
     require!(
+        !ctx.accounts.config.paused,
+        CustomErrorCode::ProtocolPaused
+    );
+    require!(
         ctx.accounts
             .config
             .rewards_administrators
@@ -410,6 +414,15 @@ pub fn create_rewards_epoch(
     e.merkle_root = merkle_root;
     e.total = total;
     e.created_ts = Clock::get()?.unix_timestamp;
+
+    emit!(RewardsEpochCreated {
+        admin: ctx.accounts.admin.key(),
+        index,
+        merkle_root,
+        total,
+        created_ts: e.created_ts,
+    });
+
     Ok(())
 }
 

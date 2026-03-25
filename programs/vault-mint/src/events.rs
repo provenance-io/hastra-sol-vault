@@ -50,3 +50,12 @@ pub struct SweepRedeemVaultEvent {
     pub amount: u64,
     pub vault: Pubkey,
 }
+
+#[event]
+pub struct RewardsEpochCreated {
+    pub admin: Pubkey,
+    pub index: u64,
+    pub merkle_root: [u8; 32],
+    pub total: u64,
+    pub created_ts: i64,
+}
