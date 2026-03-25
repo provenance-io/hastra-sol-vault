@@ -29,6 +29,34 @@ describe("vault-stake", () => {
     const mintProgram = anchor.workspace.VaultMint as Program<VaultMint>;
     const program = anchor.workspace.VaultStake as Program<VaultStake>;
 
+    // Helper: parse events from a confirmed transaction's log messages.
+    // Derives the actual on-chain program ID from the transaction logs rather
+    // than relying on the workspace program ID, making this robust to
+    // `anchor keys sync` changing the declared ID in the IDL.
+    const parseEvents = async (sig: string) => {
+        const tx = await provider.connection.getTransaction(sig, {
+            commitment: "confirmed",
+            maxSupportedTransactionVersion: 0,
+        });
+        if (!tx?.meta?.logMessages) {
+            console.log("DEBUG parseEvents: no logMessages for sig", sig);
+            return [];
+        }
+        // Extract the actual program ID from the first invoke log line.
+        const invokeLine = tx.meta.logMessages.find(l => l.includes("invoke [1]"));
+        const actualProgramId = invokeLine
+            ? new anchor.web3.PublicKey(invokeLine.split(" ")[1])
+            : program.programId;
+        console.log("DEBUG parseEvents: workspace programId =", program.programId.toBase58());
+        console.log("DEBUG parseEvents: actualProgramId     =", actualProgramId.toBase58());
+        console.log("DEBUG parseEvents: logMessages =", JSON.stringify(tx.meta.logMessages, null, 2));
+        const eventParser = new anchor.EventParser(actualProgramId, program.coder);
+        const events = [...eventParser.parseLogs(tx.meta.logMessages)];
+        console.log("DEBUG parseEvents: parsed events =", JSON.stringify(events.map(e => e.name)));
+        return events;
+    };
+
+
     let mintedToken: PublicKey;
     let vaultedToken: PublicKey;
     let vaultTokenAccount: PublicKey;
@@ -57,13 +85,21 @@ describe("vault-stake", () => {
     let freezeAdmin: Keypair;
     let rewardsAdmin: Keypair;
 
-    let unbondingPeriod: BN;
+    let stakePriceConfigPda: PublicKey;
+    let stakeRewardConfigPda: PublicKey;
+
+    // Price config constants for testing.
+    // price_scale = 1e9; price = 1e9 → 1:1 ratio (1 PRIME per 1 wYLDS, 1 wYLDS per 1 PRIME).
+    // Deposit formula:  shares = amount * price_scale / price = amount (1:1 at these values)
+    // Redeem formula:   wYLDS  = shares * price / price_scale = shares (1:1 at these values)
+    const TEST_PRICE_SCALE = new BN(1_000_000_000);   // 1e9
+    const TEST_PRICE_1TO1  = new BN(1_000_000_000);   // 1 PRIME per 1 wYLDS
+    const TEST_FEED_ID= Array.from(Buffer.alloc(32, 0));
 
     let publishRewardsId = 0;
 
     const ONE_BIG_SHARE = createBigInt(1_000_000);
     const ONE_BIG_TOKEN = createBigInt(1_000_000);
-    const ONE_BIG_EXCHANGE_RATE = createBigInt(1_000_000_000);
     const BIG_ZERO = createBigInt(0);
     const hundredBillsLarge = createBigInt("100000000000000000"); //100 billion with 6 decimals
 
@@ -84,33 +120,6 @@ describe("vault-stake", () => {
         }
         throw new Error("No parsed transaction return data");
     }
-    const sharesToAssets = async (shares: bigint): Promise<bigint> => {
-        let sig = await program.methods.sharesToAssets(new BN(shares))
-            .accountsStrict({
-                stakeConfig: stakeConfigPda,
-                mint: mintedToken,
-                vaultTokenAccount: vaultTokenAccount,
-                vaultAuthority: vaultAuthorityPda,
-            })
-            .rpc();
-        //let the transaction bake
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        return await parsedTransactionReturnData(sig);
-    }
-
-    const assetsToShares = async (assets: bigint): Promise<bigint> => {
-        let sig = await program.methods.assetsToShares(new BN(assets))
-            .accountsStrict({
-                stakeConfig: stakeConfigPda,
-                mint: mintedToken,
-                vaultTokenAccount: vaultTokenAccount,
-                vaultAuthority: vaultAuthorityPda,
-            })
-            .rpc();
-        //let the transaction bake
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        return await parsedTransactionReturnData(sig);
-    }
 
     const exchangeRate = async (): Promise<bigint> => {
         let sig = await program.methods.exchangeRate()
@@ -119,12 +128,32 @@ describe("vault-stake", () => {
                 mint: mintedToken,
                 vaultTokenAccount: vaultTokenAccount,
                 vaultAuthority: vaultAuthorityPda,
+                stakePriceConfig: stakePriceConfigPda,
             })
             .rpc();
         //let the transaction bake
         await new Promise(resolve => setTimeout(resolve, 1000));
         return await parsedTransactionReturnData(sig);
     }
+
+    /**
+     * Sets price and timestamp directly in StakePriceConfig via the test-only instruction.
+     * Uses the wallet upgrade authority (provider.wallet).
+     * @param price      raw price value (i128 as BN) — at TEST_PRICE_SCALE this is wYLDS per PRIME
+     * @param secondsAgo how many seconds in the past to backdate the price_timestamp
+     */
+    const setPriceForTesting = async (price: BN, secondsAgo = 0) => {
+        const priceTimestamp = new BN(Math.floor(Date.now() / 1000) - secondsAgo);
+        await program.methods
+            .setPriceForTesting(price, priceTimestamp)
+            .accountsStrict({
+                stakeConfig: stakeConfigPda,
+                stakePriceConfig: stakePriceConfigPda,
+                signer: provider.wallet.publicKey,
+                programData: programDataPda,
+            })
+            .rpc();
+    };
 
     const vaultSummary = (title: string) => {
         let totalShares;
@@ -178,8 +207,6 @@ describe("vault-stake", () => {
             mintProgram.programId
         );
 
-        unbondingPeriod = new BN(10); // seconds
-
         // Airdrop SOL
         await provider.connection.requestAirdrop(user.publicKey, 100 * LAMPORTS_PER_SOL);
         await provider.connection.requestAirdrop(user2.publicKey, 100 * LAMPORTS_PER_SOL);
@@ -223,6 +250,22 @@ describe("vault-stake", () => {
         [stakeVaultTokenAccountConfigPda] = PublicKey.findProgramAddressSync(
             [
                 Buffer.from("stake_vault_token_account_config"),
+                stakeConfigPda.toBuffer()
+            ],
+            program.programId
+        );
+
+        [stakePriceConfigPda] = PublicKey.findProgramAddressSync(
+            [
+                Buffer.from("stake_price_config"),
+                stakeConfigPda.toBuffer()
+            ],
+            program.programId
+        );
+
+        [stakeRewardConfigPda] = PublicKey.findProgramAddressSync(
+            [
+                Buffer.from("stake_reward_config"),
                 stakeConfigPda.toBuffer()
             ],
             program.programId
@@ -383,7 +426,7 @@ describe("vault-stake", () => {
             const tooManyAdmins = Array(6).fill(Keypair.generate().publicKey);
             try {
                 await program.methods
-                    .initialize(unbondingPeriod, tooManyAdmins, [rewardsAdmin.publicKey])
+                    .initialize(tooManyAdmins, [rewardsAdmin.publicKey])
                     .accounts({
                         signer: provider.wallet.publicKey,
                         vaultTokenAccount: vaultTokenAccount,
@@ -402,26 +445,7 @@ describe("vault-stake", () => {
             const tooManyAdmins = Array(6).fill(Keypair.generate().publicKey);
             try {
                 await program.methods
-                    .initialize(unbondingPeriod, [freezeAdmin.publicKey], tooManyAdmins)
-                    .accounts({
-                        signer: provider.wallet.publicKey,
-                        vaultTokenAccount: vaultTokenAccount,
-                        vaultTokenMint: vaultedToken,
-                        mint: mintedToken,
-                        programData: programDataPda,
-                    })
-                    .rpc();
-                assert.fail("Should have thrown error");
-            } catch (err) {
-                expect(err).to.exist;
-            }
-        });
-
-        it("fails with invalid unbonding period", async () => {
-            const tooManyAdmins = Array(6).fill(Keypair.generate().publicKey);
-            try {
-                await program.methods
-                    .initialize(new BN(0), [freezeAdmin.publicKey], tooManyAdmins)
+                    .initialize([freezeAdmin.publicKey], tooManyAdmins)
                     .accounts({
                         signer: provider.wallet.publicKey,
                         vaultTokenAccount: vaultTokenAccount,
@@ -438,7 +462,7 @@ describe("vault-stake", () => {
 
         it("initializes the vault config", async () => {
             await program.methods
-                .initialize(unbondingPeriod, [freezeAdmin.publicKey], [rewardsAdmin.publicKey])
+                .initialize([freezeAdmin.publicKey], [rewardsAdmin.publicKey])
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultAuthority: vaultAuthorityPda,
@@ -460,14 +484,68 @@ describe("vault-stake", () => {
             assert.ok(config.freezeAdministrators[0].equals(freezeAdmin.publicKey));
             assert.equal(config.rewardsAdministrators.length, 1);
             assert.ok(config.rewardsAdministrators[0].equals(rewardsAdmin.publicKey));
-            assert.ok(config.unbondingPeriod.eq(unbondingPeriod));
+            assert.equal(config.unbondingPeriod.toNumber(), 0, "unbondingPeriod deprecated field should be 0");
             assert.ok(!config.paused);
+        });
+
+        it("initializes price config", async () => {
+            // Price convention: price = (wYLDS per 1 PRIME) * price_scale
+            // At TEST_PRICE_SCALE = 1e9 and TEST_PRICE_1TO1 = 1e9 → 1:1 exchange rate
+            // price_max_staleness = 3600 seconds (1 hour)
+            await program.methods
+                .initializePriceConfig(
+                    PublicKey.default, // chainlink_program (placeholder for localnet)
+                    PublicKey.default, // chainlink_verifier_account
+                    PublicKey.default, // chainlink_access_controller
+                    TEST_FEED_ID,
+                    TEST_PRICE_SCALE,
+                    new BN(3600)
+                )
+                .accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    stakePriceConfig: stakePriceConfigPda,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
+
+            const priceConfig = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
+            assert.equal(priceConfig.priceScale.toString(), TEST_PRICE_SCALE.toString());
+            assert.equal(priceConfig.priceMaxStaleness.toString(), "3600");
+            assert.equal(priceConfig.priceTimestamp.toString(), "0", "price not set until verify_price is called");
+        });
+
+        it("initializes reward config with 0.75% default", async () => {
+            await program.methods
+                .initializeRewardConfig(new BN(75))
+                .accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    stakeRewardConfig: stakeRewardConfigPda,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
+
+            const rewardConfig = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+            assert.equal(rewardConfig.maxRewardBps.toNumber(), 75, "maxRewardBps should be 75 (0.75%)");
+        });
+
+        it("set initial price for testing via set_price_for_testing", async () => {
+            // Sets a 1:1 price with a fresh timestamp so deposit/redeem tests can proceed.
+            // In production this would be replaced by a call to verify_price with a Chainlink report.
+            await setPriceForTesting(TEST_PRICE_1TO1);
+
+            const priceConfig = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
+            assert.ok(priceConfig.price.toString() === TEST_PRICE_1TO1.toString(), "price should be set");
+            assert.ok(priceConfig.priceTimestamp.toNumber() > 0, "price_timestamp should be set");
         });
 
         it("fails when called twice", async () => {
             try {
                 await program.methods
-                    .initialize(unbondingPeriod, [freezeAdmin.publicKey], [rewardsAdmin.publicKey])
+                    .initialize([freezeAdmin.publicKey], [rewardsAdmin.publicKey])
                     .accounts({
                         signer: provider.wallet.publicKey,
                         vaultTokenAccount: vaultTokenAccount,
@@ -483,59 +561,127 @@ describe("vault-stake", () => {
         });
     });
 
+    describe("price config", () => {
+        it("fails deposit when price is stale", async () => {
+            // Backdate price_timestamp by more than price_max_staleness (3600s)
+            await setPriceForTesting(TEST_PRICE_1TO1, 3700);
+
+            try {
+                await program.methods
+                    .deposit(new BN(1_000_000))
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        vaultTokenAccount: vaultTokenAccount,
+                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+                        vaultAuthority: vaultAuthorityPda,
+                        mint: mintedToken,
+                        vaultMint: vaultedToken,
+                        mintAuthority: mintAuthorityPda,
+                        signer: user.publicKey,
+                        userVaultTokenAccount: userVaultTokenAccount,
+                        userMintTokenAccount: userMintTokenAccount,
+                        stakePriceConfig: stakePriceConfigPda,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
+                    })
+                    .signers([user])
+                    .rpc();
+                assert.fail("Should have thrown PriceTooStale");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.include("PriceTooStale");
+            }
+        });
+
+        it("fails redeem when price is stale", async () => {
+            // price_timestamp is already stale from previous test
+            try {
+                await program.methods.redeem(new BN(1000))
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        vaultTokenAccount: vaultTokenAccount,
+                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+                        vaultAuthority: vaultAuthorityPda,
+                        signer: user.publicKey,
+                        ticket: program.programId,
+                        userVaultTokenAccount: userVaultTokenAccount,
+                        userMintTokenAccount: userMintTokenAccount,
+                        mint: mintedToken,
+                        vaultMint: vaultedToken,
+                        stakePriceConfig: stakePriceConfigPda,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    })
+                    .signers([user])
+                    .rpc();
+                assert.fail("Should have thrown PriceTooStale");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.include("PriceTooStale");
+            }
+        });
+
+        it("refreshes price and allows deposit again", async () => {
+            // Restore fresh price so subsequent deposit/redeem tests can pass
+            await setPriceForTesting(TEST_PRICE_1TO1);
+        });
+
+        it("updates price config parameters", async () => {
+            await program.methods
+                .updatePriceConfig(
+                    PublicKey.default,
+                    PublicKey.default,
+                    PublicKey.default,
+                    TEST_FEED_ID,
+                    TEST_PRICE_SCALE,
+                    new BN(7200) // update staleness to 2 hours
+                )
+                .accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    stakePriceConfig: stakePriceConfigPda,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                })
+                .rpc();
+
+            const priceConfig = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
+            assert.equal(priceConfig.priceMaxStaleness.toString(), "7200");
+            // price and price_timestamp should NOT be reset by update_price_config
+            assert.ok(priceConfig.price.toString() === TEST_PRICE_1TO1.toString(), "price unchanged");
+            assert.ok(priceConfig.priceTimestamp.toNumber() > 0, "price_timestamp unchanged");
+
+            // Restore staleness to 3600 for remaining tests
+            await program.methods
+                .updatePriceConfig(
+                    PublicKey.default,
+                    PublicKey.default,
+                    PublicKey.default,
+                    TEST_FEED_ID,
+                    TEST_PRICE_SCALE,
+                    new BN(3600)
+                )
+                .accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    stakePriceConfig: stakePriceConfigPda,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                })
+                .rpc();
+        });
+    });
+
     describe("deposit", () => {
-        it("prevents inflation attack with virtual offsets", async () => {
+        it("deposits at Chainlink price (1:1) and redeems correctly", async () => {
             /*
-            ## Vault inflation attack
-                ### Attack scenario
-
-                **Initial state:**
-                - Vault balance: 0 wYLDS
-                - Total supply: 0 PRIME
-
-                **Step 1: Attacker makes first deposit**
-                Attacker deposits: 1 wYLDS
-                Calculation: shares = 1 (initial 1:1 ratio)
-                Result: Attacker gets 1 PRIME share
-
-                New state:
-                - Vault balance: 1 wYLDS
-                - Total supply: 1 PRIME
-                - Attacker owns: 1 PRIME (100% of supply)
-
-                **Step 2: Attacker donates tokens directly to vault**
-                Attacker transfers 10,000 wYLDS directly to vault address
-                (bypassing deposit function - just a regular SPL token transfer)
-
-                New state:
-                - Vault balance: 10,001 wYLDS
-                - Total supply: 1 PRIME
-                - Price per share: 10,001 wYLDS per PRIME
-
-                **Step 3: Victim deposits**
-                Victim deposits: 9,999 wYLDS
-                Calculation: shares = (9,999 * 1) / 10,001 = 0.9998...
-                Integer division: 0.9998... rounds DOWN to 0
-                Result: Victim gets 0 PRIME shares!
-
-                New state:
-                - Vault balance: 19,999 wYLDS (10,001 + 9,999)
-                - Total supply: 1 PRIME (no new shares minted!)
-                - Attacker still owns: 1 PRIME (100% of supply)
-
-                **Step 4: Attacker redeems**
-                Attacker redeems 1 PRIME
-                Calculation: redeem = (1 * 19,999) / 1 = 19,999 wYLDS
-                Result: Attacker receives 19,999 wYLDS
-
-                Profit: 19,999 - 1 - 10,000 = 9,998 wYLDS stolen from victim!!
-             */
+            With Chainlink price oracle, shares = deposit * price_scale / price.
+            At TEST_PRICE_1TO1 = TEST_PRICE_SCALE (1e9), this simplifies to a 1:1 ratio.
+            Unlike the old ratio-based model, the exchange rate is determined by the Chainlink
+            feed rather than vault balance — direct transfers to the vault do NOT affect shares.
+            */
 
             const user1InitialVaultedBalance = (await getAccount(provider.connection, userVaultTokenAccount)).amount;
 
-            // step 1 - try to deposit a small amount
+            // step 1 - deposit 1 token; expect to receive 1 token worth of PRIME (1:1 at current price)
             await program.methods
-                .deposit(new BN(ONE_BIG_TOKEN)) // 1 token, 1 share at 1:1
+                .deposit(new BN(ONE_BIG_TOKEN))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
@@ -547,27 +693,22 @@ describe("vault-stake", () => {
                     signer: user.publicKey,
                     userVaultTokenAccount: userVaultTokenAccount,
                     userMintTokenAccount: userMintTokenAccount,
+                    stakePriceConfig: stakePriceConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
                 })
                 .signers([user])
                 .rpc();
 
-            // assert that the user received their shares at 1:1
-            const userShares = (await getAccount(provider.connection, userMintTokenAccount)).amount;
-            assert.equal(userShares, ONE_BIG_SHARE, "User should have 1 share at 1:1 ratio");
-            const userAssets = await sharesToAssets(userShares);
-            assert.equal(userAssets, ONE_BIG_TOKEN, "User should have 1 assets");
-            const userQueriedShares = await assetsToShares(userAssets);
-            assert.equal(userQueriedShares, ONE_BIG_SHARE, "User should have 1 share at 1:1 ratio");
-            const exchangeRateInitial = await exchangeRate();
-            assert.equal(exchangeRateInitial, ONE_BIG_EXCHANGE_RATE, "Exchange rate should be 1:1 initially");
+            const user1Shares = (await getAccount(provider.connection, userMintTokenAccount)).amount;
+            // shares = amount * price_scale / price = ONE_BIG_TOKEN * 1e9 / 1e9 = ONE_BIG_TOKEN
+            assert.equal(user1Shares, ONE_BIG_SHARE, "User 1 should receive exactly ONE_BIG_TOKEN PRIME at 1:1 price");
 
-            // step 2 - transfer directly to the vault to try to inflate the value of shares
-            await transfer(provider.connection, user, userVaultTokenAccount, vaultTokenAccount, user.publicKey, ONE_BIG_TOKEN * createBigInt(10_000)); // 10,000 wYLDS
+            // step 2 - transfer tokens directly to vault; price is Chainlink-sourced so this does NOT affect share calc
+            await transfer(provider.connection, user, userVaultTokenAccount, vaultTokenAccount, user.publicKey, ONE_BIG_TOKEN * createBigInt(10_000));
 
-            // step 3 - victim (user 2) deposits
+            // step 3 - user 2 deposits 10,000 tokens; with Chainlink price (not vault ratio) they get 10,000 PRIME
             await program.methods
-                .deposit(new BN(ONE_BIG_TOKEN * createBigInt(10_000))) // 10,000 wYLDS
+                .deposit(new BN(ONE_BIG_TOKEN * createBigInt(10_000)))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
@@ -579,80 +720,42 @@ describe("vault-stake", () => {
                     signer: user2.publicKey,
                     userVaultTokenAccount: user2VaultTokenAccount,
                     userMintTokenAccount: user2MintTokenAccount,
+                    stakePriceConfig: stakePriceConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
                 })
                 .signers([user2])
                 .rpc();
 
-            // confirm shares to assets
-            const user1Shares = (await getAccount(provider.connection, userMintTokenAccount)).amount;
             const user2Shares = (await getAccount(provider.connection, user2MintTokenAccount)).amount;
+            // shares = 10_000 * ONE_BIG_TOKEN * 1e9 / 1e9 = 10_000 * ONE_BIG_TOKEN
+            assert.equal(user2Shares, ONE_BIG_SHARE * createBigInt(10_000), "User 2 should receive 10,000 PRIME at 1:1 price");
 
-            assert.equal(user1Shares, ONE_BIG_SHARE, "User 1 should have 1.000000 shares");
-            /// the victim should receive just under 1 share due to rounding and their deposit being slightly less valuable
-            assert.equal(user2Shares, createBigInt(1_999_600), "User 2 should roughly twice as many shares as user 1");
-
-            const user1Assets = await sharesToAssets(user1Shares);
-            const user2Assets = await sharesToAssets(user2Shares);
-
-            assert.equal(user1Assets, createBigInt(5_001_000_100), "User 1 should have 5,001 plus some dust assets");
-            assert.equal(user2Assets, createBigInt(9_999_999_799), "User 2 should have 9,999 plus some dust assets");
-
-            //prior to redemption, check vault balances
-            const vaultBalanceBefore = (await getAccount(provider.connection, vaultTokenAccount)).amount;
-            assert.equal(vaultBalanceBefore, ONE_BIG_TOKEN * createBigInt(20_001), "Vault should have all deposits");
-            assert.isTrue(vaultBalanceBefore > (user1Assets + user2Assets), "There will be rounding dust");
-
-            // step 4 - attacker redeems
-            // first they need to unbond
-            const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                [Buffer.from("ticket"), user.publicKey.toBuffer()],
-                program.programId
-            );
-            await program.methods.unbond(new BN(user1Shares))
-                .accountsStrict({
-                    stakeConfig: stakeConfigPda,
-                    mint: mintedToken,
-                    signer: user.publicKey,
-                    userMintTokenAccount: userMintTokenAccount,
-                    ticket: ticketPda,
-                    systemProgram: anchor.web3.SystemProgram.programId,
-                })
-                .signers([user])
-                .rpc();
-
-            // wait for >10 seconds unbonding period
-            await new Promise(resolve => setTimeout(resolve, 15000));
-            await program.methods.redeem()
+            // step 4 - user 1 redeems; expects to receive 1 wYLDS per PRIME (1:1 price)
+            await program.methods.redeem(new BN(user1Shares.toString()))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
                     stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     vaultAuthority: vaultAuthorityPda,
                     signer: user.publicKey,
+                    ticket: program.programId,
                     userVaultTokenAccount: userVaultTokenAccount,
                     userMintTokenAccount: userMintTokenAccount,
                     mint: mintedToken,
                     vaultMint: vaultedToken,
+                    stakePriceConfig: stakePriceConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
-                    ticket: ticketPda
                 }).signers([user])
-                .rpc()
-
-            // post redemption, check balances
-            const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
-            const totalShares = (await getMint(provider.connection, mintedToken)).supply;
-
-            assert.equal(totalAssets, vaultBalanceBefore - user1Assets, "Total assets should reflect all deposits");
-            assert.equal(totalShares, user2Shares, "Total shares should reflect only user 2 shares now");
+                .rpc();
 
             const userVaultBalanceAfter = (await getAccount(provider.connection, userVaultTokenAccount)).amount;
-            // original wylds - initial deposit - direct transfer + redemption
-            assert.equal(userVaultBalanceAfter, user1InitialVaultedBalance - ONE_BIG_TOKEN - (ONE_BIG_TOKEN * createBigInt(10_000)) + user1Assets, "User vault balance should be their withdrawn assets");
-
-            const exchangeRateFinal = await exchangeRate();
-            assert.equal(exchangeRateFinal, createBigInt("5001000100013"), "Exchange rate should be 1:5001 finally");
-
+            // wYLDS = shares * price / price_scale = user1Shares * 1e9 / 1e9 = user1Shares = ONE_BIG_TOKEN
+            // original balance - 1 deposited - 10,000 transferred + 1 redeemed
+            assert.equal(
+                userVaultBalanceAfter,
+                user1InitialVaultedBalance - ONE_BIG_TOKEN - (ONE_BIG_TOKEN * createBigInt(10_000)) + ONE_BIG_SHARE,
+                "User 1 should recover exactly 1 wYLDS (1:1 price redeem)"
+            );
         });
 
         it("user 2 redeems", async () => {
@@ -660,51 +763,35 @@ describe("vault-stake", () => {
             const user2MintTokenBefore = (await getAccount(provider.connection, user2MintTokenAccount)).amount;
             const user2VaultBalanceBefore = (await getAccount(provider.connection, user2VaultTokenAccount)).amount;
 
-            assert.equal(vaultBalanceBefore, createBigInt(14_999_999_900), "Vault should have all deposits");
-            assert.equal(user2MintTokenBefore, createBigInt(1_999_600), "User 2 should still have 1,999,600 shares");
+            // With Chainlink 1:1 price, user 2 has ONE_BIG_SHARE * 10_000 PRIME from the previous test
+            assert.equal(user2MintTokenBefore, ONE_BIG_SHARE * createBigInt(10_000), "User 2 should have 10,000 PRIME");
             assert.equal(user2VaultBalanceBefore, BIG_ZERO, "User 2 should not have any vault tokens");
 
-            const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                [Buffer.from("ticket"), user2.publicKey.toBuffer()],
-                program.programId
-            );
-            await program.methods.unbond(new BN(user2MintTokenBefore))
-                .accountsStrict({
-                    stakeConfig: stakeConfigPda,
-                    mint: mintedToken,
-                    signer: user2.publicKey,
-                    userMintTokenAccount: user2MintTokenAccount,
-                    ticket: ticketPda,
-                    systemProgram: anchor.web3.SystemProgram.programId,
-                })
-                .signers([user2])
-                .rpc().catch(e => console.dir(e));
-
-            // wait for >10 seconds unbonding period
-            await new Promise(resolve => setTimeout(resolve, 15000));
-            await program.methods.redeem()
+            await program.methods.redeem(new BN(user2MintTokenBefore.toString()))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
                     stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     vaultAuthority: vaultAuthorityPda,
                     signer: user2.publicKey,
+                    ticket: program.programId, // no legacy ticket
                     userVaultTokenAccount: user2VaultTokenAccount,
                     userMintTokenAccount: user2MintTokenAccount,
                     mint: mintedToken,
                     vaultMint: vaultedToken,
+                    stakePriceConfig: stakePriceConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
-                    ticket: ticketPda
                 }).signers([user2])
-                .rpc()
+                .rpc();
 
             const vaultBalanceAfter = (await getAccount(provider.connection, vaultTokenAccount)).amount;
             const user2MintTokenAfter = (await getAccount(provider.connection, user2MintTokenAccount)).amount;
             const user2VaultBalanceAfter = (await getAccount(provider.connection, user2VaultTokenAccount)).amount;
 
+            // At 1:1 price: wYLDS_returned = shares * price / price_scale = shares (1:1)
+            assert.equal(user2VaultBalanceAfter, user2MintTokenBefore, "User 2 should receive exactly their share count in wYLDS at 1:1 price");
             assert.equal(vaultBalanceAfter, vaultBalanceBefore - user2VaultBalanceAfter, "Vault balance should reflect all redeems");
             assert.equal(user2MintTokenAfter, BIG_ZERO, "User should not have staked tokens after redeem");
-            assert.ok(user2VaultBalanceAfter > user2VaultBalanceBefore, "User vault balance should reflect redeemed tokens");
         });
 
         it("handles multiple deposits correctly", async () => {
@@ -724,6 +811,7 @@ describe("vault-stake", () => {
                     signer: user.publicKey,
                     userVaultTokenAccount: userVaultTokenAccount,
                     userMintTokenAccount: userMintTokenAccount,
+                    stakePriceConfig: stakePriceConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
                 })
                 .signers([user])
@@ -744,6 +832,7 @@ describe("vault-stake", () => {
                     signer: user.publicKey,
                     userVaultTokenAccount: userVaultTokenAccount,
                     userMintTokenAccount: userMintTokenAccount,
+                    stakePriceConfig: stakePriceConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
                 })
                 .signers([user])
@@ -769,6 +858,7 @@ describe("vault-stake", () => {
                         signer: user.publicKey,
                         userVaultTokenAccount: userVaultTokenAccount,
                         userMintTokenAccount: userMintTokenAccount,
+                        stakePriceConfig: stakePriceConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
                     })
                     .signers([user])
@@ -797,6 +887,7 @@ describe("vault-stake", () => {
                         signer: user.publicKey,
                         userVaultTokenAccount: userVaultTokenAccount,
                         userMintTokenAccount: userMintTokenAccount,
+                        stakePriceConfig: stakePriceConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
                     })
                     .signers([user])
@@ -833,6 +924,7 @@ describe("vault-stake", () => {
                         signer: user.publicKey,
                         userVaultTokenAccount: userVaultTokenAccount,
                         userMintTokenAccount: userMintTokenAccount,
+                        stakePriceConfig: stakePriceConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
                     })
                     .signers([user])
@@ -845,144 +937,123 @@ describe("vault-stake", () => {
         });
     });
 
-    describe("unbond", () => {
-        it("unbond ticket closes", async () => {
-            const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                [Buffer.from("ticket"), user.publicKey.toBuffer()],
-                program.programId
-            );
-            await program.methods.unbond(new BN(1000))
-                .accountsStrict({
-                    stakeConfig: stakeConfigPda,
-                    mint: mintedToken,
-                    signer: user.publicKey,
-                    userMintTokenAccount: userMintTokenAccount,
-                    ticket: ticketPda,
-                    systemProgram: anchor.web3.SystemProgram.programId,
-                })
-                .signers([user])
-                .rpc();
+    describe("redeem", () => {
+        it("redeems a partial amount immediately (no waiting)", async () => {
+            const redeemAmount = new BN(1000);
+            const mintBalanceBefore = (await getAccount(provider.connection, userMintTokenAccount)).amount;
+            const vaultBalanceBefore = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+            const userVaultBalanceBefore = (await getAccount(provider.connection, userVaultTokenAccount)).amount;
 
-            const t = await program.account.unbondingTicket.fetch(
-                ticketPda
-            );
-            assert.equal(t.requestedAmount.toNumber(), new BN(1000).toNumber(), "Unbonding ticket should reflect requested amount");
+            assert.ok(mintBalanceBefore >= BigInt(redeemAmount.toNumber()), "User must have enough PRIME to redeem");
 
-            // wait for >10 seconds unbonding period
-            await new Promise(resolve => setTimeout(resolve, 15000));
-            await program.methods.redeem()
+            await program.methods.redeem(redeemAmount)
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
                     stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     vaultAuthority: vaultAuthorityPda,
                     signer: user.publicKey,
+                    ticket: program.programId, // no legacy ticket
                     userVaultTokenAccount: userVaultTokenAccount,
                     userMintTokenAccount: userMintTokenAccount,
+                    stakePriceConfig: stakePriceConfigPda,
                     mint: mintedToken,
                     vaultMint: vaultedToken,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
-                    ticket: ticketPda
-                }).signers([user])
-                .rpc()
-
-            try {
-                await program.account.unbondingTicket.fetch(
-                    ticketPda
-                );
-                assert.fail("Redemption request should be closed");
-            } catch (err) {
-                expect(err).to.exist;
-                expect(err.message).to.include("Account does not exist or has no data");
-            }
-        });
-
-        it("unbond twice fails", async () => {
-            const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                [Buffer.from("ticket"), user.publicKey.toBuffer()],
-                program.programId
-            );
-            await program.methods.unbond(new BN(1000))
-                .accountsStrict({
-                    stakeConfig: stakeConfigPda,
-                    mint: mintedToken,
-                    signer: user.publicKey,
-                    userMintTokenAccount: userMintTokenAccount,
-                    ticket: ticketPda,
-                    systemProgram: anchor.web3.SystemProgram.programId,
                 })
                 .signers([user])
                 .rpc();
 
-            try {
-                await program.methods.unbond(new BN(1000))
-                    .accountsStrict({
-                        stakeConfig: stakeConfigPda,
-                        mint: mintedToken,
-                        signer: user.publicKey,
-                        userMintTokenAccount: userMintTokenAccount,
-                        ticket: ticketPda,
-                        systemProgram: anchor.web3.SystemProgram.programId,
-                    })
-                    .signers([user])
-                    .rpc();
-                assert.fail("Unbond request should have failed");
-            } catch (err) {
-                expect(err).to.exist;
-            }
+            const mintBalanceAfter = (await getAccount(provider.connection, userMintTokenAccount)).amount;
+            const vaultBalanceAfter = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+            const userVaultBalanceAfter = (await getAccount(provider.connection, userVaultTokenAccount)).amount;
+
+            assert.equal(mintBalanceAfter, mintBalanceBefore - BigInt(redeemAmount.toNumber()), "PRIME should be burned");
+            assert.ok(vaultBalanceAfter < vaultBalanceBefore, "Vault balance should decrease");
+            assert.ok(userVaultBalanceAfter > userVaultBalanceBefore, "User should receive wYLDS");
         });
 
-        it("redeem without unbond", async () => {
-            const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                [Buffer.from("ticket"), user.publicKey.toBuffer()],
-                program.programId
-            );
-
+        it("fails with zero amount", async () => {
             try {
-                await program.methods.redeem()
+                await program.methods.redeem(new BN(0))
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
                         vaultTokenAccount: vaultTokenAccount,
                         stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                         vaultAuthority: vaultAuthorityPda,
                         signer: user.publicKey,
+                        ticket: program.programId,
                         userVaultTokenAccount: userVaultTokenAccount,
                         userMintTokenAccount: userMintTokenAccount,
+                        stakePriceConfig: stakePriceConfigPda,
                         mint: mintedToken,
                         vaultMint: vaultedToken,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
-                        ticket: ticketPda
-                    }).signers([user])
-                    .rpc()
+                    })
+                    .signers([user])
+                    .rpc();
                 assert.fail("Should have thrown error");
             } catch (err) {
                 expect(err).to.exist;
+                expect(err.toString()).to.include("InvalidAmount");
             }
         });
 
-        it("closes out unbonding tickets", async () => {
-            const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                [Buffer.from("ticket"), user.publicKey.toBuffer()],
-                program.programId
-            );
+        it("fails with more than user balance", async () => {
+            const mintBalance = (await getAccount(provider.connection, userMintTokenAccount)).amount;
+            const tooMuch = new BN(mintBalance.toString()).add(new BN(1));
 
-            // wait for >10 seconds unbonding period which was created in the double bond test
-            await new Promise(resolve => setTimeout(resolve, 15000));
-            await program.methods.redeem()
+            try {
+                await program.methods.redeem(tooMuch)
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        vaultTokenAccount: vaultTokenAccount,
+                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+                        vaultAuthority: vaultAuthorityPda,
+                        signer: user.publicKey,
+                        ticket: program.programId,
+                        userVaultTokenAccount: userVaultTokenAccount,
+                        userMintTokenAccount: userMintTokenAccount,
+                        stakePriceConfig: stakePriceConfigPda,
+                        mint: mintedToken,
+                        vaultMint: vaultedToken,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    })
+                    .signers([user])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.include("InsufficientBalance");
+            }
+        });
+
+        it("redeems full balance in one call", async () => {
+            const mintBalance = (await getAccount(provider.connection, userMintTokenAccount)).amount;
+            if (mintBalance === BigInt(0)) {
+                assert.fail("Test precondition violated: expected non-zero mint balance before redeeming full balance");
+            }
+
+            await program.methods.redeem(new BN(mintBalance.toString()))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     vaultTokenAccount: vaultTokenAccount,
                     stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     vaultAuthority: vaultAuthorityPda,
                     signer: user.publicKey,
+                    ticket: program.programId,
                     userVaultTokenAccount: userVaultTokenAccount,
                     userMintTokenAccount: userMintTokenAccount,
+                    stakePriceConfig: stakePriceConfigPda,
                     mint: mintedToken,
                     vaultMint: vaultedToken,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
-                    ticket: ticketPda
-                }).signers([user])
-                .rpc()
+                })
+                .signers([user])
+                .rpc();
+
+            const mintBalanceAfter = (await getAccount(provider.connection, userMintTokenAccount)).amount;
+            assert.equal(mintBalanceAfter, BigInt(0), "All PRIME should be burned");
         });
     });
 
@@ -1031,6 +1102,7 @@ describe("vault-stake", () => {
                         signer: user.publicKey,
                         userVaultTokenAccount: userVaultTokenAccount,
                         userMintTokenAccount: userMintTokenAccount,
+                        stakePriceConfig: stakePriceConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
                     })
                     .signers([user])
@@ -1041,20 +1113,59 @@ describe("vault-stake", () => {
                 expect(err.toString()).to.include("ProtocolPaused");
             }
         });
-        it("prevents unbond when paused", async () => {
+        it("prevents redeem when paused", async () => {
+            // First deposit some tokens so user has shares to redeem
+            const userMintBalance = (await getAccount(provider.connection, userMintTokenAccount)).amount;
+            if (userMintBalance === BigInt(0)) {
+                // Make a small deposit to give user shares for the redeem attempt
+                const userVaultBalance = (await getAccount(provider.connection, userVaultTokenAccount)).amount;
+                if (userVaultBalance > BigInt(0)) {
+                    await program.methods
+                        .pause(false) // temporarily unpause to deposit
+                        .accountsStrict({ stakeConfig: stakeConfigPda, signer: freezeAdmin.publicKey })
+                        .signers([freezeAdmin])
+                        .rpc();
+                    await program.methods
+                        .deposit(new BN(10_000_000))
+                        .accountsStrict({
+                            stakeConfig: stakeConfigPda,
+                            vaultTokenAccount: vaultTokenAccount,
+                            stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+                            vaultAuthority: vaultAuthorityPda,
+                            mint: mintedToken,
+                            vaultMint: vaultedToken,
+                            mintAuthority: mintAuthorityPda,
+                            signer: user.publicKey,
+                            userVaultTokenAccount: userVaultTokenAccount,
+                            userMintTokenAccount: userMintTokenAccount,
+                            stakePriceConfig: stakePriceConfigPda,
+                            tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
+                        })
+                        .signers([user])
+                        .rpc();
+                    await program.methods
+                        .pause(true) // re-pause
+                        .accountsStrict({ stakeConfig: stakeConfigPda, signer: freezeAdmin.publicKey })
+                        .signers([freezeAdmin])
+                        .rpc();
+                }
+            }
+
             try {
-                const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                    [Buffer.from("ticket"), user.publicKey.toBuffer()],
-                    program.programId
-                );
-                await program.methods.unbond(new BN(1000))
+                await program.methods.redeem(new BN(1000))
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
-                        mint: mintedToken,
+                        vaultTokenAccount: vaultTokenAccount,
+                        stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+                        vaultAuthority: vaultAuthorityPda,
                         signer: user.publicKey,
+                        ticket: program.programId,
+                        userVaultTokenAccount: userVaultTokenAccount,
                         userMintTokenAccount: userMintTokenAccount,
-                        ticket: ticketPda,
-                        systemProgram: anchor.web3.SystemProgram.programId,
+                        stakePriceConfig: stakePriceConfigPda,
+                        mint: mintedToken,
+                        vaultMint: vaultedToken,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     })
                     .signers([user])
                     .rpc();
@@ -1062,32 +1173,6 @@ describe("vault-stake", () => {
             } catch (err) {
                 expect(err).to.exist;
                 expect(err.toString()).to.include("ProtocolPaused");
-            }
-        });
-
-        it("rejects unbond with token account not owned by signer with InvalidTokenOwner", async () => {
-            // regression guard: previously emitted InvalidMintAuthority (wrong error code)
-            const [ticketPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                [Buffer.from("ticket"), user.publicKey.toBuffer()],
-                program.programId
-            );
-            try {
-                // Pass user2's mint token account while signing as user — ownership mismatch
-                await program.methods.unbond(new BN(1000))
-                    .accountsStrict({
-                        stakeConfig: stakeConfigPda,
-                        mint: mintedToken,
-                        signer: user.publicKey,
-                        userMintTokenAccount: user2MintTokenAccount,
-                        ticket: ticketPda,
-                        systemProgram: anchor.web3.SystemProgram.programId,
-                    })
-                    .signers([user])
-                    .rpc();
-                assert.fail("Should have thrown error");
-            } catch (err) {
-                expect(err).to.exist;
-                expect(err.toString()).to.include("InvalidTokenOwner");
             }
         });
 
@@ -1120,17 +1205,19 @@ describe("vault-stake", () => {
 
         it("prevents publish rewards redeem when MINT PROGRAM is paused", async () => {
             try {
-                const amount = 1_000_000_000;
+                // Use 0.5% of vault balance — within the 0.75% cap so the cap isn't hit before ProtocolPaused
+                const vaultBalance = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+                const amount = (vaultBalance * BigInt(50)) / BigInt(10_000);
                 const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
                     [
                         Buffer.from("reward_record"),
                         Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
-                        Buffer.from(new BigUint64Array([createBigInt(amount)]).buffer)
+                        Buffer.from(new BigUint64Array([amount]).buffer)
                     ],
                     program.programId);
 
                 await program.methods
-                    .publishRewards(publishRewardsId, new BN(amount))
+                    .publishRewards(publishRewardsId, new BN(amount.toString()))
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
                         stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
@@ -1144,6 +1231,7 @@ describe("vault-stake", () => {
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
+                    stakeRewardConfig: stakeRewardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
@@ -1279,6 +1367,7 @@ describe("vault-stake", () => {
                         signer: user.publicKey,
                         userVaultTokenAccount: userVaultTokenAccount,
                         userMintTokenAccount: userMintTokenAccount,
+                        stakePriceConfig: stakePriceConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
                     })
                     .signers([user])
@@ -1315,17 +1404,18 @@ describe("vault-stake", () => {
             const rateBefore = await exchangeRate();
             const vaultBalanceBefore = (await getAccount(provider.connection, vaultTokenAccount)).amount;
 
-            const amount = 100_000_000_000;
+            // Use 0.5% of vault balance to stay within the 0.75% reward cap
+            const amount = (vaultBalanceBefore * BigInt(50)) / BigInt(10_000);
             const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("reward_record"),
                     Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
-                    Buffer.from(new BigUint64Array([createBigInt(amount)]).buffer)
+                    Buffer.from(new BigUint64Array([amount]).buffer)
                 ],
                 program.programId);
 
             const sig = await program.methods
-                .publishRewards(publishRewardsId, new BN(amount))
+                .publishRewards(publishRewardsId, new BN(amount.toString()))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
@@ -1339,27 +1429,20 @@ describe("vault-stake", () => {
                     vaultAuthority: vaultAuthorityPda,
                     mint: mintedToken,
                     rewardRecord: rewardsRecordPda,
+                    stakeRewardConfig: stakeRewardConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
                 .signers([rewardsAdmin])
-                .rpc({ commitment: "confirmed" });
-
-            const rateAfter = await exchangeRate();
-            assert.isTrue(rateAfter > rateBefore, "Exchange rate should increase after publishing rewards");
+                .rpc({ commitment: "confirmed", skipPreflight: true });
 
             // Regression test: RewardsPublished event total_assets must reflect the post-CPI
             // vault balance (after reload()), not the stale pre-CPI cached value.
             const vaultBalanceAfter = (await getAccount(provider.connection, vaultTokenAccount)).amount;
-            const expectedTotalAssets = vaultBalanceBefore + createBigInt(amount);
+            const expectedTotalAssets = vaultBalanceBefore + amount;
             assert.equal(vaultBalanceAfter, expectedTotalAssets, "Vault balance should increase by reward amount");
 
-            const tx = await provider.connection.getTransaction(sig, {
-                commitment: "confirmed",
-                maxSupportedTransactionVersion: 0,
-            });
-            const eventParser = new anchor.EventParser(program.programId, program.coder);
-            const events = [...eventParser.parseLogs(tx.meta.logMessages)];
+            const events = await parseEvents(sig);
             const event = events.find(e => e.name === "rewardsPublished");
 
             assert.isDefined(event, "RewardsPublished event should be emitted");
@@ -1369,8 +1452,8 @@ describe("vault-stake", () => {
                 "RewardsPublished event total_assets must equal post-CPI vault balance, not pre-CPI stale value"
             );
             assert.equal(
-                (event.data.amount as BN).toNumber(),
-                amount,
+                (event.data.amount as BN).toString(),
+                amount.toString(),
                 "RewardsPublished event amount should match published reward"
             );
         });
@@ -1402,6 +1485,7 @@ describe("vault-stake", () => {
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
+                    stakeRewardConfig: stakeRewardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
@@ -1414,12 +1498,14 @@ describe("vault-stake", () => {
         });
 
         it("publish reward multiples", async () => {
-            const amount = 1_000_000_000;
+            // Use 0.5% of vault balance — safely within the 0.75% cap for each call
+            const vaultBalance = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+            const amount = (vaultBalance * BigInt(50)) / BigInt(10_000);
             const [rewardsRecordPda1] = anchor.web3.PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("reward_record"),
                     Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
-                    Buffer.from(new BigUint64Array([createBigInt(amount)]).buffer)
+                    Buffer.from(new BigUint64Array([amount]).buffer)
                 ],
                 program.programId);
 
@@ -1438,6 +1524,7 @@ describe("vault-stake", () => {
                     vaultAuthority: vaultAuthorityPda,
                     mint: mintedToken,
                     rewardRecord: rewardsRecordPda1,
+                    stakeRewardConfig: stakeRewardConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
@@ -1448,7 +1535,7 @@ describe("vault-stake", () => {
                 [
                     Buffer.from("reward_record"),
                     Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
-                    Buffer.from(new BigUint64Array([createBigInt(amount)]).buffer)
+                    Buffer.from(new BigUint64Array([amount]).buffer)
                 ],
                 program.programId);
 
@@ -1467,6 +1554,7 @@ describe("vault-stake", () => {
                     vaultAuthority: vaultAuthorityPda,
                     mint: mintedToken,
                     rewardRecord: rewardsRecordPda2,
+                    stakeRewardConfig: stakeRewardConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
@@ -1476,8 +1564,8 @@ describe("vault-stake", () => {
             const reward1 = await program.account.rewardPublicationRecord.fetch(rewardsRecordPda1);
             const reward2 = await program.account.rewardPublicationRecord.fetch(rewardsRecordPda2);
 
-            assert.equal(reward1.amount.toNumber(), amount, "First reward amount should match");
-            assert.equal(reward2.amount.toNumber(), amount, "Second reward amount should match");
+            assert.equal(reward1.amount.toString(), amount.toString(), "First reward amount should match");
+            assert.equal(reward2.amount.toString(), amount.toString(), "Second reward amount should match");
             assert.equal(reward2.id, publishRewardsId, "Second reward id should match current reward id");
         });
 
@@ -1507,6 +1595,7 @@ describe("vault-stake", () => {
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
+                    stakeRewardConfig: stakeRewardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
@@ -1516,6 +1605,255 @@ describe("vault-stake", () => {
             } catch (err) {
                 expect(err).to.exist;
             }
+        });
+    });
+
+    describe("reward cap (StakeRewardConfig)", () => {
+        // Helpers to build publishRewards accounts without duplicating boilerplate
+        const publishRewardsAccounts = (rewardsRecordPda: PublicKey) => ({
+            stakeConfig: stakeConfigPda,
+            stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+            mintConfig: configPda,
+            externalMintAuthority: externalMintAuthorityPda,
+            mintProgram: mintProgram.programId,
+            admin: rewardsAdmin.publicKey,
+            rewardsMint: vaultedToken,
+            rewardsMintAuthority: rewardsMintAuthorityPda,
+            vaultTokenAccount: vaultTokenAccount,
+            vaultAuthority: vaultAuthorityPda,
+            mint: mintedToken,
+            rewardRecord: rewardsRecordPda,
+            stakeRewardConfig: stakeRewardConfigPda,
+            tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+            systemProgram: anchor.web3.SystemProgram.programId,
+        });
+
+        const makeRewardsRecordPda = (id: number, amount: bigint | number) => {
+            const amountBigInt = typeof amount === "bigint" ? amount : BigInt(amount);
+            return anchor.web3.PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("reward_record"),
+                    Buffer.from(new Uint32Array([id]).buffer),
+                    Buffer.from(new BigUint64Array([amountBigInt]).buffer),
+                ],
+                program.programId
+            )[0];
+        };
+
+        const updateMaxRewardBpsAccounts = () => ({
+            stakeConfig: stakeConfigPda,
+            stakeRewardConfig: stakeRewardConfigPda,
+            signer: provider.wallet.publicKey,
+            programData: programDataPda,
+        });
+
+        // ── Account state verification ──────────────────────────────────────
+
+        describe("account state verification", () => {
+            it("explicitly initialized config has correct state: maxRewardBps = 75", async () => {
+                // initializeRewardConfig was called in the initialize describe block.
+                // Verify full on-chain state — not just behavior.
+                const config = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(config.maxRewardBps.toNumber(), 75, "maxRewardBps must be 75 (0.75%) after explicit init");
+            });
+
+            it("publish_rewards does not mutate config state (init_if_needed is idempotent)", async () => {
+                // Verify that calling publish_rewards (which uses init_if_needed) on an
+                // already-initialized account does not change the stored bump or maxRewardBps.
+                const configBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+                const safeAmount = (totalAssets * BigInt(50)) / BigInt(10_000); // 0.5% — within 0.75% cap
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, safeAmount);
+                await program.methods
+                    .publishRewards(publishRewardsId, new BN(safeAmount.toString()))
+                    .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                    .signers([rewardsAdmin])
+                    .rpc();
+                const configAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(configAfter.bump, configBefore.bump, "bump must not change across publish_rewards calls");
+                assert.equal(
+                    configAfter.maxRewardBps.toString(),
+                    configBefore.maxRewardBps.toString(),
+                    "maxRewardBps must not change across publish_rewards calls"
+                );
+            });
+
+            it("cannot call initializeRewardConfig a second time (account already exists)", async () => {
+                try {
+                    await program.methods
+                        .initializeRewardConfig(new BN(1_000))
+                        .accountsStrict({
+                            stakeConfig: stakeConfigPda,
+                            stakeRewardConfig: stakeRewardConfigPda,
+                            signer: provider.wallet.publicKey,
+                            programData: programDataPda,
+                            systemProgram: SystemProgram.programId,
+                        })
+                        .rpc();
+                    assert.fail("Should have thrown — account already initialized");
+                } catch (err) {
+                    // Anchor throws "already in use" when init is used on an existing account
+                    expect(err.toString()).to.include("already in use");
+                }
+            });
+        });
+
+        // ── Default 0.75% cap enforcement ─────────────────────────────────────
+        // These tests verify the default maxRewardBps=75 (0.75%) cap behavior.
+        // The same behavior applies when the account is auto-created via init_if_needed
+        // (maxRewardBps=0), because the processor treats 0 as DEFAULT_BPS=75.
+
+        describe("default 0.75% cap enforcement", () => {
+            it("rejects reward above 0.75% of total_assets with RewardExceedsMaxDelta", async () => {
+                const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+                const overCapAmount = (totalAssets * BigInt(76)) / BigInt(10_000) + BigInt(1); // just over 0.75%
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, overCapAmount);
+                try {
+                    await program.methods
+                        .publishRewards(publishRewardsId, new BN(overCapAmount.toString()))
+                        .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown RewardExceedsMaxDelta");
+                } catch (err) {
+                    expect(err.toString()).to.include("RewardExceedsMaxDelta");
+                }
+            });
+
+            it("allows reward at exactly 0.75% of total_assets", async () => {
+                const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+                const exactCapAmount = (totalAssets * BigInt(75)) / BigInt(10_000); // exactly 0.75%
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, exactCapAmount);
+                await program.methods
+                    .publishRewards(publishRewardsId, new BN(exactCapAmount.toString()))
+                    .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                    .signers([rewardsAdmin])
+                    .rpc();
+            });
+        });
+
+        // ── Config changes via update_max_reward_bps ─────────────────────────
+
+        describe("update config", () => {
+            it("upgrade authority can raise cap: emits event and updates stored state", async () => {
+                const configBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const oldBps = configBefore.maxRewardBps.toNumber();
+                const newBps = 5_000; // 50%
+
+                const sig = await program.methods
+                    .updateMaxRewardBps(new BN(newBps))
+                    .accountsStrict(updateMaxRewardBpsAccounts())
+                    .rpc({ commitment: "confirmed", skipPreflight: true });
+
+                // Verify on-chain state updated
+                const configAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(configAfter.maxRewardBps.toNumber(), newBps, "stored maxRewardBps must reflect new value");
+                assert.equal(configAfter.bump, configBefore.bump, "bump must not change on update");
+
+                // Verify MaxRewardBpsUpdated event
+                const events = await parseEvents(sig);
+                const event = events.find(e => e.name === "maxRewardBpsUpdated");
+                assert.isDefined(event, "MaxRewardBpsUpdated event must be emitted");
+                assert.equal((event.data.oldBps as BN).toNumber(), oldBps, "event old_bps must reflect previous stored value");
+                assert.equal((event.data.newBps as BN).toNumber(), newBps, "event new_bps must match update argument");
+            });
+
+            it("raised cap (50%) allows reward between old and new cap: 30% reward succeeds", async () => {
+                // Precondition: cap is now 50% from the previous test
+                const configCheck = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(configCheck.maxRewardBps.toNumber(), 5_000, "precondition: cap should be 50%");
+
+                const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+                const amount = (totalAssets * BigInt(30)) / BigInt(100); // 30%: blocked at 20%, allowed at 50%
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, amount);
+                await program.methods
+                    .publishRewards(publishRewardsId, new BN(amount.toString()))
+                    .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                    .signers([rewardsAdmin])
+                    .rpc();
+            });
+
+            it("upgrade authority can lower cap: stored state and event both reflect change", async () => {
+                const configBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const oldBps = configBefore.maxRewardBps.toNumber();
+                const newBps = 2_000; // restore to 20%
+
+                const sig = await program.methods
+                    .updateMaxRewardBps(new BN(newBps))
+                    .accountsStrict(updateMaxRewardBpsAccounts())
+                    .rpc({ commitment: "confirmed", skipPreflight: true });
+
+                const configAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(configAfter.maxRewardBps.toNumber(), newBps, "stored maxRewardBps must reflect lowered value");
+
+                const events = await parseEvents(sig);
+                const event = events.find(e => e.name === "maxRewardBpsUpdated");
+                assert.isDefined(event, "MaxRewardBpsUpdated event must be emitted on lower");
+                assert.equal((event.data.oldBps as BN).toNumber(), oldBps, "event old_bps must be previous cap");
+                assert.equal((event.data.newBps as BN).toNumber(), newBps, "event new_bps must be new cap");
+            });
+
+            it("lowered cap re-enforces limit: reward above new cap is rejected", async () => {
+                // Precondition: cap is back to 20%
+                const configCheck = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(configCheck.maxRewardBps.toNumber(), 2_000, "precondition: cap should be restored to 20%");
+
+                const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+                const overCapAmount = (totalAssets * BigInt(30)) / BigInt(100); // 30% — over 20% cap
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, overCapAmount);
+                try {
+                    await program.methods
+                        .publishRewards(publishRewardsId, new BN(overCapAmount.toString()))
+                        .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown RewardExceedsMaxDelta after restoring 20% cap");
+                } catch (err) {
+                    expect(err.toString()).to.include("RewardExceedsMaxDelta");
+                }
+            });
+
+            it("non-upgrade-authority cannot update max_reward_bps", async () => {
+                try {
+                    await program.methods
+                        .updateMaxRewardBps(new BN(9_000))
+                        .accountsStrict({
+                            stakeConfig: stakeConfigPda,
+                            stakeRewardConfig: stakeRewardConfigPda,
+                            signer: rewardsAdmin.publicKey,
+                            programData: programDataPda,
+                        })
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown error");
+                } catch (err) {
+                    expect(err).to.exist;
+                }
+            });
+
+            it("rejects max_reward_bps of 0 with InvalidMaxRewardBps", async () => {
+                try {
+                    await program.methods
+                        .updateMaxRewardBps(new BN(0))
+                        .accountsStrict(updateMaxRewardBpsAccounts())
+                        .rpc();
+                    assert.fail("Should have thrown error");
+                } catch (err) {
+                    expect(err.toString()).to.include("InvalidMaxRewardBps");
+                }
+            });
+
+            it("rejects max_reward_bps above 10_000 (100%) with InvalidMaxRewardBps", async () => {
+                try {
+                    await program.methods
+                        .updateMaxRewardBps(new BN(10_001))
+                        .accountsStrict(updateMaxRewardBpsAccounts())
+                        .rpc();
+                    assert.fail("Should have thrown error");
+                } catch (err) {
+                    expect(err.toString()).to.include("InvalidMaxRewardBps");
+                }
+            });
         });
     });
 
@@ -1667,6 +2005,7 @@ describe("vault-stake", () => {
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
+                    stakeRewardConfig: stakeRewardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
@@ -1678,106 +2017,6 @@ describe("vault-stake", () => {
             }
         });
 
-        it("unbonding update by upgrade authority updates state and emits correct old and new periods", async () => {
-            const configBefore = await program.account.stakeConfig.fetch(stakeConfigPda);
-            const expectedOldPeriod = configBefore.unbondingPeriod;
-            const newPeriod = new BN(240);
-
-            assert.notEqual(
-                expectedOldPeriod.toNumber(),
-                newPeriod.toNumber(),
-                "Precondition: old and new periods must differ"
-            );
-
-            const sig = await program.methods
-                .updateConfig(newPeriod)
-                .accountsStrict({
-                    stakeConfig: stakeConfigPda,
-                    signer: provider.wallet.publicKey,
-                    programData: programData,
-                })
-                .rpc({ commitment: "confirmed" });
-
-            const tx = await provider.connection.getTransaction(sig, {
-                commitment: "confirmed",
-                maxSupportedTransactionVersion: 0,
-            });
-
-            const eventParser = new anchor.EventParser(program.programId, program.coder);
-            const events = [...eventParser.parseLogs(tx.meta.logMessages)];
-            const event = events.find(e => e.name === "unbondingPeriodUpdated");
-
-            // Verify on-chain state was updated
-            const configAfter = await program.account.stakeConfig.fetch(stakeConfigPda);
-            assert.equal(configAfter.unbondingPeriod.toNumber(), newPeriod.toNumber());
-
-            // Verify event was emitted with correct old and new values (regression guard for old_period bug)
-            assert.isDefined(event, "UnbondingPeriodUpdated event should have been emitted");
-            assert.equal(
-                (event.data.oldPeriod as BN).toNumber(),
-                expectedOldPeriod.toNumber(),
-                "Event old_period must reflect the period before the update, not the new value"
-            );
-            assert.equal(
-                (event.data.newPeriod as BN).toNumber(),
-                newPeriod.toNumber(),
-                "Event new_period must reflect the requested new period"
-            );
-            assert.notEqual(
-                (event.data.oldPeriod as BN).toNumber(),
-                (event.data.newPeriod as BN).toNumber(),
-                "Event must not report old_period == new_period"
-            );
-        });
-
-        it("disallows unbonding update by non upgrade authority", async () => {
-            try {
-                await program.methods
-                    .updateConfig(new BN(300))
-                    .accountsStrict({
-                        stakeConfig: stakeConfigPda,
-                        signer: rewardsAdmin.publicKey,
-                        programData: programData,
-                    })
-                    .signers([rewardsAdmin])
-                    .rpc();
-                assert.fail("Should have thrown error");
-            } catch (err) {
-                expect(err).to.exist;
-            }
-        });
-
-        it("rejects unbonding period below minimum", async () => {
-            try {
-                await program.methods
-                    .updateConfig(new BN(0))
-                    .accountsStrict({
-                        stakeConfig: stakeConfigPda,
-                        signer: provider.wallet.publicKey,
-                        programData: programData,
-                    })
-                    .rpc();
-                assert.fail("Should have thrown error");
-            } catch (err) {
-                expect(err).to.exist;
-            }
-        });
-
-        it("rejects unbonding period above maximum", async () => {
-            try {
-                await program.methods
-                    .updateConfig(new BN(31536001))
-                    .accountsStrict({
-                        stakeConfig: stakeConfigPda,
-                        signer: provider.wallet.publicKey,
-                        programData: programData,
-                    })
-                    .rpc();
-                assert.fail("Should have thrown error");
-            } catch (err) {
-                expect(err).to.exist;
-            }
-        });
     });
 
     describe("overflow deposits", () => {
@@ -1839,6 +2078,7 @@ describe("vault-stake", () => {
                     signer: user2.publicKey,
                     userVaultTokenAccount: user2VaultTokenAccount,
                     userMintTokenAccount: user2MintTokenAccount,
+                    stakePriceConfig: stakePriceConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
                 })
                 .signers([user2])

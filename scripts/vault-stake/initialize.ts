@@ -2,7 +2,6 @@ import * as anchor from "@coral-xyz/anchor";
 import {Program} from "@coral-xyz/anchor";
 import {VaultStake} from "../../target/types/vault_stake";
 import yargs from "yargs";
-import BN from "bn.js";
 import {PublicKey} from "@solana/web3.js";
 
 const provider = anchor.AnchorProvider.env();
@@ -19,11 +18,6 @@ const args = yargs(process.argv.slice(2))
     .option("mint", {
         type: "string",
         description: "Token that will be minted upon receipt of the vaulted asset",
-        required: true,
-    })
-    .option("unbonding_period", {
-        type: "string",
-        description: "Unbonding period in seconds",
         required: true,
     })
     .option("vault_token_account", {
@@ -81,7 +75,6 @@ const main = async () => {
     );
     const vault = new anchor.web3.PublicKey(args.vault);
     const mint = new anchor.web3.PublicKey(args.mint);
-    const unbondingPeriod = new BN(parseInt(args.unbonding_period));
     const vaultTokenAccount = new anchor.web3.PublicKey(args.vault_token_account);
     const freezeAdministrators: PublicKey[] = (args.freeze_administrators.split(",")).map((s: string) => new anchor.web3.PublicKey(s));
     if (freezeAdministrators.length > 5) {
@@ -95,7 +88,6 @@ const main = async () => {
     console.log("Program ID:", program.programId.toBase58());
     console.log("Vault (accepted token):", vault.toBase58());
     console.log("Mint (token to be minted):", mint.toBase58());
-    console.log("Unbonding Period (seconds):", unbondingPeriod);
     console.log("Vault Token Account:", vaultTokenAccount.toBase58());
     console.log("Stake Config PDA:", stakeConfigPda.toBase58());
     console.log("Stake Vault Token Account Config PDA:", stakeVaultTokenAccountConfigPda.toBase58());
@@ -108,7 +100,7 @@ const main = async () => {
 
     // Call initialize
     await program.methods
-        .initialize(unbondingPeriod, freezeAdministrators, rewardsAdministrators)
+        .initialize(freezeAdministrators, rewardsAdministrators)
         .accountsStrict({
             stakeConfig: stakeConfigPda,
             vaultAuthority: vaultAuthorityPda,

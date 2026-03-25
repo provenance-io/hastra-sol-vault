@@ -5,7 +5,6 @@ import yargs from "yargs";
 import {
     PublicKey,
 } from "@solana/web3.js";
-import {createBigInt} from "@metaplex-foundation/umi";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
@@ -31,6 +30,11 @@ const main = async () => {
         program.programId
     );
 
+    const [stakePriceConfigPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("stake_price_config"), stakeConfigPda.toBuffer()],
+        program.programId
+    );
+
     const [vaultAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("vault_authority")],
         program.programId
@@ -45,11 +49,12 @@ const main = async () => {
     console.log("Vault Token Account:", vaultTokenAccount.toBase58());
     console.log("Vault Authority PDA:", vaultAuthorityPda.toBase58());
 
-    // Call initialize
+    // Call exchange_rate
     const sig = await program.methods
         .exchangeRate()
         .accountsStrict({
             stakeConfig: stakeConfigPda,
+            stakePriceConfig: stakePriceConfigPda,
             vaultAuthority: vaultAuthorityPda,
             mint: mint,
             vaultTokenAccount: vaultTokenAccount,
@@ -66,8 +71,13 @@ const main = async () => {
     if (!!s?.meta["returnData"]) {
         const returnData = s!.meta!["returnData"].data;
         const buffer = Buffer.from(returnData[0], returnData[1]);
-        const exchangeRate = createBigInt(new anchor.BN(buffer, "le").toNumber());
-        console.log("Exchange Rate:", exchangeRate.toString());
+        // exchange_rate() returns a u64 scaled by 1e9 (see processor.rs SCALE constant).
+        // e.g. 1_000_000_000 → 1.000000000 wYLDS per PRIME
+        const SCALE = BigInt(1_000_000_000);
+        const raw = BigInt(new anchor.BN(buffer, "le").toString());
+        const whole = raw / SCALE;
+        const frac = (raw % SCALE).toString().padStart(9, "0");
+        console.log(`Exchange Rate: ${whole}.${frac} wYLDS per PRIME  (raw: ${raw})`);
     }
 };
 
