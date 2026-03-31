@@ -1,0 +1,63 @@
+use anchor_lang::prelude::*;
+
+#[event]
+pub struct DepositEvent {
+    pub user: Pubkey,
+    pub deposit_amount: u64,
+    pub minted_amount: u64,
+    pub mint: Pubkey,
+    pub mint_supply: u64,
+    pub vault: Pubkey,
+    pub vault_balance: u64,
+    pub total_assets: u64,
+    pub total_shares: u64,
+    pub totals_last_update_slot: u64,
+}
+
+#[event]
+pub struct RedeemEvent {
+    pub user: Pubkey,
+    pub mint: Pubkey,
+    pub requested_mint_amount: u64,
+    pub mint_supply: u64,
+    pub vault: Pubkey,
+    pub redeemed_vault_amount: u64,
+    pub vault_balance: u64,
+    pub shares_burned: u64,
+    pub total_assets: u64,
+    pub total_shares: u64,
+    pub totals_last_update_slot: u64,
+}
+
+#[event]
+pub struct RewardsPublished {
+    pub admin: Pubkey,
+    pub amount: u64,
+    pub mint_program: Pubkey,
+    pub vault_token_account: Pubkey,
+    pub mint: Pubkey,
+    pub vault: Pubkey,
+    pub total_assets: u64,
+    pub total_shares: u64,
+    pub totals_last_update_slot: u64,
+    pub id: u32,
+}
+
+#[event]
+pub struct PriceVerifiedEvent {
+    pub verifier: Pubkey,      // rewards admin who submitted the report
+    pub feed_id: [u8; 32],
+    pub price: i128,
+    pub price_scale: u64,
+    pub price_timestamp: i64,
+    pub expires_at: u64,
+    pub slot: u64,
+}
+
+#[event]
+pub struct MaxRewardBpsUpdated {
+    pub admin: Pubkey,
+    pub old_bps: u64,
+    pub new_bps: u64,
+    pub stake_config: Pubkey,
+}
