@@ -73,3 +73,22 @@ impl VaultTokenAccountConfig {
     pub const LEN: usize = 8 + 32 + 1; // discriminator + pubkey + bump
 }
 
+// Stores additional external programs authorized to call external_program_mint via CPI,
+// extending the single allowed_external_mint_program field in Config without changing the
+// Config account layout. Follows the same additive PDA pattern used for
+// VaultTokenAccountConfig and StakePriceConfig — existing deployments upgrade cleanly
+// because the original Config account is never reallocated. The legacy single-program
+// field continues to authorize the first staking program; this PDA authorizes any
+// subsequent programs (e.g. vault-stake-auto).
+#[account]
+pub struct AllowedExternalMintPrograms {
+    pub programs: Vec<Pubkey>,
+    pub bump: u8,
+}
+
+impl AllowedExternalMintPrograms {
+    pub const MAX_PROGRAMS: usize = 5;
+    // 8 discriminator + 4 vec length prefix + (32 * 5 pubkeys) + 1 bump
+    pub const LEN: usize = 8 + 4 + (32 * Self::MAX_PROGRAMS) + 1;
+}
+

@@ -135,8 +135,21 @@ pub mod vault_mint {
     }
 
     /// Allows an external authorized program to mint tokens to a specified account.
+    /// The calling_program account identifies the CPI caller; it must match either
+    /// config.allowed_external_mint_program (legacy) or be listed in the
+    /// allowed_external_mint_programs PDA (registered via register_allowed_external_mint_program).
     pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> Result<()> {
         processor::external_program_mint(ctx, amount)
+    }
+
+    /// Registers an additional external program as authorized to call external_program_mint.
+    /// Creates the AllowedExternalMintPrograms PDA on first call (init_if_needed).
+    /// Idempotent: calling with an already-registered program is a no-op.
+    /// Only callable by the program upgrade authority.
+    pub fn register_allowed_external_mint_program(
+        ctx: Context<RegisterAllowedExternalMintProgram>,
+    ) -> Result<()> {
+        processor::register_allowed_external_mint_program(ctx)
     }
 
     pub fn update_vault_token_account(
