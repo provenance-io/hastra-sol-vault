@@ -6,11 +6,6 @@ package_manager = "yarn"
 resolution = true
 skip-lint = false
 
-[programs.localnet]
-vault_mint = "9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV"
-vault_stake = "97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY"
-vault_stake_auto = "xZS9aDDtDS35huN9FhaoCeidGaV1S1M1KWGLV9jLY59"
-
 [registry]
 url = "https://api.apr.dev"
 
