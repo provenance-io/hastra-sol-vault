@@ -98,7 +98,7 @@ const main = async () => {
     console.log(`Legacy Ticket PDA: ${ticketPda.toBase58()} (${legacyTicketInfo !== null ? "found — will be closed and rent returned" : "not found — skipped"})`);
 
     const tx = await program.methods
-        .redeem(new anchor.BN(args.amount, 10, "le"))
+        .redeem(new anchor.BN(String(Math.trunc(args.amount)), 10))
         .accountsStrict({
             stakeConfig: stakeConfigPda,
             stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,

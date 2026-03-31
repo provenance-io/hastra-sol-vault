@@ -102,6 +102,16 @@ const main = async () => {
         stakeProgramId
     );
 
+    // AllowedExternalMintPrograms PDA from vault-mint: may be uninitialized if
+    // vault-stake is the legacy single allowed program; vault-mint handles both cases.
+    const [vaultMintAllowedExternalProgramsPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("allowed_external_mint_programs"),
+            mintConfigPda.toBuffer()
+        ],
+        mintProgramId
+    );
+
     const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [
             Buffer.from("reward_record"),
@@ -122,6 +132,7 @@ const main = async () => {
     console.log("Mint Config PDA:", mintConfigPda.toBase58());
     console.log("Rewards Mint Authority PDA:", rewardsMintAuthorityPda.toBase58());
     console.log("Vault Authority PDA:", vaultAuthorityPda.toBase58());
+    console.log("Vault Mint Allowed External Programs PDA:", vaultMintAllowedExternalProgramsPda.toBase58());
 
     const tx = await program.methods
         .publishRewards(rewardId, amount)
@@ -131,6 +142,8 @@ const main = async () => {
             mintConfig: mintConfigPda,
             externalMintAuthority: externalMintAuthorityPda,
             mintProgram: new anchor.web3.PublicKey(args.mint_program),
+            thisProgram: stakeProgramId,
+            vaultMintAllowedExternalPrograms: vaultMintAllowedExternalProgramsPda,
             admin: signer,
             rewardsMint: rewardsMint,
             rewardsMintAuthority: rewardsMintAuthorityPda,
