@@ -371,18 +371,36 @@ pub struct PublishRewards<'info> {
     )]
     pub mint_config: Account<'info, vault_mint::state::Config>,
 
-    /// PDA that proves this call is from vault-stake
-    /// This PDA is signed during the CPI call to vault-mint
-    /// Only vault-stake can sign for this PDA
-    /// CHECK: This is a PDA derived from vault-stake program, validated by seeds
+    /// PDA that proves this call is from this staking program.
+    /// Signed during the CPI to vault-mint. Only this program can produce a valid
+    /// signer for this address because it is derived from crate::id().
+    /// CHECK: This is a PDA derived from this program's id, validated by seeds
     #[account(
         seeds = [b"external_mint_authority"],
         bump
     )]
     pub external_mint_authority: UncheckedAccount<'info>,
-    
+
     /// CHECK: hastra vault-mint program's executable
     pub mint_program: AccountInfo<'info>,
+
+    /// This program's own account, passed to vault-mint as the calling_program identifier
+    /// so vault-mint can verify the caller against its allowed-program list.
+    /// CHECK: Address is constrained to this program's deployed id
+    #[account(constraint = this_program.key() == crate::id() @ CustomErrorCode::InvalidAuthority)]
+    pub this_program: AccountInfo<'info>,
+
+    /// The AllowedExternalMintPrograms PDA from vault-mint, passed through during the CPI.
+    /// vault-mint uses this to authorize callers beyond the legacy single-program field.
+    /// May be uninitialized for deployments that have not yet called
+    /// register_allowed_external_mint_program; vault-mint handles the empty-account case.
+    /// CHECK: Derived from vault-mint's config; authorization check is delegated to vault-mint
+    #[account(
+        seeds = [b"allowed_external_mint_programs", mint_config.key().as_ref()],
+        seeds::program = mint_program.key(),
+        bump,
+    )]
+    pub vault_mint_allowed_external_programs: UncheckedAccount<'info>,
     
     #[account(mut)]
     pub admin: Signer<'info>,

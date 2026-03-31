@@ -467,22 +467,26 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
     ];
     let signer = &[&seeds[..]];
 
-    // at this point, use CPI to call the mint_to instruction on the hastra-vault-mint
+    // CPI into vault-mint::external_program_mint.
+    // calling_program (this_program) and allowed_external_mint_programs are the two new
+    // accounts required by vault-mint's updated ExternalProgramMint context; they allow
+    // vault-mint to verify caller identity without a fixed single-program config field.
     let cpi_program = ctx.accounts.mint_program.to_account_info();
     let cpi_accounts = vault_mint::cpi::accounts::ExternalProgramMint {
         config: ctx.accounts.mint_config.to_account_info(),
+        calling_program: ctx.accounts.this_program.to_account_info(),
         external_mint_authority: ctx.accounts.external_mint_authority.to_account_info(),
         mint: ctx.accounts.rewards_mint.to_account_info(),
         mint_authority: ctx.accounts.rewards_mint_authority.to_account_info(),
         admin: ctx.accounts.admin.to_account_info(),
         destination: ctx.accounts.vault_token_account.to_account_info(),
+        allowed_external_mint_programs: ctx.accounts.vault_mint_allowed_external_programs.to_account_info(),
         token_program: ctx.accounts.token_program.to_account_info(),
     };
-    // Use new_with_signer to sign with the PDA
     let cpi_ctx = CpiContext::new_with_signer(
         cpi_program,
         cpi_accounts,
-        signer, // Sign with vault-stake's PDA
+        signer,
     );
     vault_mint::cpi::external_program_mint(cpi_ctx, amount)?;
     // reload the vault token account to get the updated amount for publishing the event
