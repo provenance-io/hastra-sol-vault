@@ -103,8 +103,19 @@ get_stake_program_config_pda() {
   echo "$pda"
 }
 
+# Derives the vault-stake-auto stake vault token account config PDA (same seeds as vault-stake).
+get_stake_auto_program_config_pda() {
+  local program_id="$1"
+  local pda=$(yarn run --silent ts-node scripts/vault-stake-auto/derive_stake_vault_token_account_config.ts --program_id "$program_id")
+  echo "$pda"
+}
+
 show_stake_price_config() {
   yarn run --silent ts-node scripts/vault-stake/show_stake_price_config.ts
+}
+
+show_stake_auto_price_config() {
+  yarn run --silent ts-node scripts/vault-stake-auto/show_stake_price_config.ts
 }
 
 get_ata() {
@@ -132,6 +143,7 @@ sha256_file() {
 show_accounts_and_pdas() {
   VAULT_MINT_PROGRAM_ID=$(grep -oE 'declare_id!\("([A-Za-z0-9]+)"\);' ../programs/vault-mint/src/lib.rs | grep -oE '"([A-Za-z0-9]+)"' | tr -d '"')
   VAULT_STAKE_PROGRAM_ID=$(grep -oE 'declare_id!\("([A-Za-z0-9]+)"\);' ../programs/vault-stake/src/lib.rs | grep -oE '"([A-Za-z0-9]+)"' | tr -d '"')
+  VAULT_STAKE_AUTO_PROGRAM_ID=$(grep -oE 'declare_id!\("([A-Za-z0-9]+)"\);' ../programs/vault-stake-auto/src/lib.rs | grep -oE '"([A-Za-z0-9]+)"' | tr -d '"')
 
   echo ""
   echo "Mint Program:"
@@ -147,10 +159,10 @@ show_accounts_and_pdas() {
   echo "Rewards Administrators:                   $REWARDS_ADMINISTRATORS"
   echo "Redeem Vault Token Account:               $MINT_PROG_REDEEM_VAULT_TOKEN_ACCOUNT"
   echo "Redeem Vault Authority PDA:               $(get_pda "$VAULT_MINT_PROGRAM_ID" "redeem_vault_authority")"
-  echo "Allow Mint Program Caller ID:             $VAULT_STAKE_PROGRAM_ID"
+  echo "Legacy allowed external mint program:     $VAULT_STAKE_PROGRAM_ID"
 
   echo ""
-  echo "Stake Program:"
+  echo "Stake Program (PRIME pool):"
   echo "Program ID:                               $VAULT_STAKE_PROGRAM_ID"
   echo "Vault Token (accepted token, i.e. wYLDS): $MINT_PROG_MINT_TOKEN"
   echo "Mint Token (token minted, PRIME):         $STAKE_PROG_MINT_TOKEN"
@@ -164,6 +176,22 @@ show_accounts_and_pdas() {
   echo "Rewards Administrators:                   $REWARDS_ADMINISTRATORS"
 
   echo ""
-  echo "Stake Price Config:"
+  echo "Stake Program (AUTO pool):"
+  echo "Program ID:                               $VAULT_STAKE_AUTO_PROGRAM_ID"
+  echo "Vault Token (accepted token, i.e. wYLDS): $MINT_PROG_MINT_TOKEN"
+  echo "Mint Token (token minted, AUTO):          $STAKE_AUTO_PROG_MINT_TOKEN"
+  echo "Vault Token Account:                      $STAKE_AUTO_PROG_VAULT_TOKEN_ACCOUNT"
+  echo "Vault Authority:                          $(get_pda "$VAULT_STAKE_AUTO_PROGRAM_ID" "vault_authority")"
+  echo "Config PDA:                               $(get_pda "$VAULT_STAKE_AUTO_PROGRAM_ID" "stake_config")"
+  echo "Stake Vault Token Account Config PDA:     $(get_stake_auto_program_config_pda "$VAULT_STAKE_AUTO_PROGRAM_ID")"
+  echo "Mint Authority PDA:                       $(get_pda "$VAULT_STAKE_AUTO_PROGRAM_ID" "mint_authority")"
+  echo "Freeze Authority PDA:                     $(get_pda "$VAULT_STAKE_AUTO_PROGRAM_ID" "freeze_authority")"
+
+  echo ""
+  echo "Stake Price Config (PRIME pool):"
   show_stake_price_config
+
+  echo ""
+  echo "Stake Price Config (AUTO pool):"
+  show_stake_auto_price_config
 }
