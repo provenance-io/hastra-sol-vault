@@ -3,13 +3,16 @@ name: Release
 # Triggered by pushing a version tag, e.g.: git tag v1.0.0 && git push origin v1.0.0
 #
 # Produces a GitHub Release containing:
-#   - vault_mint.so          (deployable program binary)
-#   - vault_stake.so         (deployable program binary)
-#   - vault_mint.json        (Anchor IDL — program interface definition)
-#   - vault_stake.json       (Anchor IDL — program interface definition)
-#   - vault_mint.ts          (TypeScript types generated from the IDL)
-#   - vault_stake.ts         (TypeScript types generated from the IDL)
-#   - checksums.txt          (SHA-256 of all release artifacts)
+#   - vault_mint.so               (deployable program binary)
+#   - vault_stake.so              (deployable program binary — PRIME pool)
+#   - vault_stake_auto.so         (deployable program binary — AUTO pool)
+#   - vault_mint.json             (Anchor IDL — program interface definition)
+#   - vault_stake.json            (Anchor IDL — program interface definition)
+#   - vault_stake_auto.json       (Anchor IDL — program interface definition)
+#   - vault_mint.ts               (TypeScript types generated from the IDL)
+#   - vault_stake.ts              (TypeScript types generated from the IDL)
+#   - vault_stake_auto.ts         (TypeScript types generated from the IDL)
+#   - checksums.txt               (SHA-256 of all release artifacts)
 #
 # Use checksums.txt to verify that the buffer uploaded to Squads matches the
 # artifact compiled at this exact commit before approving the upgrade proposal.
@@ -78,22 +81,27 @@ jobs:
       id: checksums
       run: |
         # Programs (.so)
-        sha256sum target/deploy/vault_mint.so   > target/deploy/checksums.txt
-        sha256sum target/deploy/vault_stake.so >> target/deploy/checksums.txt
+        sha256sum target/deploy/vault_mint.so        > target/deploy/checksums.txt
+        sha256sum target/deploy/vault_stake.so      >> target/deploy/checksums.txt
+        sha256sum target/deploy/vault_stake_auto.so >> target/deploy/checksums.txt
         # IDL JSON files
-        sha256sum target/idl/vault_mint.json   >> target/deploy/checksums.txt
-        sha256sum target/idl/vault_stake.json  >> target/deploy/checksums.txt
+        sha256sum target/idl/vault_mint.json        >> target/deploy/checksums.txt
+        sha256sum target/idl/vault_stake.json       >> target/deploy/checksums.txt
+        sha256sum target/idl/vault_stake_auto.json  >> target/deploy/checksums.txt
         # TypeScript type files
-        sha256sum target/types/vault_mint.ts   >> target/deploy/checksums.txt
-        sha256sum target/types/vault_stake.ts  >> target/deploy/checksums.txt
+        sha256sum target/types/vault_mint.ts        >> target/deploy/checksums.txt
+        sha256sum target/types/vault_stake.ts       >> target/deploy/checksums.txt
+        sha256sum target/types/vault_stake_auto.ts  >> target/deploy/checksums.txt
         echo "Checksums:"
         cat target/deploy/checksums.txt
 
         # Expose individual hashes as outputs for the release body
         MINT_HASH=$(sha256sum target/deploy/vault_mint.so | awk '{print $1}')
         STAKE_HASH=$(sha256sum target/deploy/vault_stake.so | awk '{print $1}')
-        echo "mint_hash=$MINT_HASH"   >> $GITHUB_OUTPUT
-        echo "stake_hash=$STAKE_HASH" >> $GITHUB_OUTPUT
+        STAKE_AUTO_HASH=$(sha256sum target/deploy/vault_stake_auto.so | awk '{print $1}')
+        echo "mint_hash=$MINT_HASH"             >> $GITHUB_OUTPUT
+        echo "stake_hash=$STAKE_HASH"           >> $GITHUB_OUTPUT
+        echo "stake_auto_hash=$STAKE_AUTO_HASH" >> $GITHUB_OUTPUT
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
@@ -103,10 +111,13 @@ jobs:
         files: |
           target/deploy/vault_mint.so
           target/deploy/vault_stake.so
+          target/deploy/vault_stake_auto.so
           target/idl/vault_mint.json
           target/idl/vault_stake.json
+          target/idl/vault_stake_auto.json
           target/types/vault_mint.ts
           target/types/vault_stake.ts
+          target/types/vault_stake_auto.ts
           target/deploy/checksums.txt
         body: |
           ## Program Artifacts — ${{ github.ref_name }}
@@ -119,15 +130,18 @@ jobs:
           |------|---------|
           | `vault_mint.so` | `${{ steps.checksums.outputs.mint_hash }}` |
           | `vault_stake.so` | `${{ steps.checksums.outputs.stake_hash }}` |
+          | `vault_stake_auto.so` | `${{ steps.checksums.outputs.stake_auto_hash }}` |
 
           ### Interface (IDL + TypeScript types)
 
           | File | Description |
           |------|-------------|
           | `vault_mint.json` | Anchor IDL for the vault-mint program |
-          | `vault_stake.json` | Anchor IDL for the vault-stake program |
+          | `vault_stake.json` | Anchor IDL for the vault-stake (PRIME pool) program |
+          | `vault_stake_auto.json` | Anchor IDL for the vault-stake-auto (AUTO pool) program |
           | `vault_mint.ts` | TypeScript types generated from the vault-mint IDL |
           | `vault_stake.ts` | TypeScript types generated from the vault-stake IDL |
+          | `vault_stake_auto.ts` | TypeScript types generated from the vault-stake-auto IDL |
 
           SHA-256 hashes for all artifacts (including IDLs and types) are in `checksums.txt`.
 
@@ -140,6 +154,7 @@ jobs:
           # Download the release artifact and verify its hash locally
           sha256sum vault_mint.so
           sha256sum vault_stake.so
+          sha256sum vault_stake_auto.so
 
           # Compare against checksums.txt attached to this release
           ```
