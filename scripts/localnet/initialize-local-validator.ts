@@ -18,6 +18,7 @@ import {
 } from "@solana/spl-token";
 import {VaultMint} from "../../target/types/vault_mint";
 import {VaultStake} from "../../target/types/vault_stake";
+import {VaultStakeAuto} from "../../target/types/vault_stake_auto";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -103,9 +104,11 @@ async function main() {
     console.log("📦 Loading programs...");
     const mintProgram = anchor.workspace.VaultMint as Program<VaultMint>;
     const stakeProgram = anchor.workspace.VaultStake as Program<VaultStake>;
+    const stakeAutoProgram = anchor.workspace.VaultStakeAuto as Program<VaultStakeAuto>;
 
     console.log("  Vault-Mint Program: ", mintProgram.programId.toBase58());
     console.log("  Vault-Stake Program:", stakeProgram.programId.toBase58());
+    console.log("  Vault-Stake Auto Program:", stakeAutoProgram.programId.toBase58());
     console.log();
 
     // Create tokens
@@ -146,6 +149,19 @@ async function main() {
         TOKEN_PROGRAM_ID
     );
     console.log("  Stake Token (PRIME): ", primeToken.toBase58());
+    console.log();
+
+    const autoToken = await createMint(
+        connection,
+        upgradeAuthority,
+        upgradeAuthority.publicKey,
+        upgradeAuthority.publicKey,
+        6, // 6 decimals like USDC
+        undefined,
+        undefined,
+        TOKEN_PROGRAM_ID
+    );
+    console.log("  Stake Token (AUTO):  ", autoToken.toBase58());
     console.log();
 
     // Derive PDAs for Mint Program
@@ -380,6 +396,167 @@ async function main() {
     console.log("  ✅ Transferred stake freeze authority to PDA");
     console.log();
 
+    // Derive PDAs for Stake Auto Program
+    console.log("🔐 Deriving Stake Auto Program PDAs...");
+
+    const [stakeAutoConfigPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("stake_config")],
+        stakeAutoProgram.programId
+    );
+
+    const [stakeAutoMintAuthority] = PublicKey.findProgramAddressSync(
+        [Buffer.from("mint_authority")],
+        stakeAutoProgram.programId
+    );
+
+    const [stakeAutoFreezeAuthority] = PublicKey.findProgramAddressSync(
+        [Buffer.from("freeze_authority")],
+        stakeAutoProgram.programId
+    );
+
+    const [stakeAutoVaultAuthority] = PublicKey.findProgramAddressSync(
+        [Buffer.from("vault_authority")],
+        stakeAutoProgram.programId
+    );
+
+    const [stakeAutoVaultTokenAccountConfigPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("stake_vault_token_account_config"), stakeAutoConfigPda.toBuffer()],
+        stakeAutoProgram.programId
+    );
+
+    console.log("  Stake Auto Config PDA:        ", stakeAutoConfigPda.toBase58());
+    console.log("  Stake Auto Mint Authority:    ", stakeAutoMintAuthority.toBase58());
+    console.log("  Stake Auto Freeze Authority:  ", stakeAutoFreezeAuthority.toBase58());
+    console.log("  Stake Auto Vault Authority:   ", stakeAutoVaultAuthority.toBase58());
+    console.log();
+
+    // Create token account for Stake Auto Program
+    console.log("💼 Creating Stake Auto Program token account...");
+
+    // Important:
+    // `createAccount()` defaults to creating an Associated Token Account (ATA) when no
+    // keypair is provided. PRIME already re-assigned the owner authority for the
+    // (wyldsToken, upgradeAuthority) ATA, so creating the same ATA again causes
+    // ATA-program to reject the provided owner.
+    //
+    // Using an explicit keypair creates a distinct SPL Token Account instead of an
+    // ATA, matching the "separate vault per pool" design.
+    const stakeAutoVaultTokenAccountKeypair = Keypair.generate();
+    const stakeAutoVaultTokenAccount = await createAccount(
+        connection,
+        upgradeAuthority,
+        wyldsToken,
+        upgradeAuthority.publicKey,
+        stakeAutoVaultTokenAccountKeypair
+    );
+    console.log("  Stake Auto Vault Token Account:", stakeAutoVaultTokenAccount.toBase58());
+    console.log();
+
+    // Initialize Stake Auto Program
+    console.log("⚙️  Initializing Stake Auto Program...");
+
+    try {
+        const [programDataPda] = PublicKey.findProgramAddressSync(
+            [stakeAutoProgram.programId.toBuffer()],
+            BPF_LOADER_UPGRADEABLE_ID
+        );
+
+        const tx = await stakeAutoProgram.methods
+            .initialize(
+                [freezeAdmin.publicKey],
+                [rewardsAdmin.publicKey]
+            )
+            .accountsStrict({
+                stakeConfig: stakeAutoConfigPda,
+                vaultAuthority: stakeAutoVaultAuthority,
+                vaultTokenAccount: stakeAutoVaultTokenAccount,
+                stakeVaultTokenAccountConfig: stakeAutoVaultTokenAccountConfigPda,
+                vaultTokenMint: wyldsToken,
+                mint: autoToken,
+                signer: upgradeAuthority.publicKey,
+                tokenProgram: TOKEN_PROGRAM_ID,
+                systemProgram: SystemProgram.programId,
+                programData: programDataPda,
+            })
+            .signers([upgradeAuthority])
+            .rpc();
+
+        console.log("  ✅ Stake Auto Program initialized");
+        console.log("  Transaction:", tx);
+    } catch (error) {
+        console.error("  ❌ Failed to initialize Stake Auto Program:", error);
+        throw error;
+    }
+    console.log();
+
+    // Transfer stake token authorities to PDAs
+    console.log("🔄 Transferring stake AUTO token authorities to PDAs...");
+
+    await setAuthority(
+        connection,
+        upgradeAuthority,
+        autoToken,
+        upgradeAuthority.publicKey,
+        AuthorityType.MintTokens,
+        stakeAutoMintAuthority,
+        undefined,
+        undefined,
+        TOKEN_PROGRAM_ID
+    );
+    console.log("  ✅ Transferred stake AUTO mint authority to PDA");
+
+    await setAuthority(
+        connection,
+        upgradeAuthority,
+        autoToken,
+        upgradeAuthority.publicKey,
+        AuthorityType.FreezeAccount,
+        stakeAutoFreezeAuthority,
+        undefined,
+        undefined,
+        TOKEN_PROGRAM_ID
+    );
+    console.log("  ✅ Transferred stake AUTO freeze authority to PDA");
+    console.log();
+
+    // Register vault-stake-auto as an allowed external mint caller in vault-mint
+    // so AUTO's publish_rewards CPI into vault-mint::external_program_mint can succeed.
+    console.log("🔗 Registering Stake Auto Program in Vault Mint...");
+    const [mintProgramDataPda] = PublicKey.findProgramAddressSync(
+        [mintProgram.programId.toBuffer()],
+        BPF_LOADER_UPGRADEABLE_ID
+    );
+
+    const [allowedExternalMintProgramsPda] = PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("allowed_external_mint_programs"),
+            mintConfigPda.toBuffer(),
+        ],
+        mintProgram.programId
+    );
+
+    try {
+        const tx = await mintProgram.methods
+            .registerAllowedExternalMintProgram()
+            .accountsStrict({
+                config: mintConfigPda,
+                allowedExternalMintPrograms: allowedExternalMintProgramsPda,
+                externalProgram: stakeAutoProgram.programId,
+                signer: upgradeAuthority.publicKey,
+                programData: mintProgramDataPda,
+                systemProgram: SystemProgram.programId,
+            })
+            .signers([upgradeAuthority])
+            .rpc();
+
+        console.log("  ✅ Registered allowed external mint program");
+        console.log("  Transaction:", tx);
+    } catch (error) {
+        console.error("  ❌ Failed to register Stake Auto program in Vault Mint:", error);
+        throw error;
+    }
+    console.log();
+
     // Save configuration
     console.log("💾 Saving configuration files...");
 
@@ -410,6 +587,7 @@ async function main() {
             usdcToken: usdcToken.toBase58(),
             wyldsToken: wyldsToken.toBase58(),
             primeToken: primeToken.toBase58(),
+            autoToken: autoToken.toBase58(),
         },
 
         mintProgram: {
@@ -430,6 +608,14 @@ async function main() {
             freezeAuthority: stakeFreezeAuthority.toBase58(),
             vaultAuthority: stakeVaultAuthority.toBase58(),
             vaultTokenAccount: stakeVaultTokenAccount.toBase58(),
+        },
+        stakeAutoProgram: {
+            programId: stakeAutoProgram.programId.toBase58(),
+            configPda: stakeAutoConfigPda.toBase58(),
+            mintAuthority: stakeAutoMintAuthority.toBase58(),
+            freezeAuthority: stakeAutoFreezeAuthority.toBase58(),
+            vaultAuthority: stakeAutoVaultAuthority.toBase58(),
+            vaultTokenAccount: stakeAutoVaultTokenAccount.toBase58(),
         },
     };
 
@@ -454,6 +640,7 @@ FREEZE_ADMIN=${freezeAdmin.publicKey.toBase58()}
 VAULT_TOKEN=${usdcToken.toBase58()}
 MINT_TOKEN=${wyldsToken.toBase58()}
 STAKE_TOKEN=${primeToken.toBase58()}
+STAKE_AUTO_TOKEN=${autoToken.toBase58()}
 
 # Mint Program
 MINT_PROGRAM_ID=${mintProgram.programId.toBase58()}
@@ -461,10 +648,15 @@ MINT_CONFIG_PDA=${mintConfigPda.toBase58()}
 VAULT_TOKEN_ACCOUNT=${vaultTokenAccount.toBase58()}
 REDEEM_VAULT_TOKEN_ACCOUNT=${redeemVaultTokenAccount.toBase58()}
 
-# Stake Program
+# Stake Program (PRIME pool)
 STAKE_PROGRAM_ID=${stakeProgram.programId.toBase58()}
 STAKE_CONFIG_PDA=${stakeConfigPda.toBase58()}
-STAKE_VAULT_TOKEN_ACCOUNT=${stakeVaultTokenAccount.toBase58()}`;
+STAKE_VAULT_TOKEN_ACCOUNT=${stakeVaultTokenAccount.toBase58()}
+
+# Stake Auto Program (AUTO pool)
+STAKE_AUTO_PROGRAM_ID=${stakeAutoProgram.programId.toBase58()}
+STAKE_AUTO_CONFIG_PDA=${stakeAutoConfigPda.toBase58()}
+STAKE_AUTO_VAULT_TOKEN_ACCOUNT=${stakeAutoVaultTokenAccount.toBase58()}`;
 
     fs.writeFileSync(envPath, envContent);
     console.log("  ✅ Environment file:", envPath);
@@ -486,10 +678,12 @@ STAKE_VAULT_TOKEN_ACCOUNT=${stakeVaultTokenAccount.toBase58()}`;
     console.log(`  USDC (vault):  ${usdcToken.toBase58()}`);
     console.log(`  wYLDS (mint):  ${wyldsToken.toBase58()}`);
     console.log(`  PRIME (stake): ${primeToken.toBase58()}`);
+    console.log(`  AUTO (stake):  ${autoToken.toBase58()}`);
     console.log();
     console.log("Programs:");
     console.log(`  Vault-Mint:  ${mintProgram.programId.toBase58()}`);
     console.log(`  Vault-Stake: ${stakeProgram.programId.toBase58()}`);
+    console.log(`  Vault-Stake Auto: ${stakeAutoProgram.programId.toBase58()}`);
     console.log();
     console.log("🌐 Next Steps:");
     console.log("  1. See detailed configs from scripts/.local-validator/*");
