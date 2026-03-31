@@ -85,6 +85,8 @@ describe("vault-stake-auto", () => {
     let userVaultTokenAccount: PublicKey;
     let user2MintTokenAccount: PublicKey;
     let user2VaultTokenAccount: PublicKey;
+    /** User 2's USDC (vault) token account — set in initialize; not necessarily the ATA. */
+    let user2MintProgramVaultedTokenAccount: PublicKey;
     let mintProgramVaultTokenAccount: PublicKey;
     let mintProgramVaultTokenAccountOwner: PublicKey;
     let externalMintAuthorityPda: PublicKey;
@@ -285,11 +287,15 @@ describe("vault-stake-auto", () => {
         );
 
         // Create vault token account
+        // Pass an explicit keypair so createAccount uses SystemProgram + initialize (not ATA create).
+        // Omitting the keypair makes @solana/spl-token use createAssociatedTokenAccount, which can
+        // fail with InstructionError::IllegalOwner for some mint / toolchain combinations.
         vaultTokenAccount = await createAccount(
             provider.connection,
             provider.wallet.payer,
             vaultedToken,
-            provider.wallet.publicKey
+            provider.wallet.publicKey,
+            Keypair.generate()
         );
 
         // Create user token accounts with user as owner
@@ -297,28 +303,32 @@ describe("vault-stake-auto", () => {
             provider.connection,
             provider.wallet.payer,
             mintedToken,
-            user.publicKey
+            user.publicKey,
+            Keypair.generate()
         );
 
         userVaultTokenAccount = await createAccount(
             provider.connection,
             provider.wallet.payer,
             vaultedToken,
-            user.publicKey
+            user.publicKey,
+            Keypair.generate()
         );
 
         user2MintTokenAccount = await createAccount(
             provider.connection,
             provider.wallet.payer,
             mintedToken,
-            user2.publicKey
+            user2.publicKey,
+            Keypair.generate()
         );
 
         user2VaultTokenAccount = await createAccount(
             provider.connection,
             provider.wallet.payer,
             vaultedToken,
-            user2.publicKey
+            user2.publicKey,
+            Keypair.generate()
         );
 
         mintProgramVaultTokenAccountOwner = Keypair.fromSeed(Buffer.alloc(32, 72)).publicKey;
@@ -366,7 +376,8 @@ describe("vault-stake-auto", () => {
                 provider.connection,
                 provider.wallet.payer,
                 mintProgramVaultToken,
-                user.publicKey
+                user.publicKey,
+                Keypair.generate()
             ); // USDC
 
             // Mint vault tokens to user (USDC)
@@ -411,11 +422,12 @@ describe("vault-stake-auto", () => {
             const mintConfig = await mintProgram.account.config.fetch(configPda);
 
             const mintProgramVaultToken = mintConfig.vault; //USDC
-            const user2MintProgramVaultedTokenAccount = await createAccount(
+            user2MintProgramVaultedTokenAccount = await createAccount(
                 provider.connection,
                 provider.wallet.payer,
                 mintProgramVaultToken,
-                user2.publicKey
+                user2.publicKey,
+                Keypair.generate()
             ); // USDC
 
             // Mint vault tokens to user2 (USDC)
@@ -1257,6 +1269,8 @@ describe("vault-stake-auto", () => {
                         mintConfig: configPda,
                         externalMintAuthority: externalMintAuthorityPda,
                         mintProgram: mintProgram.programId,
+                        thisProgram: program.programId,
+                        vaultMintAllowedExternalPrograms: allowedExternalMintProgramsPda,
                         admin: rewardsAdmin.publicKey,
                         rewardsMint: vaultedToken,
                         rewardsMintAuthority: rewardsMintAuthorityPda,
@@ -1455,6 +1469,8 @@ describe("vault-stake-auto", () => {
                     mintConfig: configPda,
                     externalMintAuthority: externalMintAuthorityPda,
                     mintProgram: mintProgram.programId,
+                    thisProgram: program.programId,
+                    vaultMintAllowedExternalPrograms: allowedExternalMintProgramsPda,
                     admin: rewardsAdmin.publicKey,
                     rewardsMint: vaultedToken,
                     rewardsMintAuthority: rewardsMintAuthorityPda,
@@ -1511,6 +1527,8 @@ describe("vault-stake-auto", () => {
                         mintConfig: configPda,
                         externalMintAuthority: externalMintAuthorityPda,
                         mintProgram: mintProgram.programId,
+                        thisProgram: program.programId,
+                        vaultMintAllowedExternalPrograms: allowedExternalMintProgramsPda,
                         admin: rewardsAdmin.publicKey,
                         rewardsMint: vaultedToken,
                         rewardsMintAuthority: rewardsMintAuthorityPda,
@@ -1550,6 +1568,8 @@ describe("vault-stake-auto", () => {
                     mintConfig: configPda,
                     externalMintAuthority: externalMintAuthorityPda,
                     mintProgram: mintProgram.programId,
+                    thisProgram: program.programId,
+                    vaultMintAllowedExternalPrograms: allowedExternalMintProgramsPda,
                     admin: rewardsAdmin.publicKey,
                     rewardsMint: vaultedToken,
                     rewardsMintAuthority: rewardsMintAuthorityPda,
@@ -1580,6 +1600,8 @@ describe("vault-stake-auto", () => {
                     mintConfig: configPda,
                     externalMintAuthority: externalMintAuthorityPda,
                     mintProgram: mintProgram.programId,
+                    thisProgram: program.programId,
+                    vaultMintAllowedExternalPrograms: allowedExternalMintProgramsPda,
                     admin: rewardsAdmin.publicKey,
                     rewardsMint: vaultedToken,
                     rewardsMintAuthority: rewardsMintAuthorityPda,
@@ -1621,6 +1643,8 @@ describe("vault-stake-auto", () => {
                         mintConfig: configPda,
                         externalMintAuthority: externalMintAuthorityPda,
                         mintProgram: mintProgram.programId,
+                        thisProgram: program.programId,
+                        vaultMintAllowedExternalPrograms: allowedExternalMintProgramsPda,
                         admin: user.publicKey,
                         rewardsMint: vaultedToken,
                         rewardsMintAuthority: rewardsMintAuthorityPda,
@@ -1649,6 +1673,8 @@ describe("vault-stake-auto", () => {
             mintConfig: configPda,
             externalMintAuthority: externalMintAuthorityPda,
             mintProgram: mintProgram.programId,
+            thisProgram: program.programId,
+            vaultMintAllowedExternalPrograms: allowedExternalMintProgramsPda,
             admin: rewardsAdmin.publicKey,
             rewardsMint: vaultedToken,
             rewardsMintAuthority: rewardsMintAuthorityPda,
@@ -1910,7 +1936,8 @@ describe("vault-stake-auto", () => {
                 provider.connection,
                 provider.wallet.payer,
                 vaultedToken,
-                newVaultTokenAccountOwner
+                newVaultTokenAccountOwner,
+                Keypair.generate()
             );
         });
 
@@ -2031,6 +2058,8 @@ describe("vault-stake-auto", () => {
                         mintConfig: configPda,
                         externalMintAuthority: externalMintAuthorityPda,
                         mintProgram: mintProgram.programId,
+                        thisProgram: program.programId,
+                        vaultMintAllowedExternalPrograms: allowedExternalMintProgramsPda,
                         admin: addRewardsAdmin.publicKey,
                         rewardsMint: vaultedToken,
                         rewardsMintAuthority: rewardsMintAuthorityPda,
@@ -2057,12 +2086,11 @@ describe("vault-stake-auto", () => {
         before(async () => {
             const mintConfig = await mintProgram.account.config.fetch(configPda);
             const mintProgramVaultToken = mintConfig.vault; //USDC
-            const user2MintProgramVaultedTokenAccount = await getAssociatedTokenAddress(
-                mintProgramVaultToken,
-                user2.publicKey
-            );
 
-            const user2UsdcBalance = await getAccount(provider.connection, user2MintProgramVaultedTokenAccount);
+            const user2UsdcBalance = await getAccount(
+                provider.connection,
+                user2MintProgramVaultedTokenAccount
+            );
             const [mintProgramMintAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
                 [Buffer.from("mint_authority")],
                 mintProgram.programId

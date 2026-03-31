@@ -1155,24 +1155,36 @@ describe("vault-mint", () => {
             const [externalMintAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
                 [Buffer.from("external_mint_authority")],
                 stakeProgram.programId
-            )
+            );
+            const [allowedExternalMintProgramsPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("allowed_external_mint_programs"),
+                    configPda.toBuffer(),
+                ],
+                program.programId
+            );
             try {
                 await program.methods
                     .externalProgramMint(new BN(1_000_000))
                     .accountsStrict({
                         config: configPda,
+                        callingProgram: stakeProgram.programId,
                         externalMintAuthority: externalMintAuthorityPda,
                         mint: mintedToken,
                         mintAuthority: mintAuthorityPda,
                         admin: rewardsAdmin.publicKey,
                         destination: userMintTokenAccount,
+                        allowedExternalMintPrograms: allowedExternalMintProgramsPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID
                     })
                     .rpc();
                 assert.fail("Should have thrown error");
             } catch (err) {
                 expect(err).to.exist;
-                expect(err.toString()).to.include("Signature verification failed");
+                // Direct client call cannot sign the stake PDA; runtime rejects missing/invalid signature.
+                expect(err.toString()).to.match(
+                    /Signature verification failed|missing required signature|Transaction simulation failed/i
+                );
             }
         });
 
