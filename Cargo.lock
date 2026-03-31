@@ -3883,6 +3883,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vault-stake-auto"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "bincode",
+ "chainlink-data-streams-report",
+ "chainlink_solana_data_streams",
+ "num-traits",
+ "vault-mint",
+]
+
+[[package]]
 name = "vcpkg"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
