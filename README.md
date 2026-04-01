@@ -741,10 +741,13 @@ The release will contain:
 |------|-------------|
 | `vault_mint.so` | Compiled vault-mint program binary |
 | `vault_stake.so` | Compiled vault-stake program binary |
+| `vault_stake_auto.so` | Compiled vault-stake-auto program binary |
 | `vault_mint.json` | Anchor IDL for the vault-mint program |
 | `vault_stake.json` | Anchor IDL for the vault-stake program |
+| `vault_stake_auto.json` | Anchor IDL for the vault-stake-auto program |
 | `vault_mint.ts` | TypeScript types generated from the vault-mint IDL |
 | `vault_stake.ts` | TypeScript types generated from the vault-stake IDL |
+| `vault_stake_auto.ts` | TypeScript types generated from the vault-stake-auto IDL |
 | `checksums.txt` | SHA-256 of all release artifacts |
 
 ### Verify a Buffer Before Approving in Squads
