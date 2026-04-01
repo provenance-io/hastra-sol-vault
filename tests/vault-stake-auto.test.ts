@@ -1,7 +1,7 @@
 /**
  * Integration tests for vault-stake-auto (AUTO pool). Mirrored from vault-stake.test.ts.
- * Mocha runs `vault-mint.test.ts` before this file (lexical order), so vault-mint is initialized
- * and we register vault-stake-auto on AllowedExternalMintPrograms in `before`.
+ * Mocha runs `vault-mint.test.ts` before this file (lexical order). vault-mint may bootstrap this
+ * program for external_program_mint tests; `before` and initialize tests tolerate existing PDAs.
  */
 import * as anchor from "@coral-xyz/anchor";
 import {Program} from "@coral-xyz/anchor";
@@ -227,16 +227,7 @@ describe("vault-stake-auto", () => {
         // Wait for airdrops
         await new Promise(resolve => setTimeout(resolve, 1000));
 
-        // Create mint token (e.g., AUTO)
-        mintedToken = await createMint(
-            provider.connection,
-            provider.wallet.payer,
-            mintAuthorityPda,
-            freezeAuthorityPda,
-            6,
-        );
-
-        // Derive PDAs
+        // Derive PDAs first. vault-mint.test.ts may have already initialized this program.
         [configPda] = PublicKey.findProgramAddressSync(
             [Buffer.from("config")],
             mintProgram.programId
@@ -286,17 +277,32 @@ describe("vault-stake-auto", () => {
             BPF_LOADER_UPGRADEABLE_ID
         );
 
-        // Create vault token account
-        // Pass an explicit keypair so createAccount uses SystemProgram + initialize (not ATA create).
-        // Omitting the keypair makes @solana/spl-token use createAssociatedTokenAccount, which can
-        // fail with InstructionError::IllegalOwner for some mint / toolchain combinations.
-        vaultTokenAccount = await createAccount(
-            provider.connection,
-            provider.wallet.payer,
-            vaultedToken,
-            provider.wallet.publicKey,
-            Keypair.generate()
-        );
+        const stakeConfigExists = await provider.connection.getAccountInfo(stakeConfigPda);
+        if (stakeConfigExists) {
+            const sc = await program.account.stakeConfig.fetch(stakeConfigPda);
+            mintedToken = sc.mint;
+            const svc = await program.account.stakeVaultTokenAccountConfig.fetch(
+                stakeVaultTokenAccountConfigPda
+            );
+            vaultTokenAccount = svc.vaultTokenAccount;
+        } else {
+            // Create mint token (e.g., AUTO) and pool vault for wYLDS (vault-mint receipt mint).
+            mintedToken = await createMint(
+                provider.connection,
+                provider.wallet.payer,
+                mintAuthorityPda,
+                freezeAuthorityPda,
+                6,
+            );
+            // Pass an explicit keypair so createAccount uses SystemProgram + initialize (not ATA create).
+            vaultTokenAccount = await createAccount(
+                provider.connection,
+                provider.wallet.payer,
+                vaultedToken,
+                provider.wallet.publicKey,
+                Keypair.generate()
+            );
+        }
 
         // Create user token accounts with user as owner
         userMintTokenAccount = await createAccount(
@@ -506,6 +512,20 @@ describe("vault-stake-auto", () => {
         });
 
         it("initializes the vault config", async () => {
+            const existing = await provider.connection.getAccountInfo(stakeConfigPda);
+            if (existing) {
+                const config = await program.account.stakeConfig.fetch(stakeConfigPda);
+                assert.ok(config.vault.equals(vaultedToken));
+                assert.ok(config.mint.equals(mintedToken));
+                assert.equal(config.freezeAdministrators.length, 1);
+                assert.ok(config.freezeAdministrators[0].equals(freezeAdmin.publicKey));
+                assert.equal(config.rewardsAdministrators.length, 1);
+                assert.ok(config.rewardsAdministrators[0].equals(rewardsAdmin.publicKey));
+                assert.equal(config.unbondingPeriod.toNumber(), 0, "unbondingPeriod deprecated field should be 0");
+                assert.ok(!config.paused);
+                return;
+            }
+
             await program.methods
                 .initialize([freezeAdmin.publicKey], [rewardsAdmin.publicKey])
                 .accountsStrict({
@@ -534,6 +554,14 @@ describe("vault-stake-auto", () => {
         });
 
         it("initializes price config", async () => {
+            const existing = await provider.connection.getAccountInfo(stakePriceConfigPda);
+            if (existing) {
+                const priceConfig = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
+                assert.equal(priceConfig.priceScale.toString(), TEST_PRICE_SCALE.toString());
+                assert.equal(priceConfig.priceMaxStaleness.toString(), "3600");
+                return;
+            }
+
             // Price convention: price = (wYLDS per 1 AUTO) * price_scale
             // At TEST_PRICE_SCALE = 1e9 and TEST_PRICE_1TO1 = 1e9 → 1:1 exchange rate
             // price_max_staleness = 3600 seconds (1 hour)
@@ -562,6 +590,13 @@ describe("vault-stake-auto", () => {
         });
 
         it("initializes reward config with 0.75% default", async () => {
+            const existing = await provider.connection.getAccountInfo(stakeRewardConfigPda);
+            if (existing) {
+                const rewardConfig = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(rewardConfig.maxRewardBps.toNumber(), 75, "maxRewardBps should be 75 (0.75%)");
+                return;
+            }
+
             await program.methods
                 .initializeRewardConfig(new BN(75))
                 .accountsStrict({
@@ -578,6 +613,14 @@ describe("vault-stake-auto", () => {
         });
 
         it("set initial price for testing via set_price_for_testing", async () => {
+            const priceConfigBefore = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
+            if (
+                priceConfigBefore.price.toString() === TEST_PRICE_1TO1.toString() &&
+                priceConfigBefore.priceTimestamp.toNumber() > 0
+            ) {
+                return;
+            }
+
             // Sets a 1:1 price with a fresh timestamp so deposit/redeem tests can proceed.
             // In production this would be replaced by a call to verify_price with a Chainlink report.
             await setPriceForTesting(TEST_PRICE_1TO1);

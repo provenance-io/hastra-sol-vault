@@ -486,9 +486,13 @@ pub struct ExternalProgramMint<'info> {
 
     /// Additional allowed programs PDA. When calling_program does not match the legacy
     /// config.allowed_external_mint_program field, the processor checks this account.
-    /// Uninitialized (empty) for deployments that have not yet called
-    /// register_allowed_external_mint_program; the processor treats empty data as "not found".
-    /// CHECK: Seeds-validated; deserialized in processor when account data is present
+    /// This account is required in the instruction, so it must already exist on-chain
+    /// (e.g. created during program upgrade / migration via
+    /// register_allowed_external_mint_program, which uses init_if_needed) before callers
+    /// invoke external_program_mint. Until any programs are registered, account data may
+    /// be empty or too short to deserialize; the processor then treats the extended list
+    /// as empty and authorization falls through to the legacy field only.
+    /// CHECK: Seeds-validated; list membership is enforced in the processor
     #[account(
         seeds = [b"allowed_external_mint_programs", config.key().as_ref()],
         bump,

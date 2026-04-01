@@ -37,8 +37,6 @@ const main = async () => {
         BPF_LOADER_UPGRADEABLE_ID
     );
 
-    const mint = new PublicKey(args.mint);
-    const newAuthority = new PublicKey(args.new_authority);
     console.log("Stake Config PDA:", stakeConfigPda.toBase58());
     console.log("ProgramData PDA:", programData.toBase58());
     console.log("Freeze Administrators:", freezeAdministrators.map((a) => a.toBase58()));

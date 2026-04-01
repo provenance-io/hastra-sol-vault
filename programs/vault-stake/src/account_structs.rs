@@ -390,11 +390,15 @@ pub struct PublishRewards<'info> {
     #[account(constraint = this_program.key() == crate::id() @ CustomErrorCode::InvalidAuthority)]
     pub this_program: AccountInfo<'info>,
 
-    /// The AllowedExternalMintPrograms PDA from vault-mint, passed through during the CPI.
-    /// vault-mint uses this to authorize callers beyond the legacy single-program field.
-    /// May be uninitialized for deployments that have not yet called
-    /// register_allowed_external_mint_program; vault-mint handles the empty-account case.
-    /// CHECK: Derived from vault-mint's config; authorization check is delegated to vault-mint
+    /// The AllowedExternalMintPrograms PDA from vault-mint, passed through during the CPI to
+    /// vault-mint::external_program_mint. vault-mint uses it to authorize callers beyond the
+    /// legacy single-program field. This account is required here and in vault-mint, so it
+    /// must already exist on-chain (typically created during vault-mint upgrade / migration
+    /// via register_allowed_external_mint_program, which uses init_if_needed) before
+    /// publish_rewards can succeed. Until any programs are registered, account data may be
+    /// empty or too short to deserialize; vault-mint then treats the extended list as empty
+    /// and only the legacy config field applies.
+    /// CHECK: Derived from vault-mint's config; list membership is enforced in vault-mint
     #[account(
         seeds = [b"allowed_external_mint_programs", mint_config.key().as_ref()],
         seeds::program = mint_program.key(),
@@ -467,7 +471,7 @@ pub struct PublishRewards<'info> {
     pub reward_record: Account<'info, RewardPublicationRecord>,
 
     /// Reward cap config — enforces max_reward_bps limit on each publish.
-    /// Created on first use with DEFAULT_BPS (2000 = 20%) if not yet initialized.
+    /// Created on first use with DEFAULT_BPS (75 BPS = 0.75%) if not yet initialized.
     /// This allows seamless upgrades without a separate initialization step.
     #[account(
         init_if_needed,

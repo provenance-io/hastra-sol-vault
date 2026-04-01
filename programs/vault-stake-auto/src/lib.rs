@@ -194,7 +194,7 @@ pub mod vault_stake_auto {
 
     /// Initializes the StakeRewardConfig PDA that enforces the max reward distribution cap.
     /// Call once after deployment — bundle with the Squads upgrade proposal.
-    /// max_reward_bps: 10_000 = 100%, 2_000 = 20% (recommended default).
+    /// `max_reward_bps`: expressed in basis points (10_000 = 100%). Default at initialization: 75 BPS (0.75%).
     pub fn initialize_reward_config(
         ctx: Context<InitializeRewardConfig>,
         max_reward_bps: u64,

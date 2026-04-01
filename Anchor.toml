@@ -25,7 +25,7 @@ shutdown_wait = 5000
 upgradeable = false
 
 [test.validator]
-bind_address = "0.0.0.0"
+bind_address = "127.0.0.1"
 ledger = ".anchor/test-ledger"
 rpc_port = 8899
 

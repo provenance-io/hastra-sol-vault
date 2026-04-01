@@ -248,7 +248,7 @@ async function main() {
         [
             Buffer.from("reward_record"),
             Buffer.from(new Uint32Array([rewardId]).buffer),
-            Buffer.from(new BigUint64Array([createBigInt(amount.toNumber())]).buffer),
+            Buffer.from(new BigUint64Array([createBigInt(amount.toString())]).buffer),
         ],
         thisProgramId
     );

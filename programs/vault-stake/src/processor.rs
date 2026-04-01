@@ -129,6 +129,10 @@ pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
     // Require that user receives at least some shares
     require!(shares_to_mint > 0, CustomErrorCode::DepositTooSmall);
 
+    let shares_to_mint_u64: u64 = shares_to_mint
+        .try_into()
+        .map_err(|_| CustomErrorCode::Overflow)?;
+
     let cpi_accounts = Transfer {
         from: ctx.accounts.user_vault_token_account.to_account_info(),
         to: ctx.accounts.vault_token_account.to_account_info(),
@@ -152,14 +156,14 @@ pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
             cpi_accounts,
             signer,
         ),
-        shares_to_mint.try_into().unwrap(),
+        shares_to_mint_u64,
     )?;
 
     let result_total_assets = total_assets
         .checked_add(amount)
         .ok_or(CustomErrorCode::Overflow)?;
     let result_total_shares = total_shares
-        .checked_add(shares_to_mint as u64)
+        .checked_add(shares_to_mint_u64)
         .ok_or(CustomErrorCode::Overflow)?;
     let totals_last_update_slot = Clock::get()?.slot;
 
@@ -167,7 +171,7 @@ pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
     emit!(DepositEvent {
         user: ctx.accounts.signer.key(),
         deposit_amount: amount,
-        minted_amount: (shares_to_mint as u64),
+        minted_amount: shares_to_mint_u64,
         mint: ctx.accounts.mint.key(),
         mint_supply: ctx.accounts.mint.supply,
         vault: ctx.accounts.vault_token_account.key(),
@@ -235,8 +239,12 @@ pub fn redeem(ctx: Context<Redeem>, amount: u64) -> Result<()> {
     // Guard against dust amounts rounding down to zero
     require!(amount_to_withdraw > 0, CustomErrorCode::InvalidAmount);
 
+    let amount_to_withdraw_u64: u64 = amount_to_withdraw
+        .try_into()
+        .map_err(|_| CustomErrorCode::Overflow)?;
+
     require!(
-        ctx.accounts.vault_token_account.amount >= amount_to_withdraw as u64,
+        ctx.accounts.vault_token_account.amount >= amount_to_withdraw_u64,
         CustomErrorCode::InsufficientVaultBalance
     );
 
@@ -263,11 +271,11 @@ pub fn redeem(ctx: Context<Redeem>, amount: u64) -> Result<()> {
             transfer_accounts,
             signer,
         ),
-        amount_to_withdraw.try_into().unwrap(),
+        amount_to_withdraw_u64,
     )?;
 
     let result_total_assets = total_assets
-        .checked_sub(amount_to_withdraw as u64)
+        .checked_sub(amount_to_withdraw_u64)
         .ok_or(CustomErrorCode::Overflow)?;
     let result_total_shares = total_shares
         .checked_sub(amount)
@@ -281,7 +289,7 @@ pub fn redeem(ctx: Context<Redeem>, amount: u64) -> Result<()> {
         requested_mint_amount: amount,
         mint_supply: ctx.accounts.mint.supply,
         vault: ctx.accounts.vault_token_account.key(),
-        redeemed_vault_amount: amount_to_withdraw as u64,
+        redeemed_vault_amount: amount_to_withdraw_u64,
         vault_balance: ctx.accounts.vault_token_account.amount,
         shares_burned: amount,
         total_assets: result_total_assets,

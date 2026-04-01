@@ -2,7 +2,8 @@ import * as anchor from "@coral-xyz/anchor";
 import {Program} from "@coral-xyz/anchor";
 import {VaultMint} from "../target/types/vault_mint";
 import {VaultStake} from "../target/types/vault_stake";
-import {Keypair, LAMPORTS_PER_SOL, PublicKey} from "@solana/web3.js";
+import {VaultStakeAuto} from "../target/types/vault_stake_auto";
+import {Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram} from "@solana/web3.js";
 import {
     createAccount,
     createMint,
@@ -10,6 +11,7 @@ import {
     getMint,
     mintTo,
     TOKEN_PROGRAM_ID,
+    transfer,
 } from "@solana/spl-token";
 import {assert, expect} from "chai";
 import BN from "bn.js";
@@ -23,6 +25,7 @@ describe("vault-mint", () => {
 
     const program = anchor.workspace.VaultMint as Program<VaultMint>;
     const stakeProgram = anchor.workspace.VaultStake as Program<VaultStake>;
+    const stakeAutoProgram = anchor.workspace.VaultStakeAuto as Program<VaultStakeAuto>;
 
     let mintedToken: PublicKey;
     let vaultedToken: PublicKey;
@@ -1188,6 +1191,413 @@ describe("vault-mint", () => {
             }
         });
 
+    });
+
+    // external_program_mint: legacy caller is config.allowed_external_mint_program (vault-stake);
+    // extended callers use AllowedExternalMintPrograms PDA. Legacy CPI is covered by vault-stake publish_rewards.
+    describe("external_program_mint authorization", () => {
+        const MEMO_PROGRAM_ID = new PublicKey(
+            "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+        );
+        const VOTE_PROGRAM_ID = new PublicKey(
+            "Vote111111111111111111111111111111111111111"
+        );
+        const COMPUTE_BUDGET_PROGRAM_ID = new PublicKey(
+            "ComputeBudget111111111111111111111111111111"
+        );
+        const TEST_PRICE_SCALE = new BN(1_000_000_000);
+        const TEST_PRICE_1TO1 = new BN(1_000_000_000);
+        const TEST_FEED_ID = Array.from(Buffer.alloc(32, 0));
+
+        let allowedExternalMintProgramsPda: PublicKey;
+        let stakeConfigPdaAuto: PublicKey;
+        let vaultAuthorityPdaAuto: PublicKey;
+        let stakeVaultTokenAccountConfigPdaAuto: PublicKey;
+        let stakePriceConfigPdaAuto: PublicKey;
+        let stakeRewardConfigPdaAuto: PublicKey;
+        let programDataPdaAuto: PublicKey;
+        let externalMintAuthorityPdaAuto: PublicKey;
+        let autoShareMint: PublicKey;
+        let stakeAutoVaultTokenAccount: PublicKey;
+        let autoPublishRewardsId = 0;
+
+        const ensureAllowListPdaInitialized = async () => {
+            const info = await provider.connection.getAccountInfo(allowedExternalMintProgramsPda);
+            if (info) {
+                return;
+            }
+            await program.methods
+                .registerAllowedExternalMintProgram()
+                .accountsStrict({
+                    config: configPda,
+                    allowedExternalMintPrograms: allowedExternalMintProgramsPda,
+                    externalProgram: MEMO_PROGRAM_ID,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
+        };
+
+        const setPriceForTestingAuto = async () => {
+            const priceTimestamp = new BN(Math.floor(Date.now() / 1000));
+            await stakeAutoProgram.methods
+                .setPriceForTesting(TEST_PRICE_1TO1, priceTimestamp)
+                .accountsStrict({
+                    stakeConfig: stakeConfigPdaAuto,
+                    stakePriceConfig: stakePriceConfigPdaAuto,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPdaAuto,
+                })
+                .rpc();
+        };
+
+        const makeAutoRewardsRecordPda = (id: number, amount: bigint) =>
+            PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("reward_record"),
+                    Buffer.from(new Uint32Array([id]).buffer),
+                    Buffer.from(new BigUint64Array([amount]).buffer),
+                ],
+                stakeAutoProgram.programId
+            )[0];
+
+        // rewards_mint must be vault-mint config.mint (PDA-controlled); stake_config.vault matches it.
+        const publishRewardsAutoAccounts = (rewardRecord: PublicKey) => ({
+            stakeConfig: stakeConfigPdaAuto,
+            stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPdaAuto,
+            mintConfig: configPda,
+            externalMintAuthority: externalMintAuthorityPdaAuto,
+            mintProgram: program.programId,
+            thisProgram: stakeAutoProgram.programId,
+            vaultMintAllowedExternalPrograms: allowedExternalMintProgramsPda,
+            admin: rewardsAdmin.publicKey,
+            rewardsMint: mintedToken,
+            rewardsMintAuthority: mintAuthorityPda,
+            vaultTokenAccount: stakeAutoVaultTokenAccount,
+            vaultAuthority: vaultAuthorityPdaAuto,
+            mint: autoShareMint,
+            rewardRecord,
+            stakeRewardConfig: stakeRewardConfigPdaAuto,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+        });
+
+        before(async () => {
+            [allowedExternalMintProgramsPda] = PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("allowed_external_mint_programs"),
+                    configPda.toBuffer(),
+                ],
+                program.programId
+            );
+            [stakeConfigPdaAuto] = PublicKey.findProgramAddressSync(
+                [Buffer.from("stake_config")],
+                stakeAutoProgram.programId
+            );
+            [vaultAuthorityPdaAuto] = PublicKey.findProgramAddressSync(
+                [Buffer.from("vault_authority")],
+                stakeAutoProgram.programId
+            );
+            [stakeVaultTokenAccountConfigPdaAuto] = PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("stake_vault_token_account_config"),
+                    stakeConfigPdaAuto.toBuffer(),
+                ],
+                stakeAutoProgram.programId
+            );
+            [stakePriceConfigPdaAuto] = PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("stake_price_config"),
+                    stakeConfigPdaAuto.toBuffer(),
+                ],
+                stakeAutoProgram.programId
+            );
+            [stakeRewardConfigPdaAuto] = PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("stake_reward_config"),
+                    stakeConfigPdaAuto.toBuffer(),
+                ],
+                stakeAutoProgram.programId
+            );
+            [programDataPdaAuto] = PublicKey.findProgramAddressSync(
+                [stakeAutoProgram.programId.toBuffer()],
+                BPF_LOADER_UPGRADEABLE_ID
+            );
+            [externalMintAuthorityPdaAuto] = PublicKey.findProgramAddressSync(
+                [Buffer.from("external_mint_authority")],
+                stakeAutoProgram.programId
+            );
+
+            const [autoMintAuthorityPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from("mint_authority")],
+                stakeAutoProgram.programId
+            );
+            const [autoFreezeAuthorityPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from("freeze_authority")],
+                stakeAutoProgram.programId
+            );
+
+            autoShareMint = await createMint(
+                provider.connection,
+                provider.wallet.payer,
+                autoMintAuthorityPda,
+                autoFreezeAuthorityPda,
+                6
+            );
+
+            // Stake pool vault holds vault-mint receipt tokens (config.mint), same as vault-stake tests.
+            stakeAutoVaultTokenAccount = await createAccount(
+                provider.connection,
+                provider.wallet.payer,
+                mintedToken,
+                provider.wallet.publicKey,
+                Keypair.generate()
+            );
+
+            const fundVault = BigInt(10_000_000_000);
+            // Earlier describes spend userMintTokenAccount; top up via deposit before funding the stake vault.
+            let userMintBal = BigInt(
+                (await getAccount(provider.connection, userMintTokenAccount)).amount.toString()
+            );
+            if (userMintBal < fundVault) {
+                const shortfall = fundVault - userMintBal;
+                let userVaultBal = BigInt(
+                    (await getAccount(provider.connection, userVaultTokenAccount)).amount.toString()
+                );
+                if (userVaultBal < shortfall) {
+                    await mintTo(
+                        provider.connection,
+                        provider.wallet.payer,
+                        vaultedToken,
+                        userVaultTokenAccount,
+                        provider.wallet.publicKey,
+                        shortfall - userVaultBal
+                    );
+                }
+                await program.methods
+                    .deposit(new BN(shortfall.toString()))
+                    .accountsStrict({
+                        config: configPda,
+                        vaultTokenAccount: vaultTokenAccount,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
+                        mint: mintedToken,
+                        mintAuthority: mintAuthorityPda,
+                        signer: user.publicKey,
+                        userVaultTokenAccount: userVaultTokenAccount,
+                        userMintTokenAccount: userMintTokenAccount,
+                        tokenProgram: TOKEN_PROGRAM_ID,
+                    })
+                    .signers([user])
+                    .rpc();
+            }
+
+            await transfer(
+                provider.connection,
+                provider.wallet.payer,
+                userMintTokenAccount,
+                stakeAutoVaultTokenAccount,
+                user,
+                fundVault
+            );
+
+            await ensureAllowListPdaInitialized();
+
+            await stakeAutoProgram.methods
+                .initialize([freezeAdmin.publicKey], [rewardsAdmin.publicKey])
+                .accountsStrict({
+                    stakeConfig: stakeConfigPdaAuto,
+                    vaultAuthority: vaultAuthorityPdaAuto,
+                    vaultTokenAccount: stakeAutoVaultTokenAccount,
+                    stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPdaAuto,
+                    vaultTokenMint: mintedToken,
+                    mint: autoShareMint,
+                    signer: provider.wallet.publicKey,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                    systemProgram: SystemProgram.programId,
+                    programData: programDataPdaAuto,
+                })
+                .rpc();
+
+            await stakeAutoProgram.methods
+                .initializePriceConfig(
+                    PublicKey.default,
+                    PublicKey.default,
+                    PublicKey.default,
+                    TEST_FEED_ID,
+                    TEST_PRICE_SCALE,
+                    new BN(3600)
+                )
+                .accountsStrict({
+                    stakeConfig: stakeConfigPdaAuto,
+                    stakePriceConfig: stakePriceConfigPdaAuto,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPdaAuto,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
+
+            await stakeAutoProgram.methods
+                .initializeRewardConfig(new BN(75))
+                .accountsStrict({
+                    stakeConfig: stakeConfigPdaAuto,
+                    stakeRewardConfig: stakeRewardConfigPdaAuto,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPdaAuto,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
+
+            await setPriceForTestingAuto();
+        });
+
+        it("legacy path: config.allowedExternalMintProgram is vault-stake (CPI exercised in vault-stake.test.ts publish_rewards)", async () => {
+            const cfg = await program.account.config.fetch(configPda);
+            assert.ok(
+                cfg.allowedExternalMintProgram.equals(stakeProgram.programId),
+                "legacy field should authorize the PRIME pool program id"
+            );
+        });
+
+        it("rejects CPI when calling_program is not legacy and not on the allow-list", async () => {
+            const vaultBal = (await getAccount(provider.connection, stakeAutoVaultTokenAccount))
+                .amount;
+            const amount = (vaultBal * BigInt(50)) / BigInt(10_000);
+            assert.ok(amount > BigInt(0), "need vault balance for publish amount");
+            const id = ++autoPublishRewardsId;
+            const rewardRecord = makeAutoRewardsRecordPda(id, amount);
+
+            try {
+                await stakeAutoProgram.methods
+                    .publishRewards(id, new BN(amount.toString()))
+                    .accountsStrict(publishRewardsAutoAccounts(rewardRecord))
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("expected vault-mint to reject unregistered caller");
+            } catch (err: unknown) {
+                expect(err).to.exist;
+                expect(String(err)).to.match(/InvalidMintProgramCaller|custom program error:\s*27\b/i);
+            }
+        });
+
+        it("allows CPI after register_allowed_external_mint_program adds the caller", async () => {
+            await program.methods
+                .registerAllowedExternalMintProgram()
+                .accountsStrict({
+                    config: configPda,
+                    allowedExternalMintPrograms: allowedExternalMintProgramsPda,
+                    externalProgram: stakeAutoProgram.programId,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
+
+            const vaultBalBefore = (await getAccount(provider.connection, stakeAutoVaultTokenAccount))
+                .amount;
+            const amount = (vaultBalBefore * BigInt(50)) / BigInt(10_000);
+            assert.ok(amount > BigInt(0));
+            const id = ++autoPublishRewardsId;
+            const rewardRecord = makeAutoRewardsRecordPda(id, amount);
+
+            await stakeAutoProgram.methods
+                .publishRewards(id, new BN(amount.toString()))
+                .accountsStrict(publishRewardsAutoAccounts(rewardRecord))
+                .signers([rewardsAdmin])
+                .rpc();
+
+            const vaultBalAfter = (await getAccount(provider.connection, stakeAutoVaultTokenAccount))
+                .amount;
+            assert.equal(vaultBalAfter, vaultBalBefore + amount);
+        });
+
+        it("register_allowed_external_mint_program is idempotent for the same program", async () => {
+            const before = await program.account.allowedExternalMintPrograms.fetch(
+                allowedExternalMintProgramsPda
+            );
+            await program.methods
+                .registerAllowedExternalMintProgram()
+                .accountsStrict({
+                    config: configPda,
+                    allowedExternalMintPrograms: allowedExternalMintProgramsPda,
+                    externalProgram: stakeAutoProgram.programId,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
+            const after = await program.account.allowedExternalMintPrograms.fetch(
+                allowedExternalMintProgramsPda
+            );
+            assert.equal(
+                after.programs.length,
+                before.programs.length,
+                "re-registering the same program must not grow the list"
+            );
+        });
+
+        it("register_allowed_external_mint_program enforces MAX_PROGRAMS (5)", async () => {
+            const candidatePrograms = [
+                MEMO_PROGRAM_ID,
+                stakeProgram.programId,
+                program.programId,
+                TOKEN_PROGRAM_ID,
+                VOTE_PROGRAM_ID,
+                COMPUTE_BUDGET_PROGRAM_ID,
+            ];
+
+            const registerOne = (externalProgram: PublicKey) =>
+                program.methods
+                    .registerAllowedExternalMintProgram()
+                    .accountsStrict({
+                        config: configPda,
+                        allowedExternalMintPrograms: allowedExternalMintProgramsPda,
+                        externalProgram,
+                        signer: provider.wallet.publicKey,
+                        programData: programDataPda,
+                        systemProgram: SystemProgram.programId,
+                    })
+                    .rpc();
+
+            let state = await program.account.allowedExternalMintPrograms.fetch(
+                allowedExternalMintProgramsPda
+            );
+            const seen = new Set(state.programs.map((p: PublicKey) => p.toBase58()));
+
+            for (const candidate of candidatePrograms) {
+                if (state.programs.length >= 5) {
+                    break;
+                }
+                const key = candidate.toBase58();
+                if (seen.has(key)) {
+                    continue;
+                }
+                await registerOne(candidate);
+                seen.add(key);
+                state = await program.account.allowedExternalMintPrograms.fetch(
+                    allowedExternalMintProgramsPda
+                );
+            }
+
+            assert.equal(
+                state.programs.length,
+                5,
+                "test expects a full allow-list to assert the cap; adjust candidates if this fails"
+            );
+
+            const spill = candidatePrograms.find(
+                c => !state.programs.some((p: PublicKey) => p.equals(c))
+            );
+            assert.ok(spill, "need an executable program id not already on the list for the 6th registration");
+
+            try {
+                await registerOne(spill);
+                assert.fail("expected TooManyAllowedExternalMintPrograms");
+            } catch (err: unknown) {
+                expect(err).to.exist;
+                expect(String(err)).to.match(/TooManyAllowedExternalMintPrograms|custom program error: 29/i);
+            }
+        });
     });
 
     //write test cases against the rewards merkle tree functionality

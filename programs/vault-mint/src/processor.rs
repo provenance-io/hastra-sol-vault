@@ -509,9 +509,11 @@ pub fn claim_rewards(ctx: Context<ClaimRewards>, amount: u64, proof: Vec<ProofNo
 ///
 /// **Extended path** (`allowed_external_mint_programs` PDA): An additive PDA that holds a
 /// `Vec<Pubkey>` of additional authorized programs. vault-stake-auto (and future pools) are
-/// registered here via `register_allowed_external_mint_program`. The PDA is uninitialized
-/// for deployments that have not yet called that instruction; the processor treats empty
-/// account data as "not found" and falls through to the legacy check.
+/// registered here via `register_allowed_external_mint_program`. Deployments must create this
+/// PDA on-chain before relying on `external_program_mint` (typically as part of the upgrade
+/// proposal: run `register_allowed_external_mint_program` once so `init_if_needed` allocates
+/// the account). If account data is empty or fails to deserialize, the extended list is
+/// treated as empty and only the legacy `allowed_external_mint_program` check applies.
 ///
 /// Cryptographic proof of caller identity comes from the `external_mint_authority` PDA
 /// signer: its address is derived with `seeds = [b"external_mint_authority"]` under
