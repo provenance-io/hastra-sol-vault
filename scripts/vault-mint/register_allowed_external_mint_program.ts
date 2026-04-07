@@ -8,6 +8,10 @@ import { PublicKey } from "@solana/web3.js";
 // external_program_mint instruction via CPI. Must be called once per new staking
 // program (e.g. vault-stake-auto) after the updated vault-mint is deployed.
 // Only the program upgrade authority can call this instruction.
+//
+// If the upgrade authority is a Squads vault PDA, use:
+//   - register_allowed_external_mint_program_proposal_squads.ts (Squads v4 / @squads-protocol/multisig)
+//   - register_allowed_external_mint_program_proposal_squads_v3.ts (Squads v3 / SMPLecH...)
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
