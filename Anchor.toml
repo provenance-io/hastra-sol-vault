@@ -34,3 +34,8 @@ address = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 
 [[test.validator.clone]]
 address = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+
+[programs.devnet]
+vault-mint = "9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV"
+vault-stake = "97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY"
+vault-stake-auto = "Dz8K7J1UrCPv8ywqxe1FKkuHa8Vm8MQtP68ohf7wPjHB"
