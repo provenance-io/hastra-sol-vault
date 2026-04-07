@@ -43,7 +43,7 @@ pub mod state;
 use account_structs::*;
 use anchor_lang::prelude::*;
 
-declare_id!("xZS9aDDtDS35huN9FhaoCeidGaV1S1M1KWGLV9jLY59");
+declare_id!("Dz8K7J1UrCPv8ywqxe1FKkuHa8Vm8MQtP68ohf7wPjHB");
 
 #[program]
 pub mod vault_stake_auto {
