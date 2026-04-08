@@ -1,6 +1,14 @@
 # Hastra Vault Protocol on Solana
 
-The Hastra Vault protocol is derived of 2 Solana programs that implement a deposit and mint protocol and a staking protocol. Hastra Vault protocol allows users to swap tokens like USDC for mint tokens (e.g. wYLDS) at a 1:1 ratio. Vaulted tokens are held in a vault, while mint tokens provide liquidity and transferability. Users can then use their mint tokens in DeFi applications, trade them, or hold them for rewards. The Hastra Vault protocol staking programs allow mint token holders to deposit wYLDS into a pool and earn rewards that increase the value backing each share token.
+The Hastra Vault workspace ships **three** Anchor programs:
+
+| Program | Crate | Role |
+|---------|--------|------|
+| **vault-mint** | `vault_mint` | USDC → wYLDS (1:1) mint/redeem, merkle reward epochs, `external_program_mint` for staking pools |
+| **vault-stake** | `vault_stake` | **PRIME** pool: deposit wYLDS, mint PRIME, redeem with Chainlink-backed price, `publish_rewards` |
+| **vault-stake-auto** | `vault_stake_auto` | **AUTO** pool: same mechanics as PRIME under a separate program id and PDAs |
+
+Users swap vault tokens (e.g. USDC) for receipt tokens (wYLDS) through **vault-mint**. They stake wYLDS into **vault-stake** (PRIME) or **vault-stake-auto** (AUTO); rewards are minted into the pool via `publish_rewards`, which CPIs **vault-mint** so backing per share increases over time.
 
 ## Core Architecture
 
@@ -99,11 +107,11 @@ This design ensures that yield generated from vault tokens is fairly distributed
 
 The staking programs (`vault-stake` for PRIME and `vault-stake-auto` for AUTO) allow users to deposit wYLDS and mint share tokens. Rewards increase the value backing each share token by minting additional wYLDS into the pool vault.
 
-Staking rewards are published via `publish_rewards`, which CPIs into the mint program to mint additional wYLDS into the staking pool vault. Users realize rewards when they redeem shares: the program burns PRIME/AUTO and transfers the corresponding wYLDS amount to the user.
+Staking rewards are published via `publish_rewards`, which CPIs into **vault-mint** (`external_program_mint`) to mint additional wYLDS into the pool vault. The mint program must authorize the caller: **PRIME** uses the legacy `allowed_external_mint_program` on `Config`; **AUTO** is registered on the **`AllowedExternalMintPrograms`** PDA (`register_allowed_external_mint_program`). Users realize rewards when they redeem: the stake program burns PRIME or AUTO and transfers wYLDS per the oracle price.
 
-### Reward Publication Guards (Staking Programs)
+### Reward publication limits (`StakeRewardConfig`)
 
-`publish_rewards` is protected by layered on-chain controls stored in the `StakeRewardConfig` PDA:
+`publish_rewards` is constrained by on-chain fields stored in the `StakeRewardConfig` PDA:
 
 1. **Relative cap (`max_reward_bps`)**: limits reward amount relative to local pool TVL (default 75 BPS = 0.75%).
 2. **Absolute per-call cap (`max_period_rewards`)**: default `1,000,000` wYLDS (6-decimal raw units: `1_000_000_000_000`).
@@ -116,17 +124,44 @@ The guard state is stored at PDA:
 
 #### Migrating `StakeRewardConfig` In-Place (Realloc)
 
-When new reward guard fields are added, the program migrates the existing `StakeRewardConfig` account **in-place** using Anchor `realloc` in the relevant instructions. This avoids introducing a new PDA and preserves stable seeds for the reward config account.
+When the `StakeRewardConfig` account layout grows, **vault-stake** and **vault-stake-auto** resize it **in-place** with Anchor `realloc` on `update_reward_config` (upgrade authority). On **vault-stake** only, `update_reward_period_seconds` also uses `realloc` (and requires `system_program`) so older account sizes grow on first use. Other cap updates (`update_max_period_rewards`, `update_max_total_rewards`, `update_max_reward_bps`) use a fixed account size. PDA seeds stay `[b"stake_reward_config", stake_config.key()]`.
 
-For existing deployments, newly-added fields are lazily defaulted on first use (e.g. during `publish_rewards`) so older accounts continue to work after being resized.
+For existing deployments, newly added fields are also lazily defaulted on first use (for example during `publish_rewards`, which uses `init_if_needed` for the account) so older layouts keep working after upgrade.
+
+**`update_reward_config`** is upgrade-authority-only. It always writes `max_reward_bps` from the instruction arguments. The other three arguments (`max_period_rewards`, `reward_period_seconds`, `max_total_rewards`) are written only when the stored value is still zero (migration-style). To change caps or cooldown after those fields are non-zero, use `update_max_period_rewards`, `update_reward_period_seconds`, or `update_max_total_rewards`.
+
+Scripts:
+
+| Path | When to use |
+|------|-------------|
+| `scripts/migrate_reward_config.ts` | `--pool prime` or `--pool auto`; calls `update_reward_config` with the connected wallet (must be upgrade authority). |
+| `scripts/migrate_reward_config_proposal_squads_v3.ts` | Same inner instruction inside a Squads v3 proposal (vault PDA signs when executed). |
+| `scripts/vault-stake/update_reward_config.ts` | PRIME pool only — direct run against `vault-stake` (typical for localnet). |
+| `scripts/vault-stake-auto/update_reward_config.ts` | AUTO pool only — direct run against `vault-stake-auto`. |
+| `scripts/vault-stake/update_reward_config_proposal_squads_v3.ts` | Squads v3 proposal for `vault-stake` `update_reward_config`. |
+| `scripts/vault-stake-auto/update_reward_config_proposal_squads_v3.ts` | Squads v3 proposal for `vault-stake-auto` `update_reward_config`. |
+
+Example (local wallet is upgrade authority):
+
+```bash
+ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 ANCHOR_WALLET=~/.config/solana/id.json \
+  yarn ts-node scripts/vault-stake/update_reward_config.ts --max_reward_bps 75
+```
+
+Example (pick program by pool on devnet):
+
+```bash
+ANCHOR_PROVIDER_URL=https://api.devnet.solana.com ANCHOR_WALLET=~/.config/solana/id.json \
+  yarn ts-node scripts/migrate_reward_config.ts --pool prime --max_reward_bps 75
+```
 
 ## Staking Program Price Oracle
 
-The staking program uses a [Chainlink Data Streams](https://docs.chain.link/data-streams) price feed to determine the PRIME/wYLDS exchange rate at deposit and redeem time. This replaces the previous ERC4626-style ratio calculation with an externally-verified oracle price, decoupling the exchange rate from vault balance movements (such as reward distributions).
+Both **vault-stake** (PRIME) and **vault-stake-auto** (AUTO) use a [Chainlink Data Streams](https://docs.chain.link/data-streams) price feed for the share token vs wYLDS rate at deposit and redeem time. This replaces a pure vault-balance ratio with an externally verified price, decoupling the rate from pool balance movements (such as reward distributions).
 
 ### Price Convention
 
-The stored price represents **wYLDS per 1 PRIME**, scaled by `price_scale`:
+The stored price represents **wYLDS per 1 share** (PRIME or AUTO), scaled by `price_scale`:
 
 ```
 price = (wYLDS per 1 PRIME) × price_scale
@@ -134,8 +169,8 @@ price = (wYLDS per 1 PRIME) × price_scale
 
 | Operation | Formula |
 |-----------|---------|
-| Deposit (wYLDS → PRIME) | `PRIME_minted = wYLDS_deposited × price_scale / price` |
-| Redeem (PRIME → wYLDS) | `wYLDS_returned = PRIME_burned × price / price_scale` |
+| Deposit (wYLDS → shares) | `shares_minted = wYLDS_deposited × price_scale / price` |
+| Redeem (shares → wYLDS) | `wYLDS_returned = shares_burned × price / price_scale` |
 | Exchange rate view | `rate = price × 1_000_000_000 / price_scale` (assets per share, scaled by 1e9) |
 
 ### `StakePriceConfig` Account
@@ -162,6 +197,8 @@ Price configuration lives in a dedicated PDA with seeds `[b"stake_price_config",
 | `update_price_config` | Program upgrade authority | Updates Chainlink addresses, feed ID, price scale, or staleness without resetting the stored price. |
 | `verify_price` | Rewards administrators | Submits a signed Chainlink report for on-chain verification via CPI. On success, stores `benchmark_price` and current timestamp. |
 | `set_price_for_testing` | Program upgrade authority | Directly sets `price` and `price_timestamp`. For localnet testing only — not for production use. |
+
+The same instruction set exists on **vault-stake-auto** (AUTO). Operational scripts mirror `scripts/vault-stake/` under `scripts/vault-stake-auto/` (e.g. `initialize_price_config_proposal_squads_v3.ts`, `verify_price.ts`).
 
 ### Staleness Protection
 
@@ -210,7 +247,7 @@ sequenceDiagram
 |----------------------|---------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------|
 | Vault Token          | e.g. USDC   | The token the user deposits to receive the minted token                                                                                                                                                                                            | External vault token mint authority                                                                                                  | External vault token freeze authority |
 | Mint Token           | e.g. wYLDS   | The token that is minted when the user deposits vault tokens                                                                                                                                                                                       | Your Solana Wallet initially, then Program Derived Address (PDA) of the program                                                      | Your Solana Wallet initially, then Program Derived Address (PDA) of the program |
-| Vault Token Account  | N/A     | The token account that will hold the vaulted tokens when users deposit them in exchange for mint tokens                                                                                                                                            | This tokena account authority is NOT the program to allow the account holder to utilize the vaulted token for off-chain investments. | N/A |
+| Vault Token Account  | N/A     | The token account that will hold the vaulted tokens when users deposit them in exchange for mint tokens                                                                                                                                            | This token account authority is not the program, so the holder can deploy vaulted tokens for off-chain investments. | N/A |
 | Redeem Token Account | N/A     | The token account that will hold vaulted tokens (USDC) when users request a redeem. Once the off-chain entity approves the redeem this account is funded and the program transfers the vault to the user on authority of a rewards administrator.  | N/A                                                                                                                                  | N/A |
 
 ### Staking Program Token and Token Accounts
@@ -274,8 +311,10 @@ sequenceDiagram
 - `RewardsEpoch`: Manages reward distribution with merkle proofs
 - `ClaimRecord`: Prevents reward double-spending
 
-** Protcol Pause and Unpause **
-- Program authority can pause and unpause the protocol preventing deposit, claim, and redeem. 
+**Protocol pause (vault-mint and each stake program)**  
+- **vault-mint** `pause` stops user-facing mint instructions (including CPIs such as `external_program_mint` used by `publish_rewards`).  
+- **vault-stake** / **vault-stake-auto** `pause` stops deposit, redeem, and other guarded instructions for that pool.  
+- Merkle **claim_rewards** in vault-mint respects the mint program pause flag. 
 
 This creates a secure, flexible vault protocol suitable for DeFi protocols requiring both liquidity and governance controls.
 
@@ -285,7 +324,7 @@ There are several different aspects to this repo, but all are related to the Vau
 
 ### Core Components
 
-**Rust Programs** (`programs/*/src/`):
+**Rust Programs** (`programs/vault-mint`, `programs/vault-stake`, `programs/vault-stake-auto`; sources under `src/`):
 - **State Management**: Account structures and program data models
 - **Business Logic**: Deposit, withdrawal, rewards, and administrative functions
 - **Security Layer**: Authorization guards and error handling
@@ -308,7 +347,7 @@ Like all recent projects, we have to include a bunch of boiler plate libs/utils.
 **Prerequisites**
 - yarn
 - solana w/spl-token
-- anchor cli (recommend using avm to manage anchor versions)
+- anchor cli **0.31.x** (see `[toolchain]` in `Anchor.toml`; recommend `avm` to match the workspace version)
 - rust
 
 ### Yarn
@@ -460,7 +499,8 @@ Run this script to build programs, write upgrade buffers for Squads, and initial
 
 > This section assumes that you have already set up a Squads vault (either on devnet or mainnet) and have the Squads vault address in your wallet. See [GitHub Release](#github-release) below.
 
-> For deployments of the program after the Chain Link pricing has been added, REFER TO THE  
+> After Chainlink pricing is enabled on a stake program, complete `initialize_price_config` and `verify_price` before users can deposit or redeem. See [Chain Link Pricing Specific Post-Upgrade Initialization](#chain-link-pricing-specific-post-upgrade-initialization).
+
 ### Start `deploy.sh`
 
 ```
@@ -476,19 +516,18 @@ Squads Vault:           ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K
 Mint Buffer:            <none>
 Stake Buffer:           <none>
 
+The menu includes separate steps for **vault-mint**, **vault-stake** (PRIME), and **vault-stake-auto** (AUTO): build, write buffers, initialize, and set mint/freeze authorities. Exact option numbers may change—use the script’s live prompt.
+
+Example (abbreviated):
+
+```
 Select an action:
  1) Build Programs
  2) Write Vault Mint Buffer (for Squads upgrade)
  3) Write Vault Stake Buffer (for Squads upgrade)
- 4) Write All Buffers
- 5) Initialize Mint Program
- 6) Initialize Stake Program
- 7) Set Mint Program Mint and Freeze Authorities
- 8) Set Stake Program Mint and Freeze Authorities
- 9) Configure Squads Vault Address
-10) Show Accounts & PDAs
-11) Exit
-#?
+ 4) Write Vault Stake Auto Buffer (for Squads upgrade)
+ 5) Write All Buffers
+ …
 ```
 
 ### Option `9` — Configure Squads Vault Address
@@ -680,16 +719,23 @@ $ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
 
 ## Testing
 
-The project includes a suite of tests for both the mint and staking programs. To run the tests, use the following command:
+Integration tests live under `tests/` (`vault-mint.test.ts`, `vault-stake-auto.test.ts`, `vault-stake.test.ts`, etc.). `Anchor.toml` runs them with:
 
-Start a local validator separately:
 ```bash
-$ solana-test-validator --reset
+anchor test
 ```
-then run:
+
+That starts a temporary local validator, deploys the workspace programs, and executes `yarn run ts-mocha … tests/**/*.ts` (see `[scripts] test`).
+
+To attach to a validator you already started:
+
 ```bash
-$ anchor test --skip-local-validator
+solana-test-validator --reset
+# another terminal:
+anchor test --skip-local-validator
 ```
+
+Tests run in **lexical file order**. `vault-mint.test.ts` exercises **vault-stake-auto** `publish_rewards` before `vault-stake-auto.test.ts`, so both suites share validator state; reward cooldown and related assertions account for that ordering.
 
 ## Hastra Solana Vault - Local Development Setup
 
@@ -961,7 +1007,7 @@ $ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
 For example, to initialize a price config for a feed with ID `0x000700f43b35146a1cb16373ac6225ad597535e928e6dc4d179c3b4225f2b6d3` on devnet:
 
 ```bash
-huh? ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
+$ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
 ANCHOR_WALLET=~/.config/solana/hastra-devnet-prime2.json \
 yarn ts-node scripts/vault-stake/initialize_price_config_proposal_squads_v3.ts \
      --multisig_pda FftEXgzqaJNm8A6ynAmyfixBpHZtEJNr22q4KvUydByB \
@@ -1110,7 +1156,7 @@ yarn ts-node scripts/vault-stake/update_price_config_proposal_squads_v3.ts \
 
 # Quick Deploy Steps
 
-This section shows the steps to upgrade the programs from a built *.so file, without using the full `deploy.sh` script. This is useful for quick iterations during development. The `vault-stake` program is the one being deployed in this example.
+This section shows the steps to upgrade from a built `*.so` without using the full `deploy.sh` script. The same pattern applies to **vault-mint**, **vault-stake**, and **vault-stake-auto** (replace program id and buffer names accordingly). The example below uses **vault-stake** (PRIME).
 
 > This section assumes that the programs have been deployed and that the Squads squad is set up.
 
@@ -1176,7 +1222,7 @@ Authority: ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K
 
 * Follow the steps in the previous section to upgrade the program that contains the Chain Link pricing logic.
 
-* Then, set the Chain Link parameters via the `./scripts.vault-stake/initialize_price_config_proposal_squads_v3.ts` script:
+* Then, set the Chain Link parameters via the `./scripts/vault-stake/initialize_price_config_proposal_squads_v3.ts` script:
 
 > `multisig_pda` is the Squads account and can be found on the Squads dashboard.
 
