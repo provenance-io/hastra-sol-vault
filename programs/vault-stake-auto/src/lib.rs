@@ -192,14 +192,20 @@ pub mod vault_stake_auto {
         processor::set_price_for_testing(ctx, price, price_timestamp)
     }
 
-    /// Initializes the StakeRewardConfig PDA that enforces the max reward distribution cap.
-    /// Call once after deployment — bundle with the Squads upgrade proposal.
-    /// `max_reward_bps`: expressed in basis points (10_000 = 100%). Default at initialization: 75 BPS (0.75%).
-    pub fn initialize_reward_config(
-        ctx: Context<InitializeRewardConfig>,
+        /// Updates the StakeRewardConfig PDA for the given StakeConfig. This is required after program upgrade as the config schema has changed.
+    /// max_reward_bps: expressed in basis points (10_000 = 100%). Default at initialization: 75 BPS (0.75%).
+    /// max_period_rewards: absolute per-call cap (raw token units, e.g. 6 decimals)
+    /// reward_period_seconds: cooldown between successful publish_rewards calls
+    /// max_total_rewards: lifetime cumulative cap
+    /// Only callable by the program upgrade authority.
+    pub fn update_reward_config(
+        ctx: Context<UpdateRewardConfig>,
         max_reward_bps: u64,
+        max_period_rewards: u64,
+        reward_period_seconds: i64,
+        max_total_rewards: u64,
     ) -> Result<()> {
-        processor::initialize_reward_config(ctx, max_reward_bps)
+        processor::update_reward_config(ctx, max_reward_bps, max_period_rewards, reward_period_seconds, max_total_rewards)
     }
 
     /// Updates the maximum reward distribution cap on an existing StakeRewardConfig.
@@ -209,22 +215,6 @@ pub mod vault_stake_auto {
         new_bps: u64,
     ) -> Result<()> {
         processor::update_max_reward_bps(ctx, new_bps)
-    }
-
-    /// Initializes the extended reward guard config with absolute/cooldown/lifetime caps.
-    /// Only callable by the program upgrade authority.
-    pub fn initialize_reward_guard_config(
-        ctx: Context<InitializeRewardGuardConfig>,
-        max_period_rewards: u64,
-        reward_period_seconds: i64,
-        max_total_rewards: u64,
-    ) -> Result<()> {
-        processor::initialize_reward_guard_config(
-            ctx,
-            max_period_rewards,
-            reward_period_seconds,
-            max_total_rewards,
-        )
     }
 
     /// Updates the absolute per-call rewards cap.

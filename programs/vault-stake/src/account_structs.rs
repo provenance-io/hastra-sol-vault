@@ -482,9 +482,6 @@ pub struct PublishRewards<'info> {
             stake_config.key().as_ref(),
         ],
         bump,
-        realloc = StakeRewardConfig::LEN,
-        realloc::payer = admin,
-        realloc::zero = false
     )]
     pub stake_reward_config: Box<Account<'info, StakeRewardConfig>>,
 
@@ -661,12 +658,14 @@ pub struct SetPriceForTesting<'info> {
     pub program_data: UncheckedAccount<'info>,
 }
 
-/// Initializes the StakeRewardConfig PDA for a given StakeConfig.
-/// Creates the account that enforces the maximum reward distribution cap (max_reward_bps).
+/// Migrates the StakeRewardConfig PDA for a given StakeConfig.
+///
+/// This is intended to handle realloc-based, in-place layout upgrades for `stake_reward_config`
+/// while keeping the PDA seeds stable.
+///
 /// Only callable by the program upgrade authority.
-/// Must be called once after program deployment (or as part of the Squads upgrade proposal).
 #[derive(Accounts)]
-pub struct InitializeRewardConfig<'info> {
+pub struct UpdateRewardConfig<'info> {
     #[account(
         seeds = [b"stake_config"],
         bump = stake_config.bump
@@ -674,14 +673,12 @@ pub struct InitializeRewardConfig<'info> {
     pub stake_config: Account<'info, StakeConfig>,
 
     #[account(
-        init_if_needed,
-        payer = signer,
-        space = StakeRewardConfig::LEN,
+        mut,
         seeds = [
             b"stake_reward_config",
             stake_config.key().as_ref(),
         ],
-        bump,
+        bump = stake_reward_config.bump,
         realloc = StakeRewardConfig::LEN,
         realloc::payer = signer,
         realloc::zero = false
@@ -717,12 +714,10 @@ pub struct UpdateMaxRewardBps<'info> {
             stake_config.key().as_ref(),
         ],
         bump = stake_reward_config.bump,
-        realloc = StakeRewardConfig::LEN,
-        realloc::payer = signer,
-        realloc::zero = false
     )]
     pub stake_reward_config: Account<'info, StakeRewardConfig>,
 
+    #[account(mut)]
     pub signer: Signer<'info>,
 
     /// CHECK: This is the program data account that contains the update authority
@@ -749,12 +744,10 @@ pub struct UpdateMaxPeriodRewards<'info> {
             stake_config.key().as_ref(),
         ],
         bump = stake_reward_config.bump,
-        realloc = StakeRewardConfig::LEN,
-        realloc::payer = signer,
-        realloc::zero = false
     )]
     pub stake_reward_config: Account<'info, StakeRewardConfig>,
 
+    #[account()]
     pub signer: Signer<'info>,
 
     /// CHECK: This is the program data account that contains the update authority
@@ -787,6 +780,7 @@ pub struct UpdateRewardPeriodSeconds<'info> {
     )]
     pub stake_reward_config: Account<'info, StakeRewardConfig>,
 
+    #[account(mut)]
     pub signer: Signer<'info>,
 
     /// CHECK: This is the program data account that contains the update authority
@@ -794,6 +788,8 @@ pub struct UpdateRewardPeriodSeconds<'info> {
         constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
     )]
     pub program_data: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
 }
 
 /// Updates max_total_rewards on an existing StakeRewardConfig.
@@ -813,12 +809,10 @@ pub struct UpdateMaxTotalRewards<'info> {
             stake_config.key().as_ref(),
         ],
         bump = stake_reward_config.bump,
-        realloc = StakeRewardConfig::LEN,
-        realloc::payer = signer,
-        realloc::zero = false
     )]
     pub stake_reward_config: Account<'info, StakeRewardConfig>,
 
+    #[account(mut)]
     pub signer: Signer<'info>,
 
     /// CHECK: This is the program data account that contains the update authority

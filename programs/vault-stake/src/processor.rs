@@ -460,11 +460,7 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
     // Skip only when the vault is truly empty (bootstrap) — cap applies whenever assets exist.
     let total_assets = ctx.accounts.vault_token_account.amount;
     if total_assets > 0 {
-        let effective_bps = if ctx.accounts.stake_reward_config.max_reward_bps == 0 {
-            StakeRewardConfig::DEFAULT_BPS
-        } else {
-            ctx.accounts.stake_reward_config.max_reward_bps
-        };
+        let effective_bps = config.max_reward_bps;
         let max_allowed = (total_assets as u128)
             .checked_mul(effective_bps as u128)
             .and_then(|v| v.checked_div(StakeRewardConfig::MAX_BPS as u128))
@@ -687,23 +683,47 @@ pub fn update_price_config(
     Ok(())
 }
 
-/// Initializes the StakeRewardConfig PDA for the given StakeConfig.
+/// Updates the StakeRewardConfig PDA for the given StakeConfig.
 /// Explicitly sets `max_reward_bps` to the provided value (subject to MAX_BPS validation).
-/// This is an optional, proactive setup step; the config may also be lazily created by
-/// `publish_rewards` via `init_if_needed` using the program's default cap semantics.
+/// This is a setup step required after program upgrade as the config schema has changed.
 /// Only callable by the program upgrade authority.
-pub fn initialize_reward_config(ctx: Context<InitializeRewardConfig>, max_reward_bps: u64) -> Result<()> {
+pub fn update_reward_config(ctx: Context<UpdateRewardConfig>, max_reward_bps: u64, max_period_rewards: u64, reward_period_seconds: i64, max_total_rewards: u64) -> Result<()> {
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
     require!(
         max_reward_bps > 0 && max_reward_bps <= StakeRewardConfig::MAX_BPS,
         CustomErrorCode::InvalidMaxRewardBps
     );
+    require!(
+        max_period_rewards > 0,
+        CustomErrorCode::InvalidMaxPeriodRewards
+    );
+    require!(
+        reward_period_seconds > 0,
+        CustomErrorCode::InvalidRewardPeriodSeconds
+    );
+    require!(
+        max_total_rewards > 0,
+        CustomErrorCode::InvalidMaxTotalRewards
+    );
 
     let config = &mut ctx.accounts.stake_reward_config;
     config.max_reward_bps = max_reward_bps;
-    config.bump = ctx.bumps.stake_reward_config;
+    // In this migration instruction, `stake_reward_config` is not (re-)derived by Anchor via `bump`
+    // synthesis, so the bump must remain the one already stored in the PDA account.
+    // The account is still seed-constrained in the context for safety.
+    //
+    // Default any newly-added fields to keep upgrades deterministic.
+    if config.max_period_rewards == 0 {
+        config.max_period_rewards = max_period_rewards;
+    }
+    if config.reward_period_seconds <= 0 {
+        config.reward_period_seconds = reward_period_seconds;
+    }
+    if config.max_total_rewards == 0 {
+        config.max_total_rewards = max_total_rewards;
+    }
 
-    msg!("StakeRewardConfig initialized: max_reward_bps={}", max_reward_bps);
+    msg!("StakeRewardConfig migrated: max_reward_bps={}", max_reward_bps);
     Ok(())
 }
 
