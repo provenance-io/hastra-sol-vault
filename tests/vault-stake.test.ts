@@ -91,6 +91,7 @@ describe("vault-stake", () => {
 
     let stakePriceConfigPda: PublicKey;
     let stakeRewardConfigPda: PublicKey;
+    let stakeRewardGuardConfigPda: PublicKey;
 
     // Price config constants for testing.
     // price_scale = 1e9; price = 1e9 → 1:1 ratio (1 PRIME per 1 wYLDS, 1 wYLDS per 1 PRIME).
@@ -270,6 +271,13 @@ describe("vault-stake", () => {
         [stakeRewardConfigPda] = PublicKey.findProgramAddressSync(
             [
                 Buffer.from("stake_reward_config"),
+                stakeConfigPda.toBuffer()
+            ],
+            program.programId
+        );
+        [stakeRewardGuardConfigPda] = PublicKey.findProgramAddressSync(
+            [
+                Buffer.from("stake_reward_guard_config"),
                 stakeConfigPda.toBuffer()
             ],
             program.programId
@@ -1254,7 +1262,8 @@ describe("vault-stake", () => {
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
-                    stakeRewardConfig: stakeRewardConfigPda,
+                        stakeRewardConfig: stakeRewardConfigPda,
+                        stakeRewardGuardConfig: stakeRewardGuardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
@@ -1455,6 +1464,7 @@ describe("vault-stake", () => {
                     mint: mintedToken,
                     rewardRecord: rewardsRecordPda,
                     stakeRewardConfig: stakeRewardConfigPda,
+                    stakeRewardGuardConfig: stakeRewardGuardConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
@@ -1512,7 +1522,8 @@ describe("vault-stake", () => {
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
-                    stakeRewardConfig: stakeRewardConfigPda,
+                        stakeRewardConfig: stakeRewardConfigPda,
+                        stakeRewardGuardConfig: stakeRewardGuardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
@@ -1554,6 +1565,7 @@ describe("vault-stake", () => {
                     mint: mintedToken,
                     rewardRecord: rewardsRecordPda1,
                     stakeRewardConfig: stakeRewardConfigPda,
+                    stakeRewardGuardConfig: stakeRewardGuardConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
@@ -1586,6 +1598,7 @@ describe("vault-stake", () => {
                     mint: mintedToken,
                     rewardRecord: rewardsRecordPda2,
                     stakeRewardConfig: stakeRewardConfigPda,
+                    stakeRewardGuardConfig: stakeRewardGuardConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
@@ -1628,7 +1641,8 @@ describe("vault-stake", () => {
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
-                    stakeRewardConfig: stakeRewardConfigPda,
+                        stakeRewardConfig: stakeRewardConfigPda,
+                        stakeRewardGuardConfig: stakeRewardGuardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
@@ -1659,6 +1673,7 @@ describe("vault-stake", () => {
             mint: mintedToken,
             rewardRecord: rewardsRecordPda,
             stakeRewardConfig: stakeRewardConfigPda,
+            stakeRewardGuardConfig: stakeRewardGuardConfigPda,
             tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
             systemProgram: anchor.web3.SystemProgram.programId,
         });
@@ -1890,6 +1905,124 @@ describe("vault-stake", () => {
                 }
             });
         });
+
+        describe("extended reward guard config", () => {
+            const updateRewardGuardAccounts = () => ({
+                stakeConfig: stakeConfigPda,
+                stakeRewardGuardConfig: stakeRewardGuardConfigPda,
+                signer: provider.wallet.publicKey,
+                programData: programDataPda,
+            });
+
+            it("stores default absolute/cooldown/lifetime values", async () => {
+                const guard = await program.account.stakeRewardGuardConfig.fetch(
+                    stakeRewardGuardConfigPda
+                );
+                assert.equal(
+                    guard.maxPeriodRewards.toString(),
+                    "1000000000000",
+                    "default max_period_rewards should be 1,000,000 wYLDS (6 decimals)"
+                );
+                assert.equal(
+                    guard.rewardPeriodSeconds.toNumber(),
+                    3600,
+                    "default reward_period_seconds should be 3600"
+                );
+                assert.equal(
+                    guard.maxTotalRewards.toString(),
+                    "10000000000000",
+                    "default max_total_rewards should be 10,000,000 wYLDS (6 decimals)"
+                );
+            });
+
+            it("enforces per-call absolute cap", async () => {
+                await program.methods
+                    .updateRewardPeriodSeconds(new BN(1))
+                    .accountsStrict(updateRewardGuardAccounts())
+                    .rpc();
+                await program.methods
+                    .updateMaxPeriodRewards(new BN(1))
+                    .accountsStrict(updateRewardGuardAccounts())
+                    .rpc();
+                await new Promise(resolve => setTimeout(resolve, 1100));
+
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, BigInt(2));
+                try {
+                    await program.methods
+                        .publishRewards(publishRewardsId, new BN(2))
+                        .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown ExceedsPeriodRewardCap");
+                } catch (err) {
+                    expect(err.toString()).to.include("ExceedsPeriodRewardCap");
+                }
+            });
+
+            it("enforces cooldown between consecutive publishes", async () => {
+                await program.methods
+                    .updateMaxPeriodRewards(new BN("1000000000000"))
+                    .accountsStrict(updateRewardGuardAccounts())
+                    .rpc();
+                await program.methods
+                    .updateRewardPeriodSeconds(new BN(3600))
+                    .accountsStrict(updateRewardGuardAccounts())
+                    .rpc();
+                await new Promise(resolve => setTimeout(resolve, 1100));
+
+                const firstRewardRecordPda = makeRewardsRecordPda(++publishRewardsId, BigInt(1));
+                await program.methods
+                    .publishRewards(publishRewardsId, new BN(1))
+                    .accountsStrict(publishRewardsAccounts(firstRewardRecordPda))
+                    .signers([rewardsAdmin])
+                    .rpc();
+
+                const secondRewardRecordPda = makeRewardsRecordPda(++publishRewardsId, BigInt(1));
+                try {
+                    await program.methods
+                        .publishRewards(publishRewardsId, new BN(1))
+                        .accountsStrict(publishRewardsAccounts(secondRewardRecordPda))
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown RewardCooldownNotElapsed");
+                } catch (err) {
+                    expect(err.toString()).to.include("RewardCooldownNotElapsed");
+                }
+            });
+
+            it("enforces lifetime rewards cap", async () => {
+                const guardBefore = await program.account.stakeRewardGuardConfig.fetch(
+                    stakeRewardGuardConfigPda
+                );
+                const distributed = new BN(guardBefore.totalRewardsDistributed.toString());
+
+                await program.methods
+                    .updateRewardPeriodSeconds(new BN(1))
+                    .accountsStrict(updateRewardGuardAccounts())
+                    .rpc();
+                await program.methods
+                    .updateMaxPeriodRewards(new BN("1000000000000"))
+                    .accountsStrict(updateRewardGuardAccounts())
+                    .rpc();
+                await program.methods
+                    .updateMaxTotalRewards(distributed.add(new BN(1)))
+                    .accountsStrict(updateRewardGuardAccounts())
+                    .rpc();
+                await new Promise(resolve => setTimeout(resolve, 1100));
+
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, BigInt(2));
+                try {
+                    await program.methods
+                        .publishRewards(publishRewardsId, new BN(2))
+                        .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown ExceedsLifetimeRewardCap");
+                } catch (err) {
+                    expect(err.toString()).to.include("ExceedsLifetimeRewardCap");
+                }
+            });
+        });
     });
 
     describe("updateability", () => {
@@ -2043,7 +2176,8 @@ describe("vault-stake", () => {
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
-                    stakeRewardConfig: stakeRewardConfigPda,
+                        stakeRewardConfig: stakeRewardConfigPda,
+                        stakeRewardGuardConfig: stakeRewardGuardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
