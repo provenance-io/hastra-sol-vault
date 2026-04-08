@@ -97,7 +97,6 @@ describe("vault-stake-auto", () => {
 
     let stakePriceConfigPda: PublicKey;
     let stakeRewardConfigPda: PublicKey;
-    let stakeRewardGuardConfigPda: PublicKey;
 
     // Price config constants for testing.
     // price_scale = 1e9; price = 1e9 → 1:1 ratio (1 AUTO per 1 wYLDS, 1 wYLDS per 1 AUTO).
@@ -268,13 +267,6 @@ describe("vault-stake-auto", () => {
         [stakeRewardConfigPda] = PublicKey.findProgramAddressSync(
             [
                 Buffer.from("stake_reward_config"),
-                stakeConfigPda.toBuffer()
-            ],
-            program.programId
-        );
-        [stakeRewardGuardConfigPda] = PublicKey.findProgramAddressSync(
-            [
-                Buffer.from("stake_reward_guard_config"),
                 stakeConfigPda.toBuffer()
             ],
             program.programId

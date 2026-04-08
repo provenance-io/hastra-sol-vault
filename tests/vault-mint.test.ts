@@ -1215,7 +1215,6 @@ describe("vault-mint", () => {
         let stakeVaultTokenAccountConfigPdaAuto: PublicKey;
         let stakePriceConfigPdaAuto: PublicKey;
         let stakeRewardConfigPdaAuto: PublicKey;
-        let stakeRewardGuardConfigPdaAuto: PublicKey;
         let programDataPdaAuto: PublicKey;
         let externalMintAuthorityPdaAuto: PublicKey;
         let autoShareMint: PublicKey;
@@ -1280,7 +1279,6 @@ describe("vault-mint", () => {
             mint: autoShareMint,
             rewardRecord,
             stakeRewardConfig: stakeRewardConfigPdaAuto,
-            stakeRewardGuardConfig: stakeRewardGuardConfigPdaAuto,
             tokenProgram: TOKEN_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
         });
@@ -1318,13 +1316,6 @@ describe("vault-mint", () => {
             [stakeRewardConfigPdaAuto] = PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("stake_reward_config"),
-                    stakeConfigPdaAuto.toBuffer(),
-                ],
-                stakeAutoProgram.programId
-            );
-            [stakeRewardGuardConfigPdaAuto] = PublicKey.findProgramAddressSync(
-                [
-                    Buffer.from("stake_reward_guard_config"),
                     stakeConfigPdaAuto.toBuffer(),
                 ],
                 stakeAutoProgram.programId

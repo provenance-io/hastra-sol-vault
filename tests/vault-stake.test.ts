@@ -91,7 +91,6 @@ describe("vault-stake", () => {
 
     let stakePriceConfigPda: PublicKey;
     let stakeRewardConfigPda: PublicKey;
-    let stakeRewardGuardConfigPda: PublicKey;
 
     // Price config constants for testing.
     // price_scale = 1e9; price = 1e9 → 1:1 ratio (1 PRIME per 1 wYLDS, 1 wYLDS per 1 PRIME).
@@ -271,13 +270,6 @@ describe("vault-stake", () => {
         [stakeRewardConfigPda] = PublicKey.findProgramAddressSync(
             [
                 Buffer.from("stake_reward_config"),
-                stakeConfigPda.toBuffer()
-            ],
-            program.programId
-        );
-        [stakeRewardGuardConfigPda] = PublicKey.findProgramAddressSync(
-            [
-                Buffer.from("stake_reward_guard_config"),
                 stakeConfigPda.toBuffer()
             ],
             program.programId
@@ -1263,7 +1255,6 @@ describe("vault-stake", () => {
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
                         stakeRewardConfig: stakeRewardConfigPda,
-                        stakeRewardGuardConfig: stakeRewardGuardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
@@ -1464,7 +1455,6 @@ describe("vault-stake", () => {
                     mint: mintedToken,
                     rewardRecord: rewardsRecordPda,
                     stakeRewardConfig: stakeRewardConfigPda,
-                    stakeRewardGuardConfig: stakeRewardGuardConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
@@ -1523,7 +1513,6 @@ describe("vault-stake", () => {
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
                         stakeRewardConfig: stakeRewardConfigPda,
-                        stakeRewardGuardConfig: stakeRewardGuardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
@@ -1565,7 +1554,6 @@ describe("vault-stake", () => {
                     mint: mintedToken,
                     rewardRecord: rewardsRecordPda1,
                     stakeRewardConfig: stakeRewardConfigPda,
-                    stakeRewardGuardConfig: stakeRewardGuardConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
@@ -1598,7 +1586,6 @@ describe("vault-stake", () => {
                     mint: mintedToken,
                     rewardRecord: rewardsRecordPda2,
                     stakeRewardConfig: stakeRewardConfigPda,
-                    stakeRewardGuardConfig: stakeRewardGuardConfigPda,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
@@ -1642,7 +1629,6 @@ describe("vault-stake", () => {
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
                         stakeRewardConfig: stakeRewardConfigPda,
-                        stakeRewardGuardConfig: stakeRewardGuardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
@@ -1673,7 +1659,6 @@ describe("vault-stake", () => {
             mint: mintedToken,
             rewardRecord: rewardsRecordPda,
             stakeRewardConfig: stakeRewardConfigPda,
-            stakeRewardGuardConfig: stakeRewardGuardConfigPda,
             tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
             systemProgram: anchor.web3.SystemProgram.programId,
         });
@@ -1909,15 +1894,13 @@ describe("vault-stake", () => {
         describe("extended reward guard config", () => {
             const updateRewardGuardAccounts = () => ({
                 stakeConfig: stakeConfigPda,
-                stakeRewardGuardConfig: stakeRewardGuardConfigPda,
+                stakeRewardConfig: stakeRewardConfigPda,
                 signer: provider.wallet.publicKey,
                 programData: programDataPda,
             });
 
             it("stores default absolute/cooldown/lifetime values", async () => {
-                const guard = await program.account.stakeRewardGuardConfig.fetch(
-                    stakeRewardGuardConfigPda
-                );
+                const guard = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
                 assert.equal(
                     guard.maxPeriodRewards.toString(),
                     "1000000000000",
@@ -1925,8 +1908,8 @@ describe("vault-stake", () => {
                 );
                 assert.equal(
                     guard.rewardPeriodSeconds.toNumber(),
-                    3600,
-                    "default reward_period_seconds should be 3600"
+                    3540,
+                    "default reward_period_seconds should be 3540"
                 );
                 assert.equal(
                     guard.maxTotalRewards.toString(),
@@ -1991,10 +1974,8 @@ describe("vault-stake", () => {
             });
 
             it("enforces lifetime rewards cap", async () => {
-                const guardBefore = await program.account.stakeRewardGuardConfig.fetch(
-                    stakeRewardGuardConfigPda
-                );
-                const distributed = new BN(guardBefore.totalRewardsDistributed.toString());
+                const cfgBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const distributed = new BN(cfgBefore.totalRewardsDistributed.toString());
 
                 await program.methods
                     .updateRewardPeriodSeconds(new BN(1))
@@ -2177,7 +2158,6 @@ describe("vault-stake", () => {
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
                         stakeRewardConfig: stakeRewardConfigPda,
-                        stakeRewardGuardConfig: stakeRewardGuardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
