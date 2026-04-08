@@ -211,4 +211,47 @@ pub mod vault_stake_auto {
         processor::update_max_reward_bps(ctx, new_bps)
     }
 
+    /// Initializes the extended reward guard config with absolute/cooldown/lifetime caps.
+    /// Only callable by the program upgrade authority.
+    pub fn initialize_reward_guard_config(
+        ctx: Context<InitializeRewardGuardConfig>,
+        max_period_rewards: u64,
+        reward_period_seconds: i64,
+        max_total_rewards: u64,
+    ) -> Result<()> {
+        processor::initialize_reward_guard_config(
+            ctx,
+            max_period_rewards,
+            reward_period_seconds,
+            max_total_rewards,
+        )
+    }
+
+    /// Updates the absolute per-call rewards cap.
+    /// Only callable by the program upgrade authority.
+    pub fn update_max_period_rewards(
+        ctx: Context<UpdateMaxPeriodRewards>,
+        new_cap: u64,
+    ) -> Result<()> {
+        processor::update_max_period_rewards(ctx, new_cap)
+    }
+
+    /// Updates the cooldown period in seconds between successful reward publications.
+    /// Only callable by the program upgrade authority.
+    pub fn update_reward_period_seconds(
+        ctx: Context<UpdateRewardPeriodSeconds>,
+        new_seconds: i64,
+    ) -> Result<()> {
+        processor::update_reward_period_seconds(ctx, new_seconds)
+    }
+
+    /// Updates the lifetime cumulative rewards cap.
+    /// Only callable by the program upgrade authority.
+    pub fn update_max_total_rewards(
+        ctx: Context<UpdateMaxTotalRewards>,
+        new_cap: u64,
+    ) -> Result<()> {
+        processor::update_max_total_rewards(ctx, new_cap)
+    }
+
 }
