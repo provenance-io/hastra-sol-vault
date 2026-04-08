@@ -80,19 +80,6 @@ impl StakeVaultTokenAccountConfig {
 #[account]
 pub struct StakeRewardConfig {
     pub max_reward_bps: u64, // max reward per publish as % of total_assets, in BPS (75 = 0.75%)
-    pub bump: u8,
-}
-
-impl StakeRewardConfig {
-    pub const LEN: usize = 8 + 8 + 1; // discriminator + max_reward_bps (u64) + bump
-    pub const MAX_BPS: u64 = 10_000;
-    pub const DEFAULT_BPS: u64 = 75; // 0.75% — ~2.7x expected yield rate of 0.28%
-}
-
-// Extended reward guards are stored in a separate account to preserve the existing
-// StakeRewardConfig account layout for already-deployed programs.
-#[account]
-pub struct StakeRewardGuardConfig {
     pub max_period_rewards: u64,      // absolute per-call cap (raw token units, e.g. 6 decimals)
     pub reward_period_seconds: i64,   // cooldown between successful publish_rewards calls
     pub last_reward_distributed_at: i64, // unix timestamp of the last successful publish
@@ -101,8 +88,10 @@ pub struct StakeRewardGuardConfig {
     pub bump: u8,
 }
 
-impl StakeRewardGuardConfig {
-    pub const LEN: usize = 8 + 8 + 8 + 8 + 8 + 8 + 1;
+impl StakeRewardConfig {
+    pub const LEN: usize = 8 + 8 + 8 + 8 + 8 + 8 + 8 + 1; // discriminator + max_reward_bps (u64) + max_period_rewards (u64) + reward_period_seconds (i64) + last_reward_distributed_at (i64) + max_total_rewards (u64) + total_rewards_distributed (u64) + bump (u8)
+    pub const MAX_BPS: u64 = 10_000;
+    pub const DEFAULT_BPS: u64 = 75; // 0.75% — ~2.7x expected yield rate of 0.28%
     pub const DEFAULT_MAX_PERIOD_REWARDS: u64 = 1_000_000_000_000; // 1,000,000 wYLDS at 6 decimals
     pub const DEFAULT_REWARD_PERIOD_SECONDS: i64 = 3540; // 59 minutes
     pub const DEFAULT_MAX_TOTAL_REWARDS: u64 = 10_000_000_000_000; // 10,000,000 wYLDS at 6 decimals

@@ -474,6 +474,7 @@ pub struct PublishRewards<'info> {
     /// Created on first use with DEFAULT_BPS (75 BPS = 0.75%) if not yet initialized.
     /// This allows seamless upgrades without a separate initialization step.
     #[account(
+        mut,
         init_if_needed,
         payer = admin,
         space = StakeRewardConfig::LEN,
@@ -481,23 +482,12 @@ pub struct PublishRewards<'info> {
             b"stake_reward_config",
             stake_config.key().as_ref(),
         ],
-        bump
+        bump,
+        realloc = StakeRewardConfig::LEN,
+        realloc::payer = admin,
+        realloc::zero = false
     )]
     pub stake_reward_config: Box<Account<'info, StakeRewardConfig>>,
-
-    /// Extended reward guard config used by publish_rewards for absolute per-call cap,
-    /// cooldown, and lifetime cap controls. Created lazily on first publish.
-    #[account(
-        init_if_needed,
-        payer = admin,
-        space = StakeRewardGuardConfig::LEN,
-        seeds = [
-            b"stake_reward_guard_config",
-            stake_config.key().as_ref(),
-        ],
-        bump
-    )]
-    pub stake_reward_guard_config: Box<Account<'info, StakeRewardGuardConfig>>,
 
     pub system_program: Program<'info, System>,
     
@@ -685,14 +675,18 @@ pub struct InitializeRewardConfig<'info> {
     pub stake_config: Account<'info, StakeConfig>,
 
     #[account(
-        init,
+        mut,
+        init_if_needed,
         payer = signer,
         space = StakeRewardConfig::LEN,
         seeds = [
             b"stake_reward_config",
             stake_config.key().as_ref(),
         ],
-        bump
+        bump,
+        realloc = StakeRewardConfig::LEN,
+        realloc::payer = signer,
+        realloc::zero = false
     )]
     pub stake_reward_config: Account<'info, StakeRewardConfig>,
 
@@ -725,6 +719,9 @@ pub struct UpdateMaxRewardBps<'info> {
             stake_config.key().as_ref(),
         ],
         bump = stake_reward_config.bump,
+        realloc = StakeRewardConfig::LEN,
+        realloc::payer = signer,
+        realloc::zero = false
     )]
     pub stake_reward_config: Account<'info, StakeRewardConfig>,
 
@@ -737,41 +734,7 @@ pub struct UpdateMaxRewardBps<'info> {
     pub program_data: UncheckedAccount<'info>,
 }
 
-/// Initializes the extended StakeRewardGuardConfig PDA for a given StakeConfig.
-/// Only callable by the program upgrade authority.
-#[derive(Accounts)]
-pub struct InitializeRewardGuardConfig<'info> {
-    #[account(
-        seeds = [b"stake_config"],
-        bump = stake_config.bump
-    )]
-    pub stake_config: Account<'info, StakeConfig>,
-
-    #[account(
-        init,
-        payer = signer,
-        space = StakeRewardGuardConfig::LEN,
-        seeds = [
-            b"stake_reward_guard_config",
-            stake_config.key().as_ref(),
-        ],
-        bump
-    )]
-    pub stake_reward_guard_config: Account<'info, StakeRewardGuardConfig>,
-
-    #[account(mut)]
-    pub signer: Signer<'info>,
-
-    /// CHECK: This is the program data account that contains the update authority
-    #[account(
-        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
-    )]
-    pub program_data: UncheckedAccount<'info>,
-
-    pub system_program: Program<'info, System>,
-}
-
-/// Updates max_period_rewards on an existing StakeRewardGuardConfig.
+/// Updates max_period_rewards on an existing StakeRewardConfig.
 /// Only callable by the program upgrade authority.
 #[derive(Accounts)]
 pub struct UpdateMaxPeriodRewards<'info> {
@@ -784,12 +747,15 @@ pub struct UpdateMaxPeriodRewards<'info> {
     #[account(
         mut,
         seeds = [
-            b"stake_reward_guard_config",
+            b"stake_reward_config",
             stake_config.key().as_ref(),
         ],
-        bump = stake_reward_guard_config.bump,
+        bump = stake_reward_config.bump,
+        realloc = StakeRewardConfig::LEN,
+        realloc::payer = signer,
+        realloc::zero = false
     )]
-    pub stake_reward_guard_config: Account<'info, StakeRewardGuardConfig>,
+    pub stake_reward_config: Account<'info, StakeRewardConfig>,
 
     pub signer: Signer<'info>,
 
@@ -800,7 +766,7 @@ pub struct UpdateMaxPeriodRewards<'info> {
     pub program_data: UncheckedAccount<'info>,
 }
 
-/// Updates reward_period_seconds on an existing StakeRewardGuardConfig.
+/// Updates reward_period_seconds on an existing StakeRewardConfig.
 /// Only callable by the program upgrade authority.
 #[derive(Accounts)]
 pub struct UpdateRewardPeriodSeconds<'info> {
@@ -813,12 +779,15 @@ pub struct UpdateRewardPeriodSeconds<'info> {
     #[account(
         mut,
         seeds = [
-            b"stake_reward_guard_config",
+            b"stake_reward_config",
             stake_config.key().as_ref(),
         ],
-        bump = stake_reward_guard_config.bump,
+        bump = stake_reward_config.bump,
+        realloc = StakeRewardConfig::LEN,
+        realloc::payer = signer,
+        realloc::zero = false
     )]
-    pub stake_reward_guard_config: Account<'info, StakeRewardGuardConfig>,
+    pub stake_reward_config: Account<'info, StakeRewardConfig>,
 
     pub signer: Signer<'info>,
 
@@ -829,7 +798,7 @@ pub struct UpdateRewardPeriodSeconds<'info> {
     pub program_data: UncheckedAccount<'info>,
 }
 
-/// Updates max_total_rewards on an existing StakeRewardGuardConfig.
+/// Updates max_total_rewards on an existing StakeRewardConfig.
 /// Only callable by the program upgrade authority.
 #[derive(Accounts)]
 pub struct UpdateMaxTotalRewards<'info> {
@@ -842,12 +811,15 @@ pub struct UpdateMaxTotalRewards<'info> {
     #[account(
         mut,
         seeds = [
-            b"stake_reward_guard_config",
+            b"stake_reward_config",
             stake_config.key().as_ref(),
         ],
-        bump = stake_reward_guard_config.bump,
+        bump = stake_reward_config.bump,
+        realloc = StakeRewardConfig::LEN,
+        realloc::payer = signer,
+        realloc::zero = false
     )]
-    pub stake_reward_guard_config: Account<'info, StakeRewardGuardConfig>,
+    pub stake_reward_config: Account<'info, StakeRewardConfig>,
 
     pub signer: Signer<'info>,
 
