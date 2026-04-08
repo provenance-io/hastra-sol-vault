@@ -8,7 +8,8 @@
  */
 
 import * as anchor from "@coral-xyz/anchor";
-import {AnchorProvider, BN, Program, Wallet} from "@coral-xyz/anchor";
+import {AnchorProvider, Program, Wallet} from "@coral-xyz/anchor";
+import BN from "bn.js";
 import {createBigInt} from "@metaplex-foundation/umi";
 import {Connection} from "@solana/web3.js";
 import yargs from "yargs";

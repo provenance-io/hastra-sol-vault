@@ -1,9 +1,15 @@
 /**
- * update_reward_cap_proposal_squads_v3.ts
+ * update_reward_config_proposal_squads_v3.ts
  *
- * Creates a Squads v3 transaction proposal to call update_max_reward_bps
- * on the vault-stake program. Requires the upgrade authority (Squads vault PDA)
- * to sign, so it must go through a multisig proposal.
+ * Creates a Squads v3 transaction proposal to call `update_reward_config` on the
+ * vault-stake-auto program. Requires the upgrade authority (Squads vault PDA) to sign
+ * at execution time, so the inner instruction is submitted through a multisig proposal.
+ *
+ * On-chain, `update_reward_config` always sets `max_reward_bps`. The other three
+ * parameters are applied only when the corresponding stored field is still zero
+ * (migration-style fill). To change non-zero caps or period, use the dedicated
+ * `update_max_period_rewards` / `update_reward_period_seconds` / `update_max_total_rewards`
+ * instructions instead.
  *
  * Squads v3 proposal lifecycle (3 separate transactions):
  *   1. createTransaction(multisig, authorityIndex=1)
@@ -15,13 +21,17 @@
  * Usage:
  *   ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
  *   ANCHOR_WALLET=~/.config/solana/squad-member.json \
- *   yarn ts-node scripts/vault-stake/update_reward_cap_proposal_squads_v3.ts \
+ *   yarn ts-node scripts/vault-stake-auto/update_reward_config_proposal_squads_v3.ts \
  *     --multisig_pda <SQUADS_V3_MULTISIG_PDA> \
  *     --max_reward_bps 75
+ *
+ * Optional (defaults match StakeRewardConfig in on-chain state.rs):
+ *   --max_period_rewards, --reward_period_seconds, --max_total_rewards
  */
 
 import * as anchor from "@coral-xyz/anchor";
-import { BN, Program } from "@coral-xyz/anchor";
+import { Program } from "@coral-xyz/anchor";
+import BN from "bn.js";
 import {
     PublicKey,
     SystemProgram,
@@ -29,7 +39,7 @@ import {
     Transaction,
     sendAndConfirmTransaction,
 } from "@solana/web3.js";
-import { VaultStake } from "../../target/types/vault_stake";
+import { VaultStakeAuto } from "../../target/types/vault_stake_auto";
 import yargs from "yargs";
 import { createHash } from "crypto";
 
@@ -46,6 +56,11 @@ const BPF_LOADER_UPGRADEABLE_ID = new PublicKey(
 );
 
 const VAULT_AUTHORITY_INDEX = 1;
+
+/** Defaults aligned with `StakeRewardConfig` in programs/vault-stake-auto/src/state.rs */
+const DEFAULT_MAX_PERIOD_REWARDS = "1000000000000";
+const DEFAULT_REWARD_PERIOD_SECONDS = 3540;
+const DEFAULT_MAX_TOTAL_REWARDS = "10000000000000";
 
 // ----------------------------------------------------------------------------
 // Helpers
@@ -91,8 +106,23 @@ const args = yargs(process.argv.slice(2))
     })
     .option("max_reward_bps", {
         type: "number",
-        description: "New max reward cap in basis points (e.g. 75 = 0.75%)",
+        description: "max_reward_bps to set (1–10000; e.g. 75 = 0.75%)",
         required: true,
+    })
+    .option("max_period_rewards", {
+        type: "string",
+        description:
+            "Used when on-chain max_period_rewards is still zero (raw token units). Default: 1e12.",
+    })
+    .option("reward_period_seconds", {
+        type: "number",
+        description:
+            "Used when on-chain reward_period_seconds is still <= 0. Default: 3540.",
+    })
+    .option("max_total_rewards", {
+        type: "string",
+        description:
+            "Used when on-chain max_total_rewards is still zero (raw token units). Default: 1e13.",
     })
     .parseSync();
 
@@ -102,7 +132,7 @@ const args = yargs(process.argv.slice(2))
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
-const program = anchor.workspace.VaultStake as Program<VaultStake>;
+const program = anchor.workspace.VaultStakeAuto as Program<VaultStakeAuto>;
 
 // ----------------------------------------------------------------------------
 // Main
@@ -116,6 +146,24 @@ async function main() {
 
     if (newBps <= 0 || newBps > 10_000) {
         throw new Error(`max_reward_bps must be 1–10000, got ${newBps}`);
+    }
+
+    const maxPeriodRewardsStr = args.max_period_rewards ?? DEFAULT_MAX_PERIOD_REWARDS;
+    const rewardPeriodSecondsNum = args.reward_period_seconds ?? DEFAULT_REWARD_PERIOD_SECONDS;
+    const maxTotalRewardsStr = args.max_total_rewards ?? DEFAULT_MAX_TOTAL_REWARDS;
+
+    const maxPeriodRewardsBn = new BN(maxPeriodRewardsStr, 10);
+    const rewardPeriodSecondsBn = new BN(rewardPeriodSecondsNum);
+    const maxTotalRewardsBn = new BN(maxTotalRewardsStr, 10);
+
+    if (maxPeriodRewardsBn.lte(new BN(0))) {
+        throw new Error(`max_period_rewards must be > 0, got ${maxPeriodRewardsStr}`);
+    }
+    if (rewardPeriodSecondsBn.lte(new BN(0))) {
+        throw new Error(`reward_period_seconds must be > 0, got ${rewardPeriodSecondsNum}`);
+    }
+    if (maxTotalRewardsBn.lte(new BN(0))) {
+        throw new Error(`max_total_rewards must be > 0, got ${maxTotalRewardsStr}`);
     }
 
     // --- PDAs -----------------------------------------------------------------
@@ -172,7 +220,7 @@ async function main() {
 
     // --- Print summary --------------------------------------------------------
 
-    console.log("=== update_max_reward_bps Squads v3 Proposal ===\n");
+    console.log("=== update_reward_config Squads v3 Proposal ===\n");
     console.log("Program ID:             ", program.programId.toBase58());
     console.log("Multisig PDA:           ", msPDA.toBase58());
     console.log("Vault PDA (signer):     ", vaultPda.toBase58());
@@ -182,18 +230,27 @@ async function main() {
     console.log("Program Data:           ", programDataPda.toBase58());
     console.log("Transaction PDA:        ", txPda.toBase58());
     console.log("Next tx index:          ", nextTxIndex);
-    console.log(`New max_reward_bps:      ${newBps} (${(newBps / 100).toFixed(2)}%)`);
+    console.log(`max_reward_bps:          ${newBps} (${(newBps / 100).toFixed(2)}%)`);
+    console.log(`max_period_rewards:      ${maxPeriodRewardsBn.toString()}`);
+    console.log(`reward_period_seconds:   ${rewardPeriodSecondsBn.toString()}`);
+    console.log(`max_total_rewards:       ${maxTotalRewardsBn.toString()}`);
     console.log();
 
-    // --- Build inner update_max_reward_bps instruction ------------------------
+    // --- Build inner update_reward_config instruction -------------------------
 
     const innerIx = await program.methods
-        .updateMaxRewardBps(new BN(newBps))
+        .updateRewardConfig(
+            new BN(newBps),
+            maxPeriodRewardsBn,
+            rewardPeriodSecondsBn,
+            maxTotalRewardsBn
+        )
         .accountsStrict({
             stakeConfig: stakeConfigPda,
             stakeRewardConfig: stakeRewardConfigPda,
             signer: vaultPda,
             programData: programDataPda,
+            systemProgram: SystemProgram.programId,
         })
         .instruction();
 
@@ -254,8 +311,8 @@ async function main() {
     console.log(`\n   Next steps:`);
     console.log(`   1. Squad members approve at https://devnet.squads.so`);
     console.log(`   2. Once threshold is met, execute the proposal`);
-    console.log(`   3. Verify: yarn ts-node scripts/vault-stake/derive_stake_reward_config.ts`);
-    console.log(`      then fetch the account to confirm max_reward_bps = ${newBps}`);
+    console.log(`   3. Verify: yarn ts-node scripts/vault-stake-auto/derive_stake_reward_config.ts`);
+    console.log(`      then fetch the account to confirm fields (max_reward_bps = ${newBps}, etc.)`);
 }
 
 main().catch(console.error);

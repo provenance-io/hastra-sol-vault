@@ -11,7 +11,8 @@
  */
 
 import * as anchor from "@coral-xyz/anchor";
-import {AnchorProvider, BN, Program} from "@coral-xyz/anchor";
+import {AnchorProvider, Program} from "@coral-xyz/anchor";
+import BN from "bn.js";
 import {
     ASSOCIATED_TOKEN_PROGRAM_ID,
     TOKEN_PROGRAM_ID,
