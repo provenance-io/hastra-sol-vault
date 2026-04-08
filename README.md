@@ -1,6 +1,6 @@
 # Hastra Vault Protocol on Solana
 
-The Hastra Vault protocol is derived of 2 Solana programs that implement a deposit and mint protocol and a staking protocol. Hastra Vault protocol allows users to swap tokens like USDC for mint tokens (e.g. wYLDS) at a 1:1 ratio. Vaulted tokens are held in a vault, while mint tokens provide liquidity and transferability. Users can then use their mint tokens in DeFi applications, trade them, or hold them for rewards. The Hastra Vault protocol staking program allows mint token holders deposit to the staking program and earn larger off-chain yield but are bound to a bonding period.
+The Hastra Vault protocol is derived of 2 Solana programs that implement a deposit and mint protocol and a staking protocol. Hastra Vault protocol allows users to swap tokens like USDC for mint tokens (e.g. wYLDS) at a 1:1 ratio. Vaulted tokens are held in a vault, while mint tokens provide liquidity and transferability. Users can then use their mint tokens in DeFi applications, trade them, or hold them for rewards. The Hastra Vault protocol staking programs allow mint token holders to deposit wYLDS into a pool and earn rewards that increase the value backing each share token.
 
 ## Core Architecture
 
@@ -97,11 +97,28 @@ This design ensures that yield generated from vault tokens is fairly distributed
 
 ## Staking Rewards
 
-The staking program allows mint token holders to stake their tokens for additional rewards. Staked tokens are locked for a bonding period, during which they cannot be transferred or redeemed. This incentivizes long-term holding and provides stability to the vault protocol. 
+The staking programs (`vault-stake` for PRIME and `vault-stake-auto` for AUTO) allow users to deposit wYLDS and mint share tokens. Rewards increase the value backing each share token by minting additional wYLDS into the pool vault.
 
-The staking program issues a staking token that represents your share of the staked mint tokens. As rewards are calculated off-chain and distributed on-chain, staking tokens do not increase in quantity but rather the value of each staking token increases relative to the underlying mint tokens.
+Staking rewards are published via `publish_rewards`, which CPIs into the mint program to mint additional wYLDS into the staking pool vault. Users realize rewards when they redeem shares: the program burns PRIME/AUTO and transfers the corresponding wYLDS amount to the user.
 
-Staking rewards are published by a rewards administrator to the staking program. The staking then calls the mint program to mint additional mint tokens (e.g. wYLDS) to the staking program pool. The value of the staker's stake tokens increases as the staking pool grows relative to the total staked mint tokens. Staking rewards are redeemed when the user unbonds their stake and redeems their share of mint tokens based on their stake token holdings.
+### Reward Publication Guards (Staking Programs)
+
+`publish_rewards` is protected by layered on-chain controls stored in the `StakeRewardConfig` PDA:
+
+1. **Relative cap (`max_reward_bps`)**: limits reward amount relative to local pool TVL (default 75 BPS = 0.75%).
+2. **Absolute per-call cap (`max_period_rewards`)**: default `1,000,000` wYLDS (6-decimal raw units: `1_000_000_000_000`).
+3. **Cooldown (`reward_period_seconds`)**: default `3540` seconds (59 minutes).
+4. **Lifetime cap (`max_total_rewards`)**: default `10,000,000` wYLDS (6-decimal raw units: `10_000_000_000_000`).
+
+The guard state is stored at PDA:
+
+`[b"stake_reward_config", stake_config.key()]`
+
+#### Migrating `StakeRewardConfig` In-Place (Realloc)
+
+When new reward guard fields are added, the program migrates the existing `StakeRewardConfig` account **in-place** using Anchor `realloc` in the relevant instructions. This avoids introducing a new PDA and preserves stable seeds for the reward config account.
+
+For existing deployments, newly-added fields are lazily defaulted on first use (e.g. during `publish_rewards`) so older accounts continue to work after being resized.
 
 ## Staking Program Price Oracle
 
@@ -211,15 +228,10 @@ sequenceDiagram
     User->>Program: Deposit Vault Mint Token (wYLDS)
     Program->>VaultAccount: Transfer Vault Mint (wYLDS) to Vault Token Account
     Program->>User: Mint the Mint Token (PRIME)
-    User->>Program: Unbond
-    activate Program
-    Program->>Program: Create Unbonding Ticket
-    Program->>Program: Start Unbonding Period Ticket Timer
-    deactivate Program
-    User->>Program: Redeem after Unbonding Period
+    Program->>Program: (Optional) publish_rewards mints more wYLDS into VaultAccount
+    User->>Program: Redeem
     activate Program
     Program->>Program: Burn PRIME
-    Program->>Program: Remove Unbonding Ticket
     Program->>User: Transfer Vault Token (wYLDS) from Vault Token Account
     deactivate Program
 ```
@@ -557,16 +569,14 @@ Done in 3.10s.
 
 ### Option `6` — Initialize Stake Program
 
-Run this after the stake program's first Squads-executed deployment. Configures the unbonding period, administrators, and vault PDAs.
+Run this after the stake program's first Squads-executed deployment. Configures administrators and the core stake PDAs.
 
 > **After initialization**, also call `initialize_price_config` (via a Squads transaction proposal, since the upgrade authority is the Squads vault PDA) and then `verify_price` (directly by a rewards administrator) with a fresh Chainlink-signed report before any user deposit or redeem can succeed. See [Post-Upgrade Initialization](#post-upgrade-initialization) above.
 
 ```
-Enter Unbonding Period (in seconds) []: 300
 Program ID: 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY
 Vault (accepted token): EcqKZtgqAdtxjACxinNUrKUXJVuVARwc1YCFNQUGPz6
 Mint (token to be minted): 6vTKjkQ5srGZPyfjKf3nRa97Lf9hQn6Yx7Gs6SB8y7Ht
-Unbonding Period (seconds): 300
 Config PDA: Bdjt3yVjegtwfXH4qzSUCMvT1avMfzKzrUXf4ZV8jVR2
 Vault Authority PDA: fByzStfcJmRWnmk7ySxcW7JyPLhzVnQawVtwnknrHRg
 Transaction: 3SJbVXBpGRCSboKRy5mWAV9Qpdc7nmJYCfTdrQRxG6i14f5MV7pGKuaySH65UYa615zrgV3EKYSseL59eenfVjGZ
