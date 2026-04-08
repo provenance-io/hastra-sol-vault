@@ -61,3 +61,27 @@ pub struct MaxRewardBpsUpdated {
     pub new_bps: u64,
     pub stake_config: Pubkey,
 }
+
+#[event]
+pub struct MaxPeriodRewardsUpdated {
+    pub admin: Pubkey,
+    pub old_value: u64,
+    pub new_value: u64,
+    pub stake_config: Pubkey,
+}
+
+#[event]
+pub struct RewardPeriodSecondsUpdated {
+    pub admin: Pubkey,
+    pub old_value: i64,
+    pub new_value: i64,
+    pub stake_config: Pubkey,
+}
+
+#[event]
+pub struct MaxTotalRewardsUpdated {
+    pub admin: Pubkey,
+    pub old_value: u64,
+    pub new_value: u64,
+    pub stake_config: Pubkey,
+}

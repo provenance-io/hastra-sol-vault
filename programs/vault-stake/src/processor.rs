@@ -2,7 +2,7 @@ use crate::account_structs::*;
 use crate::error::*;
 use crate::events::*;
 use crate::guard::validate_program_update_authority;
-use crate::state::{MAX_ADMINISTRATORS, StakeRewardConfig};
+use crate::state::{MAX_ADMINISTRATORS, StakeRewardConfig, StakeRewardGuardConfig};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::{get_return_data, invoke};
 use anchor_spl::token::spl_token::instruction::AuthorityType;
@@ -440,6 +440,18 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
     // Ensure StakeRewardConfig.bump is set to the PDA bump used by Anchor.
     // This assignment is idempotent and does not rely on any sentinel value.
     ctx.accounts.stake_reward_config.bump = ctx.bumps.stake_reward_config;
+    // Ensure StakeRewardGuardConfig.bump is set and lazily initialize defaults.
+    let guard_config = &mut ctx.accounts.stake_reward_guard_config;
+    guard_config.bump = ctx.bumps.stake_reward_guard_config;
+    if guard_config.max_period_rewards == 0 {
+        guard_config.max_period_rewards = StakeRewardGuardConfig::DEFAULT_MAX_PERIOD_REWARDS;
+    }
+    if guard_config.reward_period_seconds <= 0 {
+        guard_config.reward_period_seconds = StakeRewardGuardConfig::DEFAULT_REWARD_PERIOD_SECONDS;
+    }
+    if guard_config.max_total_rewards == 0 {
+        guard_config.max_total_rewards = StakeRewardGuardConfig::DEFAULT_MAX_TOTAL_REWARDS;
+    }
 
     // Enforce reward cap: amount must not exceed max_reward_bps % of current total_assets.
     // Skip only when the vault is truly empty (bootstrap) — cap applies whenever assets exist.
@@ -457,6 +469,32 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
             .ok_or(CustomErrorCode::Overflow)?;
         require!(amount <= max_allowed, CustomErrorCode::RewardExceedsMaxDelta);
     }
+
+    // Absolute per-call cap.
+    require!(
+        amount <= guard_config.max_period_rewards,
+        CustomErrorCode::ExceedsPeriodRewardCap
+    );
+
+    // Cooldown between reward publications (first publication is always allowed).
+    let now = Clock::get()?.unix_timestamp;
+    if guard_config.last_reward_distributed_at > 0 {
+        let next_allowed_at = guard_config
+            .last_reward_distributed_at
+            .checked_add(guard_config.reward_period_seconds)
+            .ok_or(CustomErrorCode::Overflow)?;
+        require!(now >= next_allowed_at, CustomErrorCode::RewardCooldownNotElapsed);
+    }
+
+    // Lifetime cap.
+    let next_total = guard_config
+        .total_rewards_distributed
+        .checked_add(amount)
+        .ok_or(CustomErrorCode::Overflow)?;
+    require!(
+        next_total <= guard_config.max_total_rewards,
+        CustomErrorCode::ExceedsLifetimeRewardCap
+    );
 
     // Initialize the reward record
     let reward_record = &mut ctx.accounts.reward_record;
@@ -497,6 +535,11 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
         signer,
     );
     vault_mint::cpi::external_program_mint(cpi_ctx, amount)?;
+
+    // Update guard state after successful mint CPI.
+    guard_config.last_reward_distributed_at = now;
+    guard_config.total_rewards_distributed = next_total;
+
     // reload the vault token account to get the updated amount for publishing the event
     ctx.accounts.vault_token_account.reload()?;
 
@@ -682,6 +725,118 @@ pub fn update_max_reward_bps(ctx: Context<UpdateMaxRewardBps>, new_bps: u64) -> 
     });
 
     msg!("max_reward_bps updated: {} -> {}", old_bps, new_bps);
+    Ok(())
+}
+
+/// Initializes the StakeRewardGuardConfig PDA.
+/// Only callable by the program upgrade authority.
+pub fn initialize_reward_guard_config(
+    ctx: Context<InitializeRewardGuardConfig>,
+    max_period_rewards: u64,
+    reward_period_seconds: i64,
+    max_total_rewards: u64,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    require!(max_period_rewards > 0, CustomErrorCode::InvalidMaxPeriodRewards);
+    require!(
+        reward_period_seconds > 0,
+        CustomErrorCode::InvalidRewardPeriodSeconds
+    );
+    require!(max_total_rewards > 0, CustomErrorCode::InvalidMaxTotalRewards);
+
+    let config = &mut ctx.accounts.stake_reward_guard_config;
+    config.max_period_rewards = max_period_rewards;
+    config.reward_period_seconds = reward_period_seconds;
+    config.last_reward_distributed_at = 0;
+    config.max_total_rewards = max_total_rewards;
+    config.total_rewards_distributed = 0;
+    config.bump = ctx.bumps.stake_reward_guard_config;
+
+    msg!(
+        "StakeRewardGuardConfig initialized: max_period_rewards={}, reward_period_seconds={}, max_total_rewards={}",
+        max_period_rewards,
+        reward_period_seconds,
+        max_total_rewards
+    );
+    Ok(())
+}
+
+/// Updates max_period_rewards on an existing StakeRewardGuardConfig.
+/// Only callable by the program upgrade authority.
+pub fn update_max_period_rewards(
+    ctx: Context<UpdateMaxPeriodRewards>,
+    new_cap: u64,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    require!(new_cap > 0, CustomErrorCode::InvalidMaxPeriodRewards);
+
+    let config = &mut ctx.accounts.stake_reward_guard_config;
+    let old_value = config.max_period_rewards;
+    config.max_period_rewards = new_cap;
+
+    emit!(MaxPeriodRewardsUpdated {
+        admin: ctx.accounts.signer.key(),
+        old_value,
+        new_value: new_cap,
+        stake_config: ctx.accounts.stake_config.key(),
+    });
+
+    msg!("max_period_rewards updated: {} -> {}", old_value, new_cap);
+    Ok(())
+}
+
+/// Updates reward_period_seconds on an existing StakeRewardGuardConfig.
+/// Only callable by the program upgrade authority.
+pub fn update_reward_period_seconds(
+    ctx: Context<UpdateRewardPeriodSeconds>,
+    new_seconds: i64,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    require!(
+        new_seconds > 0,
+        CustomErrorCode::InvalidRewardPeriodSeconds
+    );
+
+    let config = &mut ctx.accounts.stake_reward_guard_config;
+    let old_value = config.reward_period_seconds;
+    config.reward_period_seconds = new_seconds;
+
+    emit!(RewardPeriodSecondsUpdated {
+        admin: ctx.accounts.signer.key(),
+        old_value,
+        new_value: new_seconds,
+        stake_config: ctx.accounts.stake_config.key(),
+    });
+
+    msg!("reward_period_seconds updated: {} -> {}", old_value, new_seconds);
+    Ok(())
+}
+
+/// Updates max_total_rewards on an existing StakeRewardGuardConfig.
+/// Only callable by the program upgrade authority.
+pub fn update_max_total_rewards(
+    ctx: Context<UpdateMaxTotalRewards>,
+    new_cap: u64,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    let distributed = ctx.accounts.stake_reward_guard_config.total_rewards_distributed;
+    require!(
+        new_cap > 0 && new_cap >= distributed,
+        CustomErrorCode::InvalidMaxTotalRewards
+    );
+
+    let config = &mut ctx.accounts.stake_reward_guard_config;
+    let old_value = config.max_total_rewards;
+    config.max_total_rewards = new_cap;
+
+    emit!(MaxTotalRewardsUpdated {
+        admin: ctx.accounts.signer.key(),
+        old_value,
+        new_value: new_cap,
+        stake_config: ctx.accounts.stake_config.key(),
+    });
+
+    msg!("max_total_rewards updated: {} -> {}", old_value, new_cap);
     Ok(())
 }
 

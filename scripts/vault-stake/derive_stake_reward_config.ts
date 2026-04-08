@@ -24,10 +24,15 @@ const main = async () => {
         [Buffer.from("stake_reward_config"), stakeConfigPda.toBuffer()],
         programId
     );
+    const [stakeRewardGuardConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("stake_reward_guard_config"), stakeConfigPda.toBuffer()],
+        programId
+    );
 
     console.log("Program ID (vault-stake):      ", programId.toBase58());
     console.log("StakeConfig PDA:               ", stakeConfigPda.toBase58());
     console.log("StakeRewardConfig PDA:         ", stakeRewardConfigPda.toBase58());
+    console.log("StakeRewardGuardConfig PDA:    ", stakeRewardGuardConfigPda.toBase58());
 };
 
 main().catch(console.error);

@@ -362,14 +362,14 @@ pub struct PublishRewards<'info> {
         seeds = [b"stake_config"], 
         bump = stake_config.bump
     )]
-    pub stake_config: Account<'info, StakeConfig>,
+    pub stake_config: Box<Account<'info, StakeConfig>>,
 
     #[account(
         seeds = [b"config"], 
         bump = mint_config.bump,
         seeds::program = mint_program.key()
     )]
-    pub mint_config: Account<'info, vault_mint::state::Config>,
+    pub mint_config: Box<Account<'info, vault_mint::state::Config>>,
 
     /// PDA that proves this call is from this staking program.
     /// Signed during the CPI to vault-mint. Only this program can produce a valid
@@ -414,7 +414,7 @@ pub struct PublishRewards<'info> {
         constraint = rewards_mint.key() == stake_config.vault @ CustomErrorCode::InvalidMint,
         constraint = rewards_mint.mint_authority.unwrap() == rewards_mint_authority.key() @ CustomErrorCode::InvalidMintAuthority
     )]
-    pub rewards_mint: Account<'info, Mint>, // this seems odd, but the rewards are in the vault token mint
+    pub rewards_mint: Box<Account<'info, Mint>>, // this seems odd, but the rewards are in the vault token mint
     
     /// CHECK: This is a PDA that acts as mint authority, validated by seeds constraint
     #[account(
@@ -431,7 +431,7 @@ pub struct PublishRewards<'info> {
         ],
         bump = stake_vault_token_account_config.bump,
     )]
-    pub stake_vault_token_account_config: Account<'info, StakeVaultTokenAccountConfig>,
+    pub stake_vault_token_account_config: Box<Account<'info, StakeVaultTokenAccountConfig>>,
 
     #[account(
         mut,
@@ -454,7 +454,7 @@ pub struct PublishRewards<'info> {
         mut,
         constraint = mint.key() == stake_config.mint @ CustomErrorCode::InvalidMint
     )]
-    pub mint: Account<'info, Mint>,
+    pub mint: Box<Account<'info, Mint>>,
 
     /// Reward record PDA to prevent duplicates
     #[account(
@@ -468,7 +468,7 @@ pub struct PublishRewards<'info> {
         ],
         bump
     )]
-    pub reward_record: Account<'info, RewardPublicationRecord>,
+    pub reward_record: Box<Account<'info, RewardPublicationRecord>>,
 
     /// Reward cap config — enforces max_reward_bps limit on each publish.
     /// Created on first use with DEFAULT_BPS (75 BPS = 0.75%) if not yet initialized.
@@ -483,7 +483,21 @@ pub struct PublishRewards<'info> {
         ],
         bump
     )]
-    pub stake_reward_config: Account<'info, StakeRewardConfig>,
+    pub stake_reward_config: Box<Account<'info, StakeRewardConfig>>,
+
+    /// Extended reward guard config used by publish_rewards for absolute per-call cap,
+    /// cooldown, and lifetime cap controls. Created lazily on first publish.
+    #[account(
+        init_if_needed,
+        payer = admin,
+        space = StakeRewardGuardConfig::LEN,
+        seeds = [
+            b"stake_reward_guard_config",
+            stake_config.key().as_ref(),
+        ],
+        bump
+    )]
+    pub stake_reward_guard_config: Box<Account<'info, StakeRewardGuardConfig>>,
 
     pub system_program: Program<'info, System>,
     
@@ -713,6 +727,127 @@ pub struct UpdateMaxRewardBps<'info> {
         bump = stake_reward_config.bump,
     )]
     pub stake_reward_config: Account<'info, StakeRewardConfig>,
+
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+}
+
+/// Initializes the extended StakeRewardGuardConfig PDA for a given StakeConfig.
+/// Only callable by the program upgrade authority.
+#[derive(Accounts)]
+pub struct InitializeRewardGuardConfig<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        init,
+        payer = signer,
+        space = StakeRewardGuardConfig::LEN,
+        seeds = [
+            b"stake_reward_guard_config",
+            stake_config.key().as_ref(),
+        ],
+        bump
+    )]
+    pub stake_reward_guard_config: Account<'info, StakeRewardGuardConfig>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Updates max_period_rewards on an existing StakeRewardGuardConfig.
+/// Only callable by the program upgrade authority.
+#[derive(Accounts)]
+pub struct UpdateMaxPeriodRewards<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"stake_reward_guard_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_reward_guard_config.bump,
+    )]
+    pub stake_reward_guard_config: Account<'info, StakeRewardGuardConfig>,
+
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+}
+
+/// Updates reward_period_seconds on an existing StakeRewardGuardConfig.
+/// Only callable by the program upgrade authority.
+#[derive(Accounts)]
+pub struct UpdateRewardPeriodSeconds<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"stake_reward_guard_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_reward_guard_config.bump,
+    )]
+    pub stake_reward_guard_config: Account<'info, StakeRewardGuardConfig>,
+
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+}
+
+/// Updates max_total_rewards on an existing StakeRewardGuardConfig.
+/// Only callable by the program upgrade authority.
+#[derive(Accounts)]
+pub struct UpdateMaxTotalRewards<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"stake_reward_guard_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_reward_guard_config.bump,
+    )]
+    pub stake_reward_guard_config: Account<'info, StakeRewardGuardConfig>,
 
     pub signer: Signer<'info>,
 
