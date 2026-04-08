@@ -1437,16 +1437,7 @@ describe("vault-mint", () => {
                 })
                 .rpc();
 
-            await stakeAutoProgram.methods
-                .initializeRewardConfig(new BN(75))
-                .accountsStrict({
-                    stakeConfig: stakeConfigPdaAuto,
-                    stakeRewardConfig: stakeRewardConfigPdaAuto,
-                    signer: provider.wallet.publicKey,
-                    programData: programDataPdaAuto,
-                    systemProgram: SystemProgram.programId,
-                })
-                .rpc();
+            // stake_reward_config for AUTO is created lazily on first publish_rewards.
 
             await setPriceForTestingAuto();
         });
