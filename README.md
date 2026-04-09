@@ -124,35 +124,43 @@ The guard state is stored at PDA:
 
 #### Migrating `StakeRewardConfig` In-Place (Realloc)
 
-When the `StakeRewardConfig` account layout grows, **vault-stake** and **vault-stake-auto** resize it **in-place** with Anchor `realloc` on `update_reward_config` (upgrade authority). On **vault-stake** only, `update_reward_period_seconds` also uses `realloc` (and requires `system_program`) so older account sizes grow on first use. Other cap updates (`update_max_period_rewards`, `update_max_total_rewards`, `update_max_reward_bps`) use a fixed account size. PDA seeds stay `[b"stake_reward_config", stake_config.key()]`.
+When the `StakeRewardConfig` account layout grows, migration is performed in-place on the same PDA (`[b"stake_reward_config", stake_config.key()]`) under upgrade-authority controls:
+
+- **vault-stake (PRIME):** use `migrate_reward_config` (migration-only path).
+- **vault-stake-auto (AUTO):** use `migrate_reward_config` (migration-only path).
+
+After migration, cap updates (`update_max_period_rewards`, `update_reward_period_seconds`, `update_max_total_rewards`, `update_max_reward_bps`) use fixed account sizes and do not require additional migration-specific accounts.
 
 For existing deployments, newly added fields are also lazily defaulted on first use (for example during `publish_rewards`, which uses `init_if_needed` for the account) so older layouts keep working after upgrade.
 
-**`update_reward_config`** is upgrade-authority-only. It always writes `max_reward_bps` from the instruction arguments. The other three arguments (`max_period_rewards`, `reward_period_seconds`, `max_total_rewards`) are written only when the stored value is still zero (migration-style). To change caps or cooldown after those fields are non-zero, use `update_max_period_rewards`, `update_reward_period_seconds`, or `update_max_total_rewards`.
+`migrate_reward_config` is an upgrade-authority-only migration instruction on both stake programs. It always writes `max_reward_bps` from arguments. The other three arguments (`max_period_rewards`, `reward_period_seconds`, `max_total_rewards`) are written only when the stored value is still zero (migration-style). To change caps or cooldown after those fields are non-zero, use `update_max_period_rewards`, `update_reward_period_seconds`, or `update_max_total_rewards`.
 
 Scripts:
 
 | Path | When to use |
 |------|-------------|
-| `scripts/migrate_reward_config.ts` | `--pool prime` or `--pool auto`; calls `update_reward_config` with the connected wallet (must be upgrade authority). |
-| `scripts/migrate_reward_config_proposal_squads_v3.ts` | Same inner instruction inside a Squads v3 proposal (vault PDA signs when executed). |
-| `scripts/vault-stake/update_reward_config.ts` | PRIME pool only — direct run against `vault-stake` (typical for localnet). |
-| `scripts/vault-stake-auto/update_reward_config.ts` | AUTO pool only — direct run against `vault-stake-auto`. |
-| `scripts/vault-stake/update_reward_config_proposal_squads_v3.ts` | Squads v3 proposal for `vault-stake` `update_reward_config`. |
-| `scripts/vault-stake-auto/update_reward_config_proposal_squads_v3.ts` | Squads v3 proposal for `vault-stake-auto` `update_reward_config`. |
+| `scripts/vault-stake/migrate_reward_config.ts` | PRIME pool migration path; calls `migrate_reward_config` directly. |
+| `scripts/vault-stake-auto/migrate_reward_config.ts` | AUTO pool migration path; calls `migrate_reward_config` directly. |
+| `scripts/vault-stake/migrate_reward_config_proposal_squads_v3.ts` | PRIME pool Squads v3 proposal helper for `migrate_reward_config`. |
+| `scripts/vault-stake-auto/migrate_reward_config_proposal_squads_v3.ts` | AUTO pool Squads v3 proposal helper for `migrate_reward_config`. |
 
-Example (local wallet is upgrade authority):
+Example (local wallet is upgrade authority, set multiple fields in one run):
 
 ```bash
 ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 ANCHOR_WALLET=~/.config/solana/id.json \
-  yarn ts-node scripts/vault-stake/update_reward_config.ts --max_reward_bps 75
+  yarn ts-node scripts/vault-stake/migrate_reward_config.ts \
+    --max_reward_bps 120 \
+    --reward_period_seconds 3600
 ```
 
-Example (pick program by pool on devnet):
+Example (Squads v3 proposal with multiple updates):
 
 ```bash
-ANCHOR_PROVIDER_URL=https://api.devnet.solana.com ANCHOR_WALLET=~/.config/solana/id.json \
-  yarn ts-node scripts/migrate_reward_config.ts --pool prime --max_reward_bps 75
+ANCHOR_PROVIDER_URL=https://api.devnet.solana.com ANCHOR_WALLET=~/.config/solana/squad-member.json \
+  yarn ts-node scripts/vault-stake-auto/migrate_reward_config_proposal_squads_v3.ts \
+    --multisig_pda <SQUADS_V3_MULTISIG_PDA> \
+    --max_reward_bps 90 \
+    --max_period_rewards 1000000000000
 ```
 
 ## Staking Program Price Oracle
