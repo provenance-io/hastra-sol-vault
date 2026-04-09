@@ -5,6 +5,8 @@ use crate::guard::validate_program_update_authority;
 use crate::state::{StakeRewardConfig, MAX_ADMINISTRATORS};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::{get_return_data, invoke};
+use anchor_lang::solana_program::program_error::ProgramError;
+use anchor_lang::solana_program::system_instruction;
 use anchor_spl::token::spl_token::instruction::AuthorityType;
 use anchor_spl::token::{self, Burn, MintTo, Transfer};
 use chainlink_data_streams_report::feed_id::ID as FeedId;
@@ -690,13 +692,12 @@ pub fn update_price_config(
     Ok(())
 }
 
-/// Initializes the StakeRewardConfig PDA for the given StakeConfig.
+/// Migrates the StakeRewardConfig PDA for the given StakeConfig.
 /// Explicitly sets `max_reward_bps` to the provided value (subject to MAX_BPS validation).
-/// This is an optional, proactive setup step; the config may also be lazily created by
-/// `publish_rewards` via `init_if_needed` using the program's default cap semantics.
+/// This is a one-time migration step required after program upgrade as the config schema has changed.
 /// Only callable by the program upgrade authority.
-pub fn update_reward_config(
-    ctx: Context<UpdateRewardConfig>,
+pub fn migrate_reward_config(
+    ctx: Context<MigrateRewardConfig>,
     max_reward_bps: u64,
     max_period_rewards: u64,
     reward_period_seconds: i64,
@@ -720,26 +721,98 @@ pub fn update_reward_config(
         CustomErrorCode::InvalidMaxTotalRewards
     );
 
-    let config = &mut ctx.accounts.stake_reward_config;
-    config.max_reward_bps = max_reward_bps;
-    // In this migration instruction, `stake_reward_config` is not (re-)derived by Anchor via `bump`
-    // synthesis, so the bump must remain the one already stored in the PDA account.
-    // The account is still seed-constrained in the context for safety.
-    //
-    // Default any newly-added fields to keep upgrades deterministic.
-    if config.max_period_rewards == 0 {
-        config.max_period_rewards = max_period_rewards;
-    }
-    if config.reward_period_seconds <= 0 {
-        config.reward_period_seconds = reward_period_seconds;
-    }
-    if config.max_total_rewards == 0 {
-        config.max_total_rewards = max_total_rewards;
+    const LEGACY_STAKE_REWARD_CONFIG_LEN: usize = 17; // discriminator + max_reward_bps + bump
+    let stake_reward_config_info = ctx.accounts.stake_reward_config.to_account_info();
+    let old_len = stake_reward_config_info.data_len();
+
+    // Top up rent before realloc so account growth is deterministic.
+    if old_len < StakeRewardConfig::LEN {
+        let rent = Rent::get()?;
+        let required_lamports = rent.minimum_balance(StakeRewardConfig::LEN);
+        let current_lamports = stake_reward_config_info.lamports();
+        if current_lamports < required_lamports {
+            let delta = required_lamports
+                .checked_sub(current_lamports)
+                .ok_or(CustomErrorCode::Overflow)?;
+            invoke(
+                &system_instruction::transfer(
+                    &ctx.accounts.signer.key(),
+                    &stake_reward_config_info.key(),
+                    delta,
+                ),
+                &[
+                    ctx.accounts.signer.to_account_info(),
+                    stake_reward_config_info.clone(),
+                    ctx.accounts.system_program.to_account_info(),
+                ],
+            )?;
+        }
+        stake_reward_config_info.realloc(StakeRewardConfig::LEN, false)?;
     }
 
+    let mut migrated_config = StakeRewardConfig {
+        max_reward_bps,
+        max_period_rewards,
+        reward_period_seconds,
+        last_reward_distributed_at: 0,
+        max_total_rewards,
+        total_rewards_distributed: 0,
+        bump: 0,
+    };
+
+    let stake_reward_config_data = stake_reward_config_info.try_borrow_data()?;
+    if stake_reward_config_data.len() < 8 {
+        return Err(ProgramError::InvalidAccountData.into());
+    }
+    if &stake_reward_config_data[0..8] != StakeRewardConfig::DISCRIMINATOR {
+        return Err(ProgramError::InvalidAccountData.into());
+    }
+
+    if old_len == StakeRewardConfig::LEN {
+        let mut data_slice: &[u8] = stake_reward_config_data.as_ref();
+        let current_config = StakeRewardConfig::try_deserialize(&mut data_slice)
+            .map_err(|_| ProgramError::InvalidAccountData)?;
+        migrated_config.max_period_rewards = if current_config.max_period_rewards > 0 {
+            current_config.max_period_rewards
+        } else {
+            max_period_rewards
+        };
+        migrated_config.reward_period_seconds = if current_config.reward_period_seconds > 0 {
+            current_config.reward_period_seconds
+        } else {
+            reward_period_seconds
+        };
+        migrated_config.max_total_rewards = if current_config.max_total_rewards > 0 {
+            current_config.max_total_rewards
+        } else {
+            max_total_rewards
+        };
+        migrated_config.last_reward_distributed_at = current_config.last_reward_distributed_at;
+        migrated_config.total_rewards_distributed = current_config.total_rewards_distributed;
+        migrated_config.bump = current_config.bump;
+    } else if old_len == LEGACY_STAKE_REWARD_CONFIG_LEN {
+        // Legacy layout only had `max_reward_bps` + `bump`, so all new fields are initialized
+        // from instruction arguments while preserving bump.
+        migrated_config.bump = stake_reward_config_data[16];
+    } else {
+        return Err(ProgramError::InvalidAccountData.into());
+    }
+    drop(stake_reward_config_data);
+
+    let mut stake_reward_config_data_mut = stake_reward_config_info.try_borrow_mut_data()?;
+    let mut out_slice: &mut [u8] = stake_reward_config_data_mut.as_mut();
+    migrated_config
+        .try_serialize(&mut out_slice)
+        .map_err(|_| ProgramError::InvalidAccountData)?;
+
     msg!(
-        "StakeRewardConfig updated: max_reward_bps={}",
-        max_reward_bps
+        "StakeRewardConfig migrated: old_len={}, max_reward_bps={}, max_period_rewards={}, reward_period_seconds={}, max_total_rewards={}, bump={}",
+        old_len,
+        migrated_config.max_reward_bps,
+        migrated_config.max_period_rewards,
+        migrated_config.reward_period_seconds,
+        migrated_config.max_total_rewards,
+        migrated_config.bump
     );
     Ok(())
 }

@@ -184,20 +184,21 @@ pub mod vault_stake_auto {
         processor::set_price_for_testing(ctx, price, price_timestamp)
     }
 
-    /// Updates the StakeRewardConfig PDA for the given StakeConfig. This is required after program upgrade as the config schema has changed.
+    /// Migrates the StakeRewardConfig PDA for the given StakeConfig.
+    /// This is required after program upgrade as the config schema has changed.
     /// max_reward_bps: expressed in basis points (10_000 = 100%). Default at initialization: 75 BPS (0.75%).
     /// max_period_rewards: absolute per-call cap (raw token units, e.g. 6 decimals)
     /// reward_period_seconds: cooldown between successful publish_rewards calls
     /// max_total_rewards: lifetime cumulative cap
     /// Only callable by the program upgrade authority.
-    pub fn update_reward_config(
-        ctx: Context<UpdateRewardConfig>,
+    pub fn migrate_reward_config(
+        ctx: Context<MigrateRewardConfig>,
         max_reward_bps: u64,
         max_period_rewards: u64,
         reward_period_seconds: i64,
         max_total_rewards: u64,
     ) -> Result<()> {
-        processor::update_reward_config(
+        processor::migrate_reward_config(
             ctx,
             max_reward_bps,
             max_period_rewards,

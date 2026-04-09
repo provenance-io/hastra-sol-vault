@@ -665,7 +665,7 @@ pub struct SetPriceForTesting<'info> {
 ///
 /// Only callable by the program upgrade authority.
 #[derive(Accounts)]
-pub struct UpdateRewardConfig<'info> {
+pub struct MigrateRewardConfig<'info> {
     #[account(
         seeds = [b"stake_config"],
         bump = stake_config.bump
@@ -678,12 +678,13 @@ pub struct UpdateRewardConfig<'info> {
             b"stake_reward_config",
             stake_config.key().as_ref(),
         ],
-        bump = stake_reward_config.bump,
-        realloc = StakeRewardConfig::LEN,
-        realloc::payer = signer,
-        realloc::zero = false
+        bump,
+        owner = crate::id()
     )]
-    pub stake_reward_config: Account<'info, StakeRewardConfig>,
+    /// CHECK: This account intentionally accepts legacy layouts that may fail typed deserialization
+    /// during migration. Safety is enforced by PDA seeds + owner checks above, and processor logic
+    /// validates discriminator/length before reallocating and rewriting the account data.
+    pub stake_reward_config: UncheckedAccount<'info>,
 
     #[account(mut)]
     pub signer: Signer<'info>,
