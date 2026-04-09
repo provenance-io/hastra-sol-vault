@@ -405,7 +405,7 @@ pub struct PublishRewards<'info> {
         bump,
     )]
     pub vault_mint_allowed_external_programs: UncheckedAccount<'info>,
-    
+
     #[account(mut)]
     pub admin: Signer<'info>,
 
@@ -415,7 +415,7 @@ pub struct PublishRewards<'info> {
         constraint = rewards_mint.mint_authority.unwrap() == rewards_mint_authority.key() @ CustomErrorCode::InvalidMintAuthority
     )]
     pub rewards_mint: Box<Account<'info, Mint>>, // this seems odd, but the rewards are in the vault token mint
-    
+
     /// CHECK: This is a PDA that acts as mint authority, validated by seeds constraint
     #[account(
         seeds = [b"mint_authority"],
@@ -486,7 +486,7 @@ pub struct PublishRewards<'info> {
     pub stake_reward_config: Box<Account<'info, StakeRewardConfig>>,
 
     pub system_program: Program<'info, System>,
-    
+
     pub token_program: Program<'info, Token>,
 }
 

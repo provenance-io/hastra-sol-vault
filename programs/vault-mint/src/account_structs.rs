@@ -28,7 +28,7 @@ pub struct Initialize<'info> {
         bump
     )]
     pub vault_token_account_config: Account<'info, VaultTokenAccountConfig>,
-    
+
     #[account(
         constraint = vault_token_account.mint == vault_token_mint.key() @ CustomErrorCode::InvalidMint
     )]
@@ -564,7 +564,7 @@ pub struct UpdateVaultTokenAccount<'info> {
         constraint = vault_token_account.mint == config.vault @ CustomErrorCode::InvalidVaultMint,
     )]
     pub vault_token_account: Account<'info, TokenAccount>,
-    
+
     /// CHECK: This is the program data account that contains the update authority
     #[account(
         constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
@@ -606,10 +606,9 @@ pub struct SweepRedeemVaultFunds<'info> {
     pub vault_token_account: Account<'info, TokenAccount>,
 
     pub signer: Signer<'info>,
-    
+
     pub token_program: Program<'info, Token>,
 }
-
 
 #[derive(Accounts)]
 pub struct SetVaultTokenAccountConfig<'info> {

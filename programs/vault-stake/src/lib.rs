@@ -52,11 +52,7 @@ pub mod vault_stake {
         freeze_administrators: Vec<Pubkey>,
         rewards_administrators: Vec<Pubkey>,
     ) -> Result<()> {
-        processor::initialize(
-            ctx,
-            freeze_administrators,
-            rewards_administrators,
-        )
+        processor::initialize(ctx, freeze_administrators, rewards_administrators)
     }
 
     /// Pauses or unpauses the protocol operations:
@@ -101,11 +97,7 @@ pub mod vault_stake {
         processor::update_rewards_administrators(ctx, new_administrators)
     }
 
-    pub fn publish_rewards(
-        ctx: Context<PublishRewards>,
-        id: u32,
-        amount: u64,
-    ) -> Result<()> {
+    pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Result<()> {
         processor::publish_rewards(ctx, id, amount)
     }
 
@@ -198,16 +190,20 @@ pub mod vault_stake {
         max_reward_bps: u64,
         max_period_rewards: u64,
         reward_period_seconds: i64,
-        max_total_rewards: u64,    ) -> Result<()> {
-        processor::update_reward_config(ctx, max_reward_bps, max_period_rewards, reward_period_seconds, max_total_rewards)
+        max_total_rewards: u64,
+    ) -> Result<()> {
+        processor::update_reward_config(
+            ctx,
+            max_reward_bps,
+            max_period_rewards,
+            reward_period_seconds,
+            max_total_rewards,
+        )
     }
 
     /// Updates the maximum reward distribution cap on an existing StakeRewardConfig.
     /// Only callable by the program upgrade authority.
-    pub fn update_max_reward_bps(
-        ctx: Context<UpdateMaxRewardBps>,
-        new_bps: u64,
-    ) -> Result<()> {
+    pub fn update_max_reward_bps(ctx: Context<UpdateMaxRewardBps>, new_bps: u64) -> Result<()> {
         processor::update_max_reward_bps(ctx, new_bps)
     }
 
@@ -237,5 +233,4 @@ pub mod vault_stake {
     ) -> Result<()> {
         processor::update_max_total_rewards(ctx, new_cap)
     }
-
 }

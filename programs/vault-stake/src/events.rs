@@ -45,7 +45,7 @@ pub struct RewardsPublished {
 
 #[event]
 pub struct PriceVerifiedEvent {
-    pub verifier: Pubkey,      // rewards admin who submitted the report
+    pub verifier: Pubkey, // rewards admin who submitted the report
     pub feed_id: [u8; 32],
     pub price: i128,
     pub price_scale: u64,

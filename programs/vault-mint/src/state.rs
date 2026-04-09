@@ -10,7 +10,7 @@ pub struct Config {
     pub redeem_vault: Pubkey,
     pub bump: u8,
     pub paused: bool,
-    pub allowed_external_mint_program: Pubkey
+    pub allowed_external_mint_program: Pubkey,
 }
 
 impl Config {
@@ -91,4 +91,3 @@ impl AllowedExternalMintPrograms {
     // 8 discriminator + 4 vec length prefix + (32 * 5 pubkeys) + 1 bump
     pub const LEN: usize = 8 + 4 + (32 * Self::MAX_PROGRAMS) + 1;
 }
-

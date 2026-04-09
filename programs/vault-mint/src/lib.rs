@@ -51,13 +51,9 @@ pub mod vault_mint {
     pub fn initialize(
         ctx: Context<Initialize>,
         freeze_administrators: Vec<Pubkey>,
-        rewards_administrators: Vec<Pubkey>
+        rewards_administrators: Vec<Pubkey>,
     ) -> Result<()> {
-        processor::initialize(
-            ctx,
-            freeze_administrators,
-            rewards_administrators
-        )
+        processor::initialize(ctx, freeze_administrators, rewards_administrators)
     }
 
     /// Pauses or unpauses the program, disabling or enabling deposit and redeem functions.
@@ -152,9 +148,7 @@ pub mod vault_mint {
         processor::register_allowed_external_mint_program(ctx)
     }
 
-    pub fn update_vault_token_account(
-        ctx: Context<UpdateVaultTokenAccount>,
-    ) -> Result<()> {
+    pub fn update_vault_token_account(ctx: Context<UpdateVaultTokenAccount>) -> Result<()> {
         processor::update_vault_token_account(ctx)
     }
 

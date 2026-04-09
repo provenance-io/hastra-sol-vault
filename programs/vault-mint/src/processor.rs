@@ -11,10 +11,16 @@ use anchor_spl::token::{self, MintTo, Transfer};
 pub fn initialize(
     ctx: Context<Initialize>,
     freeze_administrators: Vec<Pubkey>,
-    rewards_administrators: Vec<Pubkey>
+    rewards_administrators: Vec<Pubkey>,
 ) -> Result<()> {
-    msg!("Initializing with vault_token_mint: {}", ctx.accounts.vault_token_mint.key());
-    msg!("Vault mint account: {}", ctx.accounts.vault_token_mint.key());
+    msg!(
+        "Initializing with vault_token_mint: {}",
+        ctx.accounts.vault_token_mint.key()
+    );
+    msg!(
+        "Vault mint account: {}",
+        ctx.accounts.vault_token_mint.key()
+    );
 
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
 
@@ -153,7 +159,10 @@ pub fn request_redeem(ctx: Context<RequestRedeem>, amount: u64) -> Result<()> {
     // redeem amount against the user balance at the time of completion to
     // prevent burn error.
     let amount_to_redeem = std::cmp::min(user_balance, amount);
-    require!(amount_to_redeem > 0, CustomErrorCode::InsufficientRedemptionBalance);
+    require!(
+        amount_to_redeem > 0,
+        CustomErrorCode::InsufficientRedemptionBalance
+    );
 
     msg!("RequestRedeem user account balance: {}", user_balance);
     msg!("Requested amount to redeem: {}", amount);
@@ -398,10 +407,7 @@ pub fn create_rewards_epoch(
     merkle_root: [u8; 32],
     total: u64,
 ) -> Result<()> {
-    require!(
-        !ctx.accounts.config.paused,
-        CustomErrorCode::ProtocolPaused
-    );
+    require!(!ctx.accounts.config.paused, CustomErrorCode::ProtocolPaused);
     require!(
         ctx.accounts
             .config
@@ -527,7 +533,9 @@ pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> 
     // Note: admin is not a Signer here — the PDA (external_mint_authority) is the actual
     // CPI signer. The admin pubkey is just passed through for authorization checking.
     require!(
-        config.rewards_administrators.contains(&ctx.accounts.admin.key()),
+        config
+            .rewards_administrators
+            .contains(&ctx.accounts.admin.key()),
         CustomErrorCode::InvalidRewardsAdministrator
     );
 
@@ -542,7 +550,10 @@ pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> 
     // Extended path: try to deserialize the allow-list PDA. The account may be empty
     // (PDA not yet initialized) for deployments that have not registered extra programs.
     let is_registered_caller = if !is_legacy_caller {
-        let data = ctx.accounts.allowed_external_mint_programs.try_borrow_data()?;
+        let data = ctx
+            .accounts
+            .allowed_external_mint_programs
+            .try_borrow_data()?;
         if data.len() >= 8 {
             let mut slice: &[u8] = &*data;
             AllowedExternalMintPrograms::try_deserialize(&mut slice)
@@ -591,9 +602,7 @@ pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> 
 }
 
 // create a function called by program update authority to update the vault token account
-pub fn update_vault_token_account(
-    ctx: Context<UpdateVaultTokenAccount>,
-) -> Result<()> {   
+pub fn update_vault_token_account(ctx: Context<UpdateVaultTokenAccount>) -> Result<()> {
     // Validate that the signer is the program's update authority
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
 
@@ -603,8 +612,14 @@ pub fn update_vault_token_account(
     let vault_token_account_config = &mut ctx.accounts.vault_token_account_config;
     vault_token_account_config.vault_token_account = ctx.accounts.vault_token_account.key();
 
-    msg!("Vault token authority updated to: {}", ctx.accounts.vault_token_account.owner.key());
-    msg!("Vault token account updated to: {}", ctx.accounts.vault_token_account.key());
+    msg!(
+        "Vault token authority updated to: {}",
+        ctx.accounts.vault_token_account.owner.key()
+    );
+    msg!(
+        "Vault token account updated to: {}",
+        ctx.accounts.vault_token_account.key()
+    );
     Ok(())
 }
 
@@ -634,14 +649,14 @@ pub fn register_allowed_external_mint_program(
     allowed.programs.push(program_key);
     allowed.bump = ctx.bumps.allowed_external_mint_programs;
 
-    msg!("Registered authorized external mint program: {}", program_key);
+    msg!(
+        "Registered authorized external mint program: {}",
+        program_key
+    );
     Ok(())
 }
 
-pub fn sweep_redeem_vault_funds(
-    ctx: Context<SweepRedeemVaultFunds>,
-    amount: u64,
-) -> Result<()> {
+pub fn sweep_redeem_vault_funds(ctx: Context<SweepRedeemVaultFunds>, amount: u64) -> Result<()> {
     // Validate the signer is a rewards administrator
     require!(
         ctx.accounts
@@ -655,7 +670,7 @@ pub fn sweep_redeem_vault_funds(
 
     let vault_balance = ctx.accounts.redeem_vault_token_account.amount;
     require!(
-        vault_balance >= amount, 
+        vault_balance >= amount,
         CustomErrorCode::InsufficientRedeemVaultFunds
     );
 
@@ -676,7 +691,7 @@ pub fn sweep_redeem_vault_funds(
             },
             signer,
         ),
-        amount
+        amount,
     )?;
 
     msg!("Emitting SweepRedeemVaultEvent");

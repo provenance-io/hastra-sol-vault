@@ -62,6 +62,4 @@ pub enum CustomErrorCode {
     InvalidVaultTokenAccount = 34,
     #[msg("Too many allowed external mint programs; maximum is 5")]
     TooManyAllowedExternalMintPrograms = 29,
-
-
 }

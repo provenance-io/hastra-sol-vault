@@ -84,5 +84,4 @@ pub enum CustomErrorCode {
     InvalidMaxPeriodRewards = 47,
     #[msg("Invalid max total rewards: must be greater than 0 and not below distributed total")]
     InvalidMaxTotalRewards = 48,
-
 }
