@@ -125,6 +125,26 @@ get_ata() {
   echo "$ata"
 }
 
+get_stake_reward_config_pda() {
+  local program_id="$1"
+  local pool="$2" # "prime" or "auto" (used to select the script)
+
+  local script=""
+  if [[ "$pool" == "prime" ]]; then
+    script="scripts/vault-stake/derive_stake_reward_config.ts"
+  elif [[ "$pool" == "auto" ]]; then
+    script="scripts/vault-stake-auto/derive_stake_reward_config.ts"
+  else
+    echo "unknown pool (expected prime|auto): $pool" >&2
+    return 1
+  fi
+
+  # The derive script prints multiple labeled lines; extract the last field from the
+  # "StakeRewardConfig PDA:" line so `show_accounts_and_pdas` can print a single value.
+  yarn run --silent ts-node "$script" --program_id "$program_id" \
+    | awk '/StakeRewardConfig PDA:/ { print $NF }'
+}
+
 # ---------------------------------------------------------------------------
 # Cross-platform sha256
 # ---------------------------------------------------------------------------
@@ -170,6 +190,7 @@ show_accounts_and_pdas() {
   echo "Vault Authority:                          $(get_pda "$VAULT_STAKE_PROGRAM_ID" "vault_authority")"
   echo "Config PDA:                               $(get_pda "$VAULT_STAKE_PROGRAM_ID" "stake_config")"
   echo "Stake Vault Token Account Config PDA:     $(get_stake_program_config_pda "$VAULT_STAKE_PROGRAM_ID")"
+  echo "Stake Reward Config PDA:                  $(get_stake_reward_config_pda "$VAULT_STAKE_PROGRAM_ID" "prime")"
   echo "Mint Authority PDA:                       $(get_pda "$VAULT_STAKE_PROGRAM_ID" "mint_authority")"
   echo "Freeze Authority PDA:                     $(get_pda "$VAULT_STAKE_PROGRAM_ID" "freeze_authority")"
   echo "Freeze Administrators:                    $FREEZE_ADMINISTRATORS"
@@ -184,8 +205,11 @@ show_accounts_and_pdas() {
   echo "Vault Authority:                          $(get_pda "$VAULT_STAKE_AUTO_PROGRAM_ID" "vault_authority")"
   echo "Config PDA:                               $(get_pda "$VAULT_STAKE_AUTO_PROGRAM_ID" "stake_config")"
   echo "Stake Vault Token Account Config PDA:     $(get_stake_auto_program_config_pda "$VAULT_STAKE_AUTO_PROGRAM_ID")"
+  echo "Stake Reward Config PDA:                  $(get_stake_reward_config_pda "$VAULT_STAKE_AUTO_PROGRAM_ID" "auto")"
   echo "Mint Authority PDA:                       $(get_pda "$VAULT_STAKE_AUTO_PROGRAM_ID" "mint_authority")"
   echo "Freeze Authority PDA:                     $(get_pda "$VAULT_STAKE_AUTO_PROGRAM_ID" "freeze_authority")"
+  echo "Freeze Administrators:                    $FREEZE_ADMINISTRATORS"
+  echo "Rewards Administrators:                   $REWARDS_ADMINISTRATORS"
 
   echo ""
   echo "Stake Price Config (PRIME pool):"
