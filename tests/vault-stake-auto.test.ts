@@ -1798,7 +1798,7 @@ describe("vault-stake-auto", () => {
             programData: programDataPda,
         });
 
-        const updateRewardConfigAccounts = (signer: PublicKey) => ({
+        const migrateRewardConfigAccounts = (signer: PublicKey) => ({
             stakeConfig: stakeConfigPda,
             stakeRewardConfig: stakeRewardConfigPda,
             signer,
@@ -1835,28 +1835,28 @@ describe("vault-stake-auto", () => {
                 );
             });
 
-            it("update_reward_config can be invoked more than once", async () => {
+            it("migrate_reward_config can be invoked more than once", async () => {
                 const d = STAKE_REWARD_CONFIG_DEFAULTS;
                 await program.methods
-                    .updateRewardConfig(new BN(1_000), d.maxPeriodRewards, d.rewardPeriodSeconds, d.maxTotalRewards)
-                    .accountsStrict(updateRewardConfigAccounts(provider.wallet.publicKey))
+                    .migrateRewardConfig(new BN(1_000), d.maxPeriodRewards, d.rewardPeriodSeconds, d.maxTotalRewards)
+                    .accountsStrict(migrateRewardConfigAccounts(provider.wallet.publicKey))
                     .rpc();
                 const mid = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
                 assert.equal(mid.maxRewardBps.toNumber(), 1_000);
                 await program.methods
-                    .updateRewardConfig(new BN(75), d.maxPeriodRewards, d.rewardPeriodSeconds, d.maxTotalRewards)
-                    .accountsStrict(updateRewardConfigAccounts(provider.wallet.publicKey))
+                    .migrateRewardConfig(new BN(75), d.maxPeriodRewards, d.rewardPeriodSeconds, d.maxTotalRewards)
+                    .accountsStrict(migrateRewardConfigAccounts(provider.wallet.publicKey))
                     .rpc();
                 const after = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
                 assert.equal(after.maxRewardBps.toNumber(), 75);
             });
 
-            it("non-upgrade-authority cannot call update_reward_config", async () => {
+            it("non-upgrade-authority cannot call migrate_reward_config", async () => {
                 const d = STAKE_REWARD_CONFIG_DEFAULTS;
                 try {
                     await program.methods
-                        .updateRewardConfig(new BN(100), d.maxPeriodRewards, d.rewardPeriodSeconds, d.maxTotalRewards)
-                        .accountsStrict(updateRewardConfigAccounts(rewardsAdmin.publicKey))
+                        .migrateRewardConfig(new BN(100), d.maxPeriodRewards, d.rewardPeriodSeconds, d.maxTotalRewards)
+                        .accountsStrict(migrateRewardConfigAccounts(rewardsAdmin.publicKey))
                         .signers([rewardsAdmin])
                         .rpc();
                     assert.fail("Should have thrown — only the program upgrade authority may update reward config");
@@ -2030,6 +2030,137 @@ describe("vault-stake-auto", () => {
                 stakeRewardConfig: stakeRewardConfigPda,
                 signer: provider.wallet.publicKey,
                 programData: programDataPda,
+            });
+
+            it("update_max_period_rewards updates state and emits event", async () => {
+                const cfgBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const oldValue = new BN(cfgBefore.maxPeriodRewards.toString());
+                const newValue = oldValue.add(new BN(123_456));
+
+                const sig = await program.methods
+                    .updateMaxPeriodRewards(newValue)
+                    .accountsStrict(stakeRewardConfigAdminAccounts())
+                    .rpc({ commitment: "confirmed" });
+
+                const cfgAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(
+                    cfgAfter.maxPeriodRewards.toString(),
+                    newValue.toString(),
+                    "max_period_rewards should be updated"
+                );
+
+                const events = await parseEvents(sig);
+                const event = events.find(e => e.name === "maxPeriodRewardsUpdated");
+                assert.isDefined(event, "MaxPeriodRewardsUpdated event must be emitted");
+                assert.equal((event.data.oldValue as BN).toString(), oldValue.toString());
+                assert.equal((event.data.newValue as BN).toString(), newValue.toString());
+            });
+
+            it("non-upgrade-authority cannot call update_max_period_rewards", async () => {
+                try {
+                    await program.methods
+                        .updateMaxPeriodRewards(new BN(999))
+                        .accountsStrict({
+                            stakeConfig: stakeConfigPda,
+                            stakeRewardConfig: stakeRewardConfigPda,
+                            signer: rewardsAdmin.publicKey,
+                            programData: programDataPda,
+                        })
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown — only upgrade authority can update max_period_rewards");
+                } catch (err) {
+                    expect(err).to.exist;
+                }
+            });
+
+            it("update_reward_period_seconds updates state and emits event", async () => {
+                const cfgBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const oldValue = cfgBefore.rewardPeriodSeconds.toNumber();
+                const newValue = oldValue === 3_600 ? 3_599 : 3_600;
+
+                const sig = await program.methods
+                    .updateRewardPeriodSeconds(new BN(newValue))
+                    .accountsStrict(stakeRewardConfigAdminAccounts())
+                    .rpc({ commitment: "confirmed" });
+
+                const cfgAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(
+                    cfgAfter.rewardPeriodSeconds.toNumber(),
+                    newValue,
+                    "reward_period_seconds should be updated"
+                );
+
+                const events = await parseEvents(sig);
+                const event = events.find(e => e.name === "rewardPeriodSecondsUpdated");
+                assert.isDefined(event, "RewardPeriodSecondsUpdated event must be emitted");
+                assert.equal((event.data.oldValue as BN).toNumber(), oldValue);
+                assert.equal((event.data.newValue as BN).toNumber(), newValue);
+            });
+
+            it("non-upgrade-authority cannot call update_reward_period_seconds", async () => {
+                try {
+                    await program.methods
+                        .updateRewardPeriodSeconds(new BN(111))
+                        .accountsStrict({
+                            stakeConfig: stakeConfigPda,
+                            stakeRewardConfig: stakeRewardConfigPda,
+                            signer: rewardsAdmin.publicKey,
+                            programData: programDataPda,
+                        })
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown — only upgrade authority can update reward_period_seconds");
+                } catch (err) {
+                    expect(err).to.exist;
+                }
+            });
+
+            it("update_max_total_rewards updates state and emits event", async () => {
+                const cfgBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const distributed = new BN(cfgBefore.totalRewardsDistributed.toString());
+                const oldValue = new BN(cfgBefore.maxTotalRewards.toString());
+                const candidate = oldValue.add(new BN(999_999));
+                const newValue = candidate.gt(distributed) ? candidate : distributed.add(new BN(1));
+
+                const sig = await program.methods
+                    .updateMaxTotalRewards(newValue)
+                    .accountsStrict(stakeRewardConfigAdminAccounts())
+                    .rpc({ commitment: "confirmed" });
+
+                const cfgAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(
+                    cfgAfter.maxTotalRewards.toString(),
+                    newValue.toString(),
+                    "max_total_rewards should be updated"
+                );
+
+                const events = await parseEvents(sig);
+                const event = events.find(e => e.name === "maxTotalRewardsUpdated");
+                assert.isDefined(event, "MaxTotalRewardsUpdated event must be emitted");
+                assert.equal((event.data.oldValue as BN).toString(), oldValue.toString());
+                assert.equal((event.data.newValue as BN).toString(), newValue.toString());
+            });
+
+            it("non-upgrade-authority cannot call update_max_total_rewards", async () => {
+                const cfgBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const distributed = new BN(cfgBefore.totalRewardsDistributed.toString());
+                const attempt = distributed.add(new BN(1_000));
+                try {
+                    await program.methods
+                        .updateMaxTotalRewards(attempt)
+                        .accountsStrict({
+                            stakeConfig: stakeConfigPda,
+                            stakeRewardConfig: stakeRewardConfigPda,
+                            signer: rewardsAdmin.publicKey,
+                            programData: programDataPda,
+                        })
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown — only upgrade authority can update max_total_rewards");
+                } catch (err) {
+                    expect(err).to.exist;
+                }
             });
 
             it("stores default absolute/cooldown/lifetime values", async () => {
