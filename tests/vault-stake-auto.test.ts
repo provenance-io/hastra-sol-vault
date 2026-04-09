@@ -2187,6 +2187,44 @@ describe("vault-stake-auto", () => {
                 );
             });
 
+            it("set-style sequential updates apply all three reward config fields", async () => {
+                const newMaxPeriodRewards = new BN("1000000000123");
+                const newRewardPeriodSeconds = new BN(1337);
+                const cfgBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const distributed = new BN(cfgBefore.totalRewardsDistributed.toString());
+                const newMaxTotalRewards = distributed.add(new BN("2000000"));
+
+                await program.methods
+                    .updateMaxPeriodRewards(newMaxPeriodRewards)
+                    .accountsStrict(stakeRewardConfigAdminAccounts())
+                    .rpc();
+                await program.methods
+                    .updateRewardPeriodSeconds(newRewardPeriodSeconds)
+                    .accountsStrict(stakeRewardConfigAdminAccounts())
+                    .rpc();
+                await program.methods
+                    .updateMaxTotalRewards(newMaxTotalRewards)
+                    .accountsStrict(stakeRewardConfigAdminAccounts())
+                    .rpc();
+
+                const cfgAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(
+                    cfgAfter.maxPeriodRewards.toString(),
+                    newMaxPeriodRewards.toString(),
+                    "max_period_rewards should match the set value"
+                );
+                assert.equal(
+                    cfgAfter.rewardPeriodSeconds.toString(),
+                    newRewardPeriodSeconds.toString(),
+                    "reward_period_seconds should match the set value"
+                );
+                assert.equal(
+                    cfgAfter.maxTotalRewards.toString(),
+                    newMaxTotalRewards.toString(),
+                    "max_total_rewards should match the set value"
+                );
+            });
+
             it("enforces per-call absolute cap", async () => {
                 await program.methods
                     .updateRewardPeriodSeconds(new BN(1))
