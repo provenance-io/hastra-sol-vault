@@ -1809,9 +1809,30 @@ describe("vault-stake-auto", () => {
         // ── Account state verification ──────────────────────────────────────
 
         describe("account state verification", () => {
-            it("lazy-init config has correct state: maxRewardBps = 75", async () => {
+            it("lazy-init config has correct default state", async () => {
+                // Parent beforeEach shortens cooldown to 1s; restore protocol default before
+                // asserting full lazy-init defaults.
+                await program.methods
+                    .updateRewardPeriodSeconds(STAKE_REWARD_CONFIG_DEFAULTS.rewardPeriodSeconds)
+                    .accountsStrict(stakeRewardConfigUpgradeAuthorityAccounts())
+                    .rpc();
                 const config = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
                 assert.equal(config.maxRewardBps.toNumber(), 75, "maxRewardBps must be 75 (0.75%)");
+                assert.equal(
+                    config.maxPeriodRewards.toString(),
+                    STAKE_REWARD_CONFIG_DEFAULTS.maxPeriodRewards.toString(),
+                    "default max_period_rewards should be 1,000,000 wYLDS (6 decimals)"
+                );
+                assert.equal(
+                    config.rewardPeriodSeconds.toNumber(),
+                    STAKE_REWARD_CONFIG_DEFAULTS.rewardPeriodSeconds.toNumber(),
+                    "default reward_period_seconds should be 3540"
+                );
+                assert.equal(
+                    config.maxTotalRewards.toString(),
+                    STAKE_REWARD_CONFIG_DEFAULTS.maxTotalRewards.toString(),
+                    "default max_total_rewards should be 10,000,000 wYLDS (6 decimals)"
+                );
             });
 
             it("publish_rewards does not mutate config state (init_if_needed is idempotent)", async () => {
@@ -2040,7 +2061,7 @@ describe("vault-stake-auto", () => {
                 const sig = await program.methods
                     .updateMaxPeriodRewards(newValue)
                     .accountsStrict(stakeRewardConfigAdminAccounts())
-                    .rpc({ commitment: "confirmed" });
+                    .rpc({ commitment: "confirmed", skipPreflight: true });
 
                 const cfgAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
                 assert.equal(
@@ -2082,7 +2103,7 @@ describe("vault-stake-auto", () => {
                 const sig = await program.methods
                     .updateRewardPeriodSeconds(new BN(newValue))
                     .accountsStrict(stakeRewardConfigAdminAccounts())
-                    .rpc({ commitment: "confirmed" });
+                    .rpc({ commitment: "confirmed", skipPreflight: true });
 
                 const cfgAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
                 assert.equal(
@@ -2126,7 +2147,7 @@ describe("vault-stake-auto", () => {
                 const sig = await program.methods
                     .updateMaxTotalRewards(newValue)
                     .accountsStrict(stakeRewardConfigAdminAccounts())
-                    .rpc({ commitment: "confirmed" });
+                    .rpc({ commitment: "confirmed", skipPreflight: true });
 
                 const cfgAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
                 assert.equal(
@@ -2163,27 +2184,41 @@ describe("vault-stake-auto", () => {
                 }
             });
 
-            it("stores default absolute/cooldown/lifetime values", async () => {
-                // Runs after parent StakeRewardConfig beforeEach (1s cooldown); restore default before fetch.
+            it("set-style sequential updates apply all three reward config fields", async () => {
+                const newMaxPeriodRewards = new BN("1000000000123");
+                const newRewardPeriodSeconds = new BN(1337);
+                const cfgBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const distributed = new BN(cfgBefore.totalRewardsDistributed.toString());
+                const newMaxTotalRewards = distributed.add(new BN("2000000"));
+
                 await program.methods
-                    .updateRewardPeriodSeconds(STAKE_REWARD_CONFIG_DEFAULTS.rewardPeriodSeconds)
+                    .updateMaxPeriodRewards(newMaxPeriodRewards)
                     .accountsStrict(stakeRewardConfigAdminAccounts())
                     .rpc();
-                const cfg = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                await program.methods
+                    .updateRewardPeriodSeconds(newRewardPeriodSeconds)
+                    .accountsStrict(stakeRewardConfigAdminAccounts())
+                    .rpc();
+                await program.methods
+                    .updateMaxTotalRewards(newMaxTotalRewards)
+                    .accountsStrict(stakeRewardConfigAdminAccounts())
+                    .rpc();
+
+                const cfgAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
                 assert.equal(
-                    cfg.maxPeriodRewards.toString(),
-                    STAKE_REWARD_CONFIG_DEFAULTS.maxPeriodRewards.toString(),
-                    "default max_period_rewards should be 1,000,000 wYLDS (6 decimals)"
+                    cfgAfter.maxPeriodRewards.toString(),
+                    newMaxPeriodRewards.toString(),
+                    "max_period_rewards should match the set value"
                 );
                 assert.equal(
-                    cfg.rewardPeriodSeconds.toNumber(),
-                    STAKE_REWARD_CONFIG_DEFAULTS.rewardPeriodSeconds.toNumber(),
-                    "default reward_period_seconds should be 3540"
+                    cfgAfter.rewardPeriodSeconds.toString(),
+                    newRewardPeriodSeconds.toString(),
+                    "reward_period_seconds should match the set value"
                 );
                 assert.equal(
-                    cfg.maxTotalRewards.toString(),
-                    STAKE_REWARD_CONFIG_DEFAULTS.maxTotalRewards.toString(),
-                    "default max_total_rewards should be 10,000,000 wYLDS (6 decimals)"
+                    cfgAfter.maxTotalRewards.toString(),
+                    newMaxTotalRewards.toString(),
+                    "max_total_rewards should match the set value"
                 );
             });
 
