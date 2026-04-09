@@ -1,7 +1,7 @@
 /**
  * update_reward_config.ts
  *
- * Calls `update_reward_config` on vault-stake-auto with the connected wallet as signer.
+ * Calls `migrate_reward_config` on vault-stake-auto with the connected wallet as signer.
  * The wallet must be the program upgrade authority (typical for localnet / direct ops).
  *
  * On-chain, `max_reward_bps` is always set from arguments. The other three values are
@@ -95,7 +95,7 @@ async function main() {
 
     const signer = provider.wallet.publicKey;
 
-    console.log("=== update_reward_config (vault-stake-auto) ===\n");
+    console.log("=== migrate_reward_config (vault-stake-auto) ===\n");
     console.log("Program ID:            ", program.programId.toBase58());
     console.log("StakeConfig PDA:       ", stakeConfigPda.toBase58());
     console.log("StakeRewardConfig PDA: ", stakeRewardConfigPda.toBase58());
@@ -108,7 +108,7 @@ async function main() {
     console.log();
 
     const sig = await program.methods
-        .updateRewardConfig(
+        .migrateRewardConfig(
             new BN(newBps),
             maxPeriodRewardsBn,
             rewardPeriodSecondsBn,

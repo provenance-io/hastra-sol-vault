@@ -1,22 +1,22 @@
 /**
- * migrate_stake_config_pda.ts
+ * update_reward_config.ts
  *
- * Calls `update_reward_config` on the vault-stake program with the connected wallet as signer.
+ * Calls `migrate_reward_config` on vault-stake with the connected wallet as signer.
  * The wallet must be the program upgrade authority (typical for localnet / direct ops).
  *
- * This is intentionally named as a "migration" helper: `update_reward_config` is the upgrade
- * authority gate that performs the `stake_reward_config` PDA realloc when needed (via Anchor's
- * `realloc` constraint), while also ensuring config defaults are filled deterministically.
+ * On-chain, `max_reward_bps` is always set from arguments. The other three values are
+ * written only when the stored field is still zero (see processor). Use the dedicated
+ * single-field instructions to change non-zero caps.
  *
  * Usage:
  *   ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 ANCHOR_WALLET=~/.config/solana/id.json \
- *   yarn ts-node scripts/vault-stake/migrate_stake_config_pda.ts --max_reward_bps 75
+ *   yarn ts-node scripts/vault-stake/update_reward_config.ts --max_reward_bps 75
  */
 
 import * as anchor from "@coral-xyz/anchor";
 import { AnchorProvider, Program } from "@coral-xyz/anchor";
-import { PublicKey, SystemProgram } from "@solana/web3.js";
 import BN from "bn.js";
+import { PublicKey, SystemProgram } from "@solana/web3.js";
 import yargs from "yargs";
 import { VaultStake } from "../../target/types/vault_stake";
 
@@ -24,10 +24,6 @@ import { VaultStake } from "../../target/types/vault_stake";
 const DEFAULT_MAX_PERIOD_REWARDS = "1000000000000";
 const DEFAULT_REWARD_PERIOD_SECONDS = 3540;
 const DEFAULT_MAX_TOTAL_REWARDS = "10000000000000";
-
-const BPF_LOADER_UPGRADEABLE_ID = new PublicKey(
-    "BPFLoaderUpgradeab1e11111111111111111111111"
-);
 
 const args = yargs(process.argv.slice(2))
     .option("max_reward_bps", {
@@ -63,8 +59,7 @@ async function main() {
     }
 
     const maxPeriodRewardsStr = args.max_period_rewards ?? DEFAULT_MAX_PERIOD_REWARDS;
-    const rewardPeriodSecondsNum =
-        args.reward_period_seconds ?? DEFAULT_REWARD_PERIOD_SECONDS;
+    const rewardPeriodSecondsNum = args.reward_period_seconds ?? DEFAULT_REWARD_PERIOD_SECONDS;
     const maxTotalRewardsStr = args.max_total_rewards ?? DEFAULT_MAX_TOTAL_REWARDS;
 
     const maxPeriodRewardsBn = new BN(maxPeriodRewardsStr, 10);
@@ -75,9 +70,7 @@ async function main() {
         throw new Error(`max_period_rewards must be > 0, got ${maxPeriodRewardsStr}`);
     }
     if (rewardPeriodSecondsBn.lte(new BN(0))) {
-        throw new Error(
-            `reward_period_seconds must be > 0, got ${rewardPeriodSecondsNum}`
-        );
+        throw new Error(`reward_period_seconds must be > 0, got ${rewardPeriodSecondsNum}`);
     }
     if (maxTotalRewardsBn.lte(new BN(0))) {
         throw new Error(`max_total_rewards must be > 0, got ${maxTotalRewardsStr}`);
@@ -91,6 +84,10 @@ async function main() {
         [Buffer.from("stake_reward_config"), stakeConfigPda.toBuffer()],
         program.programId
     );
+
+    const BPF_LOADER_UPGRADEABLE_ID = new PublicKey(
+        "BPFLoaderUpgradeab1e11111111111111111111111"
+    );
     const [programDataPda] = PublicKey.findProgramAddressSync(
         [program.programId.toBuffer()],
         BPF_LOADER_UPGRADEABLE_ID
@@ -98,20 +95,20 @@ async function main() {
 
     const signer = provider.wallet.publicKey;
 
-    console.log("=== migrate_stake_config_pda (vault-stake) ===\n");
-    console.log("Program ID:        ", program.programId.toBase58());
-    console.log("StakeConfig PDA:   ", stakeConfigPda.toBase58());
-    console.log("StakeRewardConfig: ", stakeRewardConfigPda.toBase58());
-    console.log("Program Data PDA:  ", programDataPda.toBase58());
-    console.log("Signer:            ", signer.toBase58());
-    console.log(`max_reward_bps:     ${newBps}`);
-    console.log(`max_period_rewards: ${maxPeriodRewardsBn.toString()}`);
-    console.log(`reward_period_seconds: ${rewardPeriodSecondsBn.toString()}`);
-    console.log(`max_total_rewards:  ${maxTotalRewardsBn.toString()}`);
+    console.log("=== migrate_reward_config (vault-stake) ===\n");
+    console.log("Program ID:            ", program.programId.toBase58());
+    console.log("StakeConfig PDA:       ", stakeConfigPda.toBase58());
+    console.log("StakeRewardConfig PDA: ", stakeRewardConfigPda.toBase58());
+    console.log("Program Data PDA:      ", programDataPda.toBase58());
+    console.log("Signer:                ", signer.toBase58());
+    console.log(`max_reward_bps:         ${newBps}`);
+    console.log(`max_period_rewards:     ${maxPeriodRewardsBn.toString()}`);
+    console.log(`reward_period_seconds:  ${rewardPeriodSecondsBn.toString()}`);
+    console.log(`max_total_rewards:      ${maxTotalRewardsBn.toString()}`);
     console.log();
 
     const sig = await program.methods
-        .updateRewardConfig(
+        .migrateRewardConfig(
             new BN(newBps),
             maxPeriodRewardsBn,
             rewardPeriodSecondsBn,
@@ -133,4 +130,3 @@ main().catch((e) => {
     console.error(e);
     process.exit(1);
 });
-
