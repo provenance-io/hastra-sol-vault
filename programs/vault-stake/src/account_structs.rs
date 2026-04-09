@@ -775,9 +775,6 @@ pub struct UpdateRewardPeriodSeconds<'info> {
             stake_config.key().as_ref(),
         ],
         bump = stake_reward_config.bump,
-        realloc = StakeRewardConfig::LEN,
-        realloc::payer = signer,
-        realloc::zero = false
     )]
     pub stake_reward_config: Account<'info, StakeRewardConfig>,
 
@@ -789,8 +786,6 @@ pub struct UpdateRewardPeriodSeconds<'info> {
         constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
     )]
     pub program_data: UncheckedAccount<'info>,
-
-    pub system_program: Program<'info, System>,
 }
 
 /// Updates max_total_rewards on an existing StakeRewardConfig.
