@@ -206,7 +206,6 @@ pub struct FreezeTokenAccount<'info> {
     #[account(
         constraint = mint.freeze_authority == Some(freeze_authority_pda.key()).into() @ CustomErrorCode::InvalidFreezeAuthority,
         constraint = config.mint == mint.key() @ CustomErrorCode::InvalidMint
-    
     )]
     pub mint: Account<'info, Mint>,
 
