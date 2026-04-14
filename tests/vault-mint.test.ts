@@ -2,8 +2,9 @@ import * as anchor from "@coral-xyz/anchor";
 import {Program} from "@coral-xyz/anchor";
 import {VaultMint} from "../target/types/vault_mint";
 import {VaultStake} from "../target/types/vault_stake";
-import {VaultStakeAuto} from "../target/types/vault_stake_auto";
 import {Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram} from "@solana/web3.js";
+import * as fs from "fs";
+import * as path from "path";
 import {
     createAccount,
     createMint,
@@ -25,7 +26,17 @@ describe("vault-mint", () => {
 
     const program = anchor.workspace.VaultMint as Program<VaultMint>;
     const stakeProgram = anchor.workspace.VaultStake as Program<VaultStake>;
-    const stakeAutoProgram = anchor.workspace.VaultStakeAuto as Program<VaultStakeAuto>;
+    const stakeAutoProgramId = (() => {
+        const keypairPath = path.resolve(__dirname, "..", "target", "deploy", "vault_stake_auto-keypair.json");
+        const secretKey = Uint8Array.from(JSON.parse(fs.readFileSync(keypairPath, "utf8")));
+        return Keypair.fromSecretKey(secretKey).publicKey;
+    })();
+    const stakeAutoIdl = JSON.parse(JSON.stringify(stakeProgram.idl));
+    stakeAutoIdl.address = stakeAutoProgramId.toBase58();
+    if (stakeAutoIdl.metadata) {
+        stakeAutoIdl.metadata.address = stakeAutoProgramId.toBase58();
+    }
+    const stakeAutoProgram = new anchor.Program(stakeAutoIdl as anchor.Idl, provider) as Program<VaultStake>;
 
     let mintedToken: PublicKey;
     let vaultedToken: PublicKey;

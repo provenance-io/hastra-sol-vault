@@ -5,13 +5,10 @@ name: Release
 # Produces a GitHub Release containing:
 #   - vault_mint.so               (deployable program binary)
 #   - vault_stake.so              (deployable program binary — PRIME pool)
-#   - vault_stake_auto.so         (deployable program binary — AUTO pool)
 #   - vault_mint.json             (Anchor IDL — program interface definition)
 #   - vault_stake.json            (Anchor IDL — program interface definition)
-#   - vault_stake_auto.json       (Anchor IDL — program interface definition)
 #   - vault_mint.ts               (TypeScript types generated from the IDL)
 #   - vault_stake.ts              (TypeScript types generated from the IDL)
-#   - vault_stake_auto.ts         (TypeScript types generated from the IDL)
 #   - checksums.txt               (SHA-256 of all release artifacts)
 #
 # Use checksums.txt to verify that the buffer uploaded to Squads matches the
