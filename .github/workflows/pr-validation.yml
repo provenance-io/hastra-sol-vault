@@ -57,7 +57,6 @@ jobs:
     - name: Rebuild stake programs with testing feature
       run: |
         cargo build-sbf --manifest-path programs/vault-stake/Cargo.toml --features testing
-        cargo build-sbf --manifest-path programs/vault-stake-auto/Cargo.toml --features testing
 
     - name: Setup solana node
       run: |

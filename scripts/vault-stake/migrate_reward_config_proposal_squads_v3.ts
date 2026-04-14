@@ -124,6 +124,11 @@ const args = yargs(process.argv.slice(2))
         description:
             "Used when on-chain max_total_rewards is still zero (raw token units). Default: 1e13.",
     })
+    .option("transaction_index", {
+        type: "number",
+        description:
+            "Optional override for Squads next transaction index. Use when multisig account layout cannot be decoded.",
+    })
     .parseSync();
 
 // ----------------------------------------------------------------------------
@@ -200,10 +205,32 @@ async function main() {
 
     // --- Next transaction index -----------------------------------------------
 
-    const msAccountInfo = await connection.getAccountInfo(msPDA);
-    if (!msAccountInfo) throw new Error(`Multisig account not found: ${msPDA.toBase58()}`);
-    const currentTxIndex = msAccountInfo.data.readUInt32LE(12);
-    const nextTxIndex = currentTxIndex + 1;
+    let nextTxIndex: number;
+    if (args.transaction_index !== undefined) {
+        nextTxIndex = args.transaction_index;
+    } else {
+        const msAccountInfo = await connection.getAccountInfo(msPDA);
+        if (!msAccountInfo) {
+            throw new Error(`Multisig account not found: ${msPDA.toBase58()}`);
+        }
+        if (!msAccountInfo.owner.equals(SQUADS_V3_PROGRAM_ID)) {
+            throw new Error(
+                `Account ${msPDA.toBase58()} is owned by ${msAccountInfo.owner.toBase58()}, not Squads v3 program ` +
+                    `${SQUADS_V3_PROGRAM_ID.toBase58()}. Did you pass the vault PDA instead of the multisig PDA?`
+            );
+        }
+        const data = msAccountInfo.data;
+        if (data.length < 16) {
+            throw new Error(
+                `Account ${msPDA.toBase58()} data length ${data.length} is too small for Squads v3 multisig layout ` +
+                    `(need at least 16 bytes to read transaction_index at offset 12). ` +
+                    `Did you pass the vault PDA instead of the multisig account? ` +
+                    `Or pass --transaction_index explicitly.`
+            );
+        }
+        const currentTxIndex = data.readUInt32LE(12);
+        nextTxIndex = currentTxIndex + 1;
+    }
 
     const txIndexBuf = Buffer.alloc(4);
     txIndexBuf.writeUInt32LE(nextTxIndex);
