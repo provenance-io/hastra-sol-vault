@@ -14,7 +14,7 @@ cluster = "localnet"
 wallet = "~/.config/solana/hastra-localnet-id.json"
 
 [workspace]
-members = ["programs/vault-stake", "programs/vault-stake-auto", "programs/vault-mint"]
+members = ["programs/vault-stake", "programs/vault-mint"]
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"

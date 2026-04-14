@@ -18,7 +18,6 @@ import {
 } from "@solana/spl-token";
 import {VaultMint} from "../../target/types/vault_mint";
 import {VaultStake} from "../../target/types/vault_stake";
-import {VaultStakeAuto} from "../../target/types/vault_stake_auto";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -104,7 +103,7 @@ async function main() {
     console.log("📦 Loading programs...");
     const mintProgram = anchor.workspace.VaultMint as Program<VaultMint>;
     const stakeProgram = anchor.workspace.VaultStake as Program<VaultStake>;
-    const stakeAutoProgram = anchor.workspace.VaultStakeAuto as Program<VaultStakeAuto>;
+    const stakeAutoProgram = anchor.workspace.VaultStakeAuto as Program<VaultStake>;
 
     console.log("  Vault-Mint Program: ", mintProgram.programId.toBase58());
     console.log("  Vault-Stake Program:", stakeProgram.programId.toBase58());

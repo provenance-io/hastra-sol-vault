@@ -131,9 +131,9 @@ setup_auto_metaplex() {
 # ---------------------------------------------------------------------------
 while true; do
   MY_KEY=$(solana-keygen pubkey "$KEYPAIR")
-  VAULT_MINT_PROGRAM_ID=$(grep -oE 'declare_id!\("([A-Za-z0-9]+)"\);' ../programs/vault-mint/src/lib.rs | grep -oE '"([A-Za-z0-9]+)"' | tr -d '"')
-  VAULT_STAKE_PROGRAM_ID=$(grep -oE 'declare_id!\("([A-Za-z0-9]+)"\);' ../programs/vault-stake/src/lib.rs | grep -oE '"([A-Za-z0-9]+)"' | tr -d '"')
-  VAULT_STAKE_AUTO_PROGRAM_ID=$(grep -oE 'declare_id!\("([A-Za-z0-9]+)"\);' ../programs/vault-stake-auto/src/lib.rs | grep -oE '"([A-Za-z0-9]+)"' | tr -d '"')
+  VAULT_MINT_PROGRAM_ID=$(resolve_program_id "vault_mint" "../programs/vault-mint/src/lib.rs")
+  VAULT_STAKE_PROGRAM_ID=$(resolve_program_id "vault_stake" "../programs/vault-stake/src/lib.rs")
+  VAULT_STAKE_AUTO_PROGRAM_ID=$(resolve_program_id "vault_stake_auto" "../programs/vault-stake-auto/src/lib.rs")
 
   SOL_BALANCE=$(solana balance --url "$SOLANA_URL" --keypair "$KEYPAIR" 2>/dev/null || echo "0 SOL")
   solana config get

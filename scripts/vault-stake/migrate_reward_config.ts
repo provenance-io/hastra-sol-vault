@@ -46,12 +46,24 @@ const args = yargs(process.argv.slice(2))
         description:
             "Used when on-chain max_total_rewards is still zero (raw token units). Default: 1e13.",
     })
+    .option("program_id", {
+        type: "string",
+        description: "Optional program id override (use vault-stake script against stake-auto deployment).",
+    })
     .parseSync();
 
 async function main() {
     const provider = AnchorProvider.env();
     anchor.setProvider(provider);
-    const program = anchor.workspace.VaultStake as Program<VaultStake>;
+    const workspaceProgram = anchor.workspace.VaultStake as Program<VaultStake>;
+    const resolvedIdl = JSON.parse(JSON.stringify(workspaceProgram.idl));
+    if (args.program_id) {
+        resolvedIdl.address = args.program_id;
+        if (resolvedIdl.metadata) {
+            resolvedIdl.metadata.address = args.program_id;
+        }
+    }
+    const program = new anchor.Program(resolvedIdl as anchor.Idl, provider) as Program<VaultStake>;
 
     const newBps = args.max_reward_bps;
     if (newBps <= 0 || newBps > 10_000) {
@@ -95,7 +107,7 @@ async function main() {
 
     const signer = provider.wallet.publicKey;
 
-    console.log("=== migrate_reward_config (vault-stake) ===\n");
+    console.log("=== migrate_reward_config (vault-stake compatible) ===\n");
     console.log("Program ID:            ", program.programId.toBase58());
     console.log("StakeConfig PDA:       ", stakeConfigPda.toBase58());
     console.log("StakeRewardConfig PDA: ", stakeRewardConfigPda.toBase58());

@@ -150,10 +150,8 @@ Scripts:
 
 | Path                                                                   | When to use                                                        |
 | ---------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `scripts/vault-stake/migrate_reward_config.ts`                         | PRIME pool migration path; calls `migrate_reward_config` directly. |
-| `scripts/vault-stake-auto/migrate_reward_config.ts`                    | AUTO pool migration path; calls `migrate_reward_config` directly.  |
-| `scripts/vault-stake/migrate_reward_config_proposal_squads_v3.ts`      | PRIME pool Squads v3 proposal helper for `migrate_reward_config`.  |
-| `scripts/vault-stake-auto/migrate_reward_config_proposal_squads_v3.ts` | AUTO pool Squads v3 proposal helper for `migrate_reward_config`.   |
+| `scripts/vault-stake/migrate_reward_config.ts`                         | Direct migration path; use default program id for PRIME, or pass `--program_id <VAULT_STAKE_AUTO_PROGRAM_ID>` for AUTO. |
+| `scripts/vault-stake/migrate_reward_config_proposal_squads_v3.ts`      | Squads v3 proposal helper; pass the target program id (PRIME or AUTO) via script inputs. |
 
 
 Example (local wallet is upgrade authority, set multiple fields in one run):
@@ -169,8 +167,9 @@ Example (Squads v3 proposal with multiple updates):
 
 ```bash
 ANCHOR_PROVIDER_URL=https://api.devnet.solana.com ANCHOR_WALLET=~/.config/solana/squad-member.json \
-  yarn ts-node scripts/vault-stake-auto/migrate_reward_config_proposal_squads_v3.ts \
+  yarn ts-node scripts/vault-stake/migrate_reward_config_proposal_squads_v3.ts \
     --multisig_pda <SQUADS_V3_MULTISIG_PDA> \
+    --program_id <VAULT_STAKE_OR_AUTO_PROGRAM_ID> \
     --max_reward_bps 90 \
     --max_period_rewards 1000000000000
 ```
@@ -224,7 +223,7 @@ Price configuration lives in a dedicated PDA with seeds `[b"stake_price_config",
 | `set_price_for_testing`   | Program upgrade authority | Directly sets `price` and `price_timestamp`. For localnet testing only — not for production use.                                 |
 
 
-The same instruction set exists on **vault-stake-auto** (AUTO). Operational scripts mirror `scripts/vault-stake/` under `scripts/vault-stake-auto/` (e.g. `initialize_price_config_proposal_squads_v3.ts`, `verify_price.ts`).
+The same instruction set exists on **vault-stake-auto** (AUTO). Operational tooling is unified under `scripts/vault-stake/`; target AUTO by passing `--program_id <VAULT_STAKE_AUTO_PROGRAM_ID>` where supported.
 
 ### Staleness Protection
 

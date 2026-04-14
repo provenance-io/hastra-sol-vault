@@ -124,6 +124,10 @@ const args = yargs(process.argv.slice(2))
         description:
             "Used when on-chain max_total_rewards is still zero (raw token units). Default: 1e13.",
     })
+    .option("program_id", {
+        type: "string",
+        description: "Optional program id override (use vault-stake script against stake-auto deployment).",
+    })
     .option("transaction_index", {
         type: "number",
         description:
@@ -137,13 +141,22 @@ const args = yargs(process.argv.slice(2))
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
-const program = anchor.workspace.VaultStake as Program<VaultStake>;
+const workspaceProgram = anchor.workspace.VaultStake as Program<VaultStake>;
 
 // ----------------------------------------------------------------------------
 // Main
 // ----------------------------------------------------------------------------
 
 async function main() {
+    const resolvedIdl = JSON.parse(JSON.stringify(workspaceProgram.idl));
+    if (args.program_id) {
+        resolvedIdl.address = args.program_id;
+        if (resolvedIdl.metadata) {
+            resolvedIdl.metadata.address = args.program_id;
+        }
+    }
+    const program = new anchor.Program(resolvedIdl as anchor.Idl, provider) as Program<VaultStake>;
+
     const msPDA = new PublicKey(args.multisig_pda);
     const newBps = args.max_reward_bps;
     const connection = provider.connection;
