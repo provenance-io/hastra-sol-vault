@@ -819,9 +819,15 @@ pub fn migrate_reward_config(
 }
 
 /// Updates max_reward_bps on an existing StakeRewardConfig.
-/// Only callable by the program upgrade authority.
 pub fn update_max_reward_bps(ctx: Context<UpdateMaxRewardBps>, new_bps: u64) -> Result<()> {
-    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    // Authorization: signer must be a rewards administrator
+    require!(
+        ctx.accounts
+            .stake_config
+            .rewards_administrators
+            .contains(&ctx.accounts.signer.key()),
+        CustomErrorCode::InvalidRewardsAdministrator
+    );
     require!(
         new_bps > 0 && new_bps <= StakeRewardConfig::MAX_BPS,
         CustomErrorCode::InvalidMaxRewardBps
@@ -843,7 +849,14 @@ pub fn update_max_reward_bps(ctx: Context<UpdateMaxRewardBps>, new_bps: u64) -> 
 }
 
 pub fn update_max_period_rewards(ctx: Context<UpdateMaxPeriodRewards>, new_cap: u64) -> Result<()> {
-    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    // Authorization: signer must be a rewards administrator
+    require!(
+        ctx.accounts
+            .stake_config
+            .rewards_administrators
+            .contains(&ctx.accounts.signer.key()),
+        CustomErrorCode::InvalidRewardsAdministrator
+    );
     require!(new_cap > 0, CustomErrorCode::InvalidMaxPeriodRewards);
 
     let config = &mut ctx.accounts.stake_reward_config;
@@ -867,7 +880,14 @@ pub fn update_reward_period_seconds(
     ctx: Context<UpdateRewardPeriodSeconds>,
     new_seconds: i64,
 ) -> Result<()> {
-    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    // Authorization: signer must be a rewards administrator
+    require!(
+        ctx.accounts
+            .stake_config
+            .rewards_administrators
+            .contains(&ctx.accounts.signer.key()),
+        CustomErrorCode::InvalidRewardsAdministrator
+    );
     require!(new_seconds > 0, CustomErrorCode::InvalidRewardPeriodSeconds);
 
     let config = &mut ctx.accounts.stake_reward_config;
@@ -892,7 +912,14 @@ pub fn update_reward_period_seconds(
 /// Updates max_total_rewards on an existing StakeRewardConfig.
 /// Only callable by the program upgrade authority.
 pub fn update_max_total_rewards(ctx: Context<UpdateMaxTotalRewards>, new_cap: u64) -> Result<()> {
-    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    // Authorization: signer must be a rewards administrator
+    require!(
+        ctx.accounts
+            .stake_config
+            .rewards_administrators
+            .contains(&ctx.accounts.signer.key()),
+        CustomErrorCode::InvalidRewardsAdministrator
+    );
     let distributed = ctx.accounts.stake_reward_config.total_rewards_distributed;
     require!(
         new_cap > 0 && new_cap >= distributed,
