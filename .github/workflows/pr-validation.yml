@@ -49,6 +49,9 @@ jobs:
     - name: Install yarn dependencies
       run: yarn install --frozen-lockfile
 
+    - name: Sync Anchor program IDs to deploy keypairs
+      run: anchor keys sync
+
     - name: Anchor build
       run: anchor build
 

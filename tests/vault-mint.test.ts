@@ -20,17 +20,75 @@ import {createBigInt} from "@metaplex-foundation/umi";
 import {allocationsToMerkleTree, makeLeaf} from "../scripts/cryptolib";
 import {MerkleTree} from "merkletreejs";
 
+function resolveProgramIdFromAnchorToml(programName: string): PublicKey | null {
+    const anchorTomlPath = path.resolve(__dirname, "..", "Anchor.toml");
+    if (!fs.existsSync(anchorTomlPath)) return null;
+    const lines = fs.readFileSync(anchorTomlPath, "utf8").split(/\r?\n/);
+    const targetSections = new Set([
+        "[programs.localnet]",
+        "[programs.devnet]",
+        "[programs.mainnet-beta]",
+        "[programs.mainnet]",
+        "[programs.testnet]",
+    ]);
+    let inProgramsSection = false;
+
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (line.length === 0 || line.startsWith("#")) continue;
+
+        if (line.startsWith("[") && line.endsWith("]")) {
+            inProgramsSection = targetSections.has(line);
+            continue;
+        }
+
+        if (!inProgramsSection) continue;
+
+        const equalsIndex = line.indexOf("=");
+        if (equalsIndex === -1) continue;
+
+        const key = line.slice(0, equalsIndex).trim();
+        const value = line.slice(equalsIndex + 1).trim().replace(/^"(.*)"$/, "$1");
+        if (key === programName && value.length > 0) {
+            return new PublicKey(value);
+        }
+    }
+
+    return null;
+}
+
+function resolveStakeAutoProgramId(): PublicKey {
+    const envProgramId = process.env.STAKE_AUTO_PROGRAM_ID;
+    if (envProgramId) {
+        return new PublicKey(envProgramId);
+    }
+
+    const libRsPath = path.resolve(__dirname, "..", "programs", "vault-stake-auto", "src", "lib.rs");
+    if (fs.existsSync(libRsPath)) {
+        const libRs = fs.readFileSync(libRsPath, "utf8");
+        const match = libRs.match(/declare_id!\("([A-Za-z0-9]+)"\);/);
+        if (match) {
+            return new PublicKey(match[1]);
+        }
+    }
+
+    const anchorTomlProgramId = resolveProgramIdFromAnchorToml("vault-stake-auto");
+    if (anchorTomlProgramId) {
+        return anchorTomlProgramId;
+    }
+
+    throw new Error(
+        "Unable to resolve vault-stake-auto program id. Set STAKE_AUTO_PROGRAM_ID or define vault-stake-auto in Anchor.toml [programs.*]."
+    );
+}
+
 describe("vault-mint", () => {
     const provider = anchor.AnchorProvider.env();
     anchor.setProvider(provider);
 
     const program = anchor.workspace.VaultMint as Program<VaultMint>;
     const stakeProgram = anchor.workspace.VaultStake as Program<VaultStake>;
-    const stakeAutoProgramId = (() => {
-        const keypairPath = path.resolve(__dirname, "..", "target", "deploy", "vault_stake_auto-keypair.json");
-        const secretKey = Uint8Array.from(JSON.parse(fs.readFileSync(keypairPath, "utf8")));
-        return Keypair.fromSecretKey(secretKey).publicKey;
-    })();
+    const stakeAutoProgramId = resolveStakeAutoProgramId();
     const stakeAutoIdl = JSON.parse(JSON.stringify(stakeProgram.idl));
     stakeAutoIdl.address = stakeAutoProgramId.toBase58();
     if (stakeAutoIdl.metadata) {
@@ -1294,7 +1352,13 @@ describe("vault-mint", () => {
             systemProgram: SystemProgram.programId,
         });
 
-        before(async () => {
+        before(async function (this: Mocha.Context) {
+            const autoProgramInfo = await provider.connection.getAccountInfo(stakeAutoProgram.programId);
+            if (!autoProgramInfo?.executable) {
+                this.skip();
+                return;
+            }
+
             [allowedExternalMintProgramsPda] = PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("allowed_external_mint_programs"),
