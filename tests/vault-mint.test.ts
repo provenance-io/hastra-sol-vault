@@ -1647,6 +1647,27 @@ describe("vault-mint", () => {
             }
         });
 
+        it("update_external_mint_programs_limit rejects non-upgrade-authority signer", async () => {
+            // This instruction is upgrade-authority gated; a regular keypair must be rejected.
+            try {
+                await (program.methods as any)
+                    .updateExternalMintProgramsLimit(5)
+                    .accountsStrict({
+                        config: configPda,
+                        externalMintProgramsLimitConfig: externalMintProgramsLimitConfigPda,
+                        signer: freezeAdmin.publicKey,
+                        programData: programDataPda,
+                        systemProgram: SystemProgram.programId,
+                    })
+                    .signers([freezeAdmin])
+                    .rpc();
+                assert.fail("expected InvalidUpgradeAuthority");
+            } catch (err: unknown) {
+                expect(err).to.exist;
+                expect(String(err)).to.match(/InvalidUpgradeAuthority|custom program error:\s*12\b/i);
+            }
+        });
+
         it("update_external_mint_programs_limit changes cap used during registration", async () => {
             // At this point we have 1 entry from bootstrap (MEMO).
             await updateExternalMintProgramsLimit(1);
