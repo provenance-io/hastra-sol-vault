@@ -102,8 +102,6 @@ const main = async () => {
         stakeProgramId
     );
 
-    // AllowedExternalMintPrograms PDA from vault-mint: may be uninitialized if
-    // vault-stake is the legacy single allowed program; vault-mint handles both cases.
     const [vaultMintAllowedExternalProgramsPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [
             Buffer.from("allowed_external_mint_programs"),

@@ -522,9 +522,49 @@ pub struct RegisterAllowedExternalMintProgram<'info> {
     )]
     pub allowed_external_mint_programs: Account<'info, AllowedExternalMintPrograms>,
 
+    #[account(
+        init_if_needed,
+        payer = signer,
+        space = ExternalMintProgramsLimitConfig::LEN,
+        seeds = [b"external_mint_programs_limit", config.key().as_ref()],
+        bump
+    )]
+    pub external_mint_programs_limit_config: Account<'info, ExternalMintProgramsLimitConfig>,
+
     /// CHECK: The external program being registered as an authorized caller; must be executable
     #[account(executable)]
     pub external_program: AccountInfo<'info>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Updates the registration limit used by register_allowed_external_mint_program.
+/// Only callable by the program upgrade authority.
+#[derive(Accounts)]
+pub struct UpdateExternalMintProgramsLimit<'info> {
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, Config>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        space = ExternalMintProgramsLimitConfig::LEN,
+        seeds = [b"external_mint_programs_limit", config.key().as_ref()],
+        bump
+    )]
+    pub external_mint_programs_limit_config: Account<'info, ExternalMintProgramsLimitConfig>,
 
     #[account(mut)]
     pub signer: Signer<'info>,

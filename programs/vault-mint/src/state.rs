@@ -87,7 +87,25 @@ pub struct AllowedExternalMintPrograms {
 }
 
 impl AllowedExternalMintPrograms {
-    pub const MAX_PROGRAMS: usize = 5;
-    // 8 discriminator + 4 vec length prefix + (32 * 5 pubkeys) + 1 bump
-    pub const LEN: usize = 8 + 4 + (32 * Self::MAX_PROGRAMS) + 1;
+    // Account allocations used with Anchor's `init_if_needed` must keep a stable
+    // configured size across repeated calls. Pre-allocate enough room for the full
+    // u8 domain so registration remains idempotent and doesn't trip ConstraintSpace
+    // when existing accounts were previously expanded.
+    pub const LEN: usize = 8 + 4 + (32 * (u8::MAX as usize)) + 1;
+
+    pub fn len_for_program_count(program_count: usize) -> usize {
+        8 + 4 + (32 * program_count) + 1
+    }
+}
+
+/// Stores the active registration cap for allowed external mint programs.
+/// Kept in a separate PDA to avoid reallocating the legacy Config account.
+#[account]
+pub struct ExternalMintProgramsLimitConfig {
+    pub max_programs: u8,
+    pub bump: u8,
+}
+
+impl ExternalMintProgramsLimitConfig {
+    pub const LEN: usize = 8 + 1 + 1;
 }

@@ -533,13 +533,33 @@ async function main() {
         ],
         mintProgram.programId
     );
+    const [externalMintProgramsLimitConfigPda] = PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("external_mint_programs_limit"),
+            mintConfigPda.toBuffer(),
+        ],
+        mintProgram.programId
+    );
 
     try {
-        const tx = await mintProgram.methods
+        await (mintProgram.methods as any)
+            .updateExternalMintProgramsLimit(5)
+            .accountsStrict({
+                config: mintConfigPda,
+                externalMintProgramsLimitConfig: externalMintProgramsLimitConfigPda,
+                signer: upgradeAuthority.publicKey,
+                programData: mintProgramDataPda,
+                systemProgram: SystemProgram.programId,
+            })
+            .signers([upgradeAuthority])
+            .rpc();
+
+        const tx = await (mintProgram.methods as any)
             .registerAllowedExternalMintProgram()
             .accountsStrict({
                 config: mintConfigPda,
                 allowedExternalMintPrograms: allowedExternalMintProgramsPda,
+                externalMintProgramsLimitConfig: externalMintProgramsLimitConfigPda,
                 externalProgram: stakeAutoProgram.programId,
                 signer: upgradeAuthority.publicKey,
                 programData: mintProgramDataPda,

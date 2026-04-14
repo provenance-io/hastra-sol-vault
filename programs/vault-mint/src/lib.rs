@@ -141,11 +141,21 @@ pub mod vault_mint {
     /// Registers an additional external program as authorized to call external_program_mint.
     /// Creates the AllowedExternalMintPrograms PDA on first call (init_if_needed).
     /// Idempotent: calling with an already-registered program is a no-op.
+    /// The active cap is controlled via update_external_mint_programs_limit.
     /// Only callable by the program upgrade authority.
     pub fn register_allowed_external_mint_program(
         ctx: Context<RegisterAllowedExternalMintProgram>,
     ) -> Result<()> {
         processor::register_allowed_external_mint_program(ctx)
+    }
+
+    /// Updates the cap enforced by register_allowed_external_mint_program.
+    /// Only callable by the program upgrade authority.
+    pub fn update_external_mint_programs_limit(
+        ctx: Context<UpdateExternalMintProgramsLimit>,
+        max_programs: u8,
+    ) -> Result<()> {
+        processor::update_external_mint_programs_limit(ctx, max_programs)
     }
 
     pub fn update_vault_token_account(ctx: Context<UpdateVaultTokenAccount>) -> Result<()> {

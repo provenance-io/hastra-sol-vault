@@ -5,6 +5,8 @@ use crate::guard::validate_program_update_authority;
 use crate::state::{AllowedExternalMintPrograms, ProofNode};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::hash::hashv;
+use anchor_lang::solana_program::program::invoke;
+use anchor_lang::solana_program::system_instruction;
 use anchor_spl::token::spl_token::instruction::AuthorityType;
 use anchor_spl::token::{self, MintTo, Transfer};
 
@@ -625,7 +627,7 @@ pub fn update_vault_token_account(ctx: Context<UpdateVaultTokenAccount>) -> Resu
 
 /// Registers an additional external program as authorized to call external_program_mint.
 /// Idempotent: re-registering an already-listed program is a no-op.
-/// Enforces a cap of AllowedExternalMintPrograms::MAX_PROGRAMS entries.
+/// Enforces the configurable cap stored in ExternalMintProgramsLimitConfig.
 /// Only callable by the program upgrade authority.
 pub fn register_allowed_external_mint_program(
     ctx: Context<RegisterAllowedExternalMintProgram>,
@@ -634,6 +636,7 @@ pub fn register_allowed_external_mint_program(
 
     let program_key = ctx.accounts.external_program.key();
     let allowed = &mut ctx.accounts.allowed_external_mint_programs;
+    let limit_config = &mut ctx.accounts.external_mint_programs_limit_config;
 
     // Idempotent: skip if the program is already in the list.
     if allowed.programs.contains(&program_key) {
@@ -642,9 +645,36 @@ pub fn register_allowed_external_mint_program(
     }
 
     require!(
-        allowed.programs.len() < AllowedExternalMintPrograms::MAX_PROGRAMS,
+        allowed.programs.len() < limit_config.max_programs as usize,
         CustomErrorCode::TooManyAllowedExternalMintPrograms
     );
+
+    let required_len =
+        AllowedExternalMintPrograms::len_for_program_count(allowed.programs.len() + 1);
+    let allowed_info = allowed.to_account_info();
+    if allowed_info.data_len() < required_len {
+        let rent = Rent::get()?;
+        let required_lamports = rent.minimum_balance(required_len);
+        let current_lamports = allowed_info.lamports();
+        if current_lamports < required_lamports {
+            let delta = required_lamports
+                .checked_sub(current_lamports)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+            invoke(
+                &system_instruction::transfer(
+                    &ctx.accounts.signer.key(),
+                    &allowed_info.key(),
+                    delta,
+                ),
+                &[
+                    ctx.accounts.signer.to_account_info(),
+                    allowed_info.clone(),
+                    ctx.accounts.system_program.to_account_info(),
+                ],
+            )?;
+        }
+        allowed_info.realloc(required_len, false)?;
+    }
 
     allowed.programs.push(program_key);
     allowed.bump = ctx.bumps.allowed_external_mint_programs;
@@ -652,6 +682,25 @@ pub fn register_allowed_external_mint_program(
     msg!(
         "Registered authorized external mint program: {}",
         program_key
+    );
+    Ok(())
+}
+
+/// Updates the cap used when registering authorized external mint callers.
+/// Only callable by the program upgrade authority.
+pub fn update_external_mint_programs_limit(
+    ctx: Context<UpdateExternalMintProgramsLimit>,
+    max_programs: u8,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+
+    let limit_config = &mut ctx.accounts.external_mint_programs_limit_config;
+    limit_config.max_programs = max_programs;
+    limit_config.bump = ctx.bumps.external_mint_programs_limit_config;
+
+    msg!(
+        "Updated allowed external mint program limit to {}",
+        max_programs
     );
     Ok(())
 }

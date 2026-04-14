@@ -1279,6 +1279,7 @@ describe("vault-mint", () => {
         const TEST_FEED_ID = Array.from(Buffer.alloc(32, 0));
 
         let allowedExternalMintProgramsPda: PublicKey;
+        let externalMintProgramsLimitConfigPda: PublicKey;
         let stakeConfigPdaAuto: PublicKey;
         let vaultAuthorityPdaAuto: PublicKey;
         let stakeVaultTokenAccountConfigPdaAuto: PublicKey;
@@ -1289,18 +1290,34 @@ describe("vault-mint", () => {
         let autoShareMint: PublicKey;
         let stakeAutoVaultTokenAccount: PublicKey;
         let autoPublishRewardsId = 0;
+        let autoProgramDeployed = false;
 
         const ensureAllowListPdaInitialized = async () => {
             const info = await provider.connection.getAccountInfo(allowedExternalMintProgramsPda);
             if (info) {
                 return;
             }
-            await program.methods
+            await updateExternalMintProgramsLimit(5);
+            await (program.methods as any)
                 .registerAllowedExternalMintProgram()
                 .accountsStrict({
                     config: configPda,
                     allowedExternalMintPrograms: allowedExternalMintProgramsPda,
+                    externalMintProgramsLimitConfig: externalMintProgramsLimitConfigPda,
                     externalProgram: MEMO_PROGRAM_ID,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
+        };
+
+        const updateExternalMintProgramsLimit = async (maxPrograms: number) => {
+            await (program.methods as any)
+                .updateExternalMintProgramsLimit(maxPrograms)
+                .accountsStrict({
+                    config: configPda,
+                    externalMintProgramsLimitConfig: externalMintProgramsLimitConfigPda,
                     signer: provider.wallet.publicKey,
                     programData: programDataPda,
                     systemProgram: SystemProgram.programId,
@@ -1352,13 +1369,7 @@ describe("vault-mint", () => {
             systemProgram: SystemProgram.programId,
         });
 
-        before(async function (this: Mocha.Context) {
-            const autoProgramInfo = await provider.connection.getAccountInfo(stakeAutoProgram.programId);
-            if (!autoProgramInfo?.executable) {
-                this.skip();
-                return;
-            }
-
+        before(async () => {
             [allowedExternalMintProgramsPda] = PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("allowed_external_mint_programs"),
@@ -1366,6 +1377,22 @@ describe("vault-mint", () => {
                 ],
                 program.programId
             );
+            [externalMintProgramsLimitConfigPda] = PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("external_mint_programs_limit"),
+                    configPda.toBuffer(),
+                ],
+                program.programId
+            );
+
+            await ensureAllowListPdaInitialized();
+
+            const autoProgramInfo = await provider.connection.getAccountInfo(stakeAutoProgram.programId);
+            autoProgramDeployed = !!autoProgramInfo?.executable;
+            if (!autoProgramDeployed) {
+                return;
+            }
+
             [stakeConfigPdaAuto] = PublicKey.findProgramAddressSync(
                 [Buffer.from("stake_config")],
                 stakeAutoProgram.programId
@@ -1476,8 +1503,6 @@ describe("vault-mint", () => {
                 fundVault
             );
 
-            await ensureAllowListPdaInitialized();
-
             await stakeAutoProgram.methods
                 .initialize([freezeAdmin.publicKey], [rewardsAdmin.publicKey])
                 .accountsStrict({
@@ -1525,7 +1550,11 @@ describe("vault-mint", () => {
             );
         });
 
-        it("rejects CPI when calling_program is not legacy and not on the allow-list", async () => {
+        it("rejects CPI when calling_program is not legacy and not on the allow-list", async function () {
+            if (!autoProgramDeployed) {
+                this.skip();
+                return;
+            }
             const vaultBal = (await getAccount(provider.connection, stakeAutoVaultTokenAccount))
                 .amount;
             const amount = (vaultBal * BigInt(50)) / BigInt(10_000);
@@ -1546,12 +1575,17 @@ describe("vault-mint", () => {
             }
         });
 
-        it("allows CPI after register_allowed_external_mint_program adds the caller", async () => {
-            await program.methods
+        it("allows CPI after register_allowed_external_mint_program adds the caller", async function () {
+            if (!autoProgramDeployed) {
+                this.skip();
+                return;
+            }
+            await (program.methods as any)
                 .registerAllowedExternalMintProgram()
                 .accountsStrict({
                     config: configPda,
                     allowedExternalMintPrograms: allowedExternalMintProgramsPda,
+                    externalMintProgramsLimitConfig: externalMintProgramsLimitConfigPda,
                     externalProgram: stakeAutoProgram.programId,
                     signer: provider.wallet.publicKey,
                     programData: programDataPda,
@@ -1581,12 +1615,13 @@ describe("vault-mint", () => {
             const before = await program.account.allowedExternalMintPrograms.fetch(
                 allowedExternalMintProgramsPda
             );
-            await program.methods
+            await (program.methods as any)
                 .registerAllowedExternalMintProgram()
                 .accountsStrict({
                     config: configPda,
                     allowedExternalMintPrograms: allowedExternalMintProgramsPda,
-                    externalProgram: stakeAutoProgram.programId,
+                    externalMintProgramsLimitConfig: externalMintProgramsLimitConfigPda,
+                    externalProgram: MEMO_PROGRAM_ID,
                     signer: provider.wallet.publicKey,
                     programData: programDataPda,
                     systemProgram: SystemProgram.programId,
@@ -1602,7 +1637,44 @@ describe("vault-mint", () => {
             );
         });
 
-        it("register_allowed_external_mint_program enforces MAX_PROGRAMS (5)", async () => {
+        it("update_external_mint_programs_limit rejects values above u8 range", async () => {
+            try {
+                await updateExternalMintProgramsLimit(256);
+                assert.fail("expected InvalidAllowedExternalMintProgramsLimit");
+            } catch (err: unknown) {
+                expect(err).to.exist;
+                expect(String(err)).to.match(/out of range|expected range|u8|InvalidAllowedExternalMintProgramsLimit|custom program error:\s*35\b/i);
+            }
+        });
+
+        it("update_external_mint_programs_limit changes cap used during registration", async () => {
+            // At this point we have 1 entry from bootstrap (MEMO).
+            await updateExternalMintProgramsLimit(1);
+
+            try {
+                await (program.methods as any)
+                    .registerAllowedExternalMintProgram()
+                    .accountsStrict({
+                        config: configPda,
+                        allowedExternalMintPrograms: allowedExternalMintProgramsPda,
+                        externalMintProgramsLimitConfig: externalMintProgramsLimitConfigPda,
+                        externalProgram: stakeProgram.programId,
+                        signer: provider.wallet.publicKey,
+                        programData: programDataPda,
+                        systemProgram: SystemProgram.programId,
+                    })
+                    .rpc();
+                assert.fail("expected TooManyAllowedExternalMintPrograms at cap=1");
+            } catch (err: unknown) {
+                expect(err).to.exist;
+                expect(String(err)).to.match(/TooManyAllowedExternalMintPrograms|custom program error:\s*29\b/i);
+            }
+
+            // Restore default cap so follow-on tests can fill to the configured maximum for this suite.
+            await updateExternalMintProgramsLimit(5);
+        });
+
+        it("register_allowed_external_mint_program enforces configured limit (5)", async () => {
             const candidatePrograms = [
                 MEMO_PROGRAM_ID,
                 stakeProgram.programId,
@@ -1613,11 +1685,12 @@ describe("vault-mint", () => {
             ];
 
             const registerOne = (externalProgram: PublicKey) =>
-                program.methods
+                (program.methods as any)
                     .registerAllowedExternalMintProgram()
                     .accountsStrict({
                         config: configPda,
                         allowedExternalMintPrograms: allowedExternalMintProgramsPda,
+                        externalMintProgramsLimitConfig: externalMintProgramsLimitConfigPda,
                         externalProgram,
                         signer: provider.wallet.publicKey,
                         programData: programDataPda,

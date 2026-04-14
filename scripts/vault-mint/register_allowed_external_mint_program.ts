@@ -45,6 +45,13 @@ const main = async () => {
         ],
         program.programId
     );
+    const [externalMintProgramsLimitConfigPda] = PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("external_mint_programs_limit"),
+            configPda.toBuffer()
+        ],
+        program.programId
+    );
 
     // Derive the program data PDA (for upgrade-authority validation)
     const BPF_LOADER_UPGRADEABLE_ID = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
@@ -56,15 +63,17 @@ const main = async () => {
     console.log("Vault Mint Program ID:                    ", program.programId.toBase58());
     console.log("Config PDA:                               ", configPda.toBase58());
     console.log("AllowedExternalMintPrograms PDA:           ", allowedExternalMintProgramsPda.toBase58());
+    console.log("ExternalMintProgramsLimitConfig PDA:      ", externalMintProgramsLimitConfigPda.toBase58());
     console.log("External Program to Register:              ", externalProgram.toBase58());
     console.log("Signer (upgrade authority):                ", signer.toBase58());
     console.log("Program Data PDA:                          ", programDataPda.toBase58());
 
-    const tx = await program.methods
+    const tx = await (program.methods as any)
         .registerAllowedExternalMintProgram()
         .accountsStrict({
             config: configPda,
             allowedExternalMintPrograms: allowedExternalMintProgramsPda,
+            externalMintProgramsLimitConfig: externalMintProgramsLimitConfigPda,
             externalProgram: externalProgram,
             signer: signer,
             programData: programDataPda,

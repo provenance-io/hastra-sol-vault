@@ -70,6 +70,11 @@ const args = yargs(process.argv.slice(2))
         description: "Squads v3 multisig account address",
         required: true,
     })
+    .option("program_id", {
+        type: "string",
+        description:
+            "Optional vault-stake program id override. Use this to target devnet/prod deployments when local IDL address differs.",
+    })
     .option("max_reward_bps", {
         type: "number",
         description: "Set max reward BPS (1..10000).",
@@ -103,7 +108,20 @@ const args = yargs(process.argv.slice(2))
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
-const program = anchor.workspace.VaultStake as Program<VaultStake>;
+const workspaceProgram = anchor.workspace.VaultStake as Program<VaultStake>;
+
+// Resolve program id deterministically from an explicit override when provided.
+// This avoids accidentally targeting a local build id embedded in target/idl.
+const resolvedIdl = JSON.parse(JSON.stringify(workspaceProgram.idl));
+if (args.program_id) {
+    // Validate key format eagerly to fail fast with a clear CLI error.
+    new PublicKey(args.program_id);
+    resolvedIdl.address = args.program_id;
+    if (resolvedIdl.metadata) {
+        resolvedIdl.metadata.address = args.program_id;
+    }
+}
+const program = new anchor.Program(resolvedIdl as anchor.Idl, provider) as Program<VaultStake>;
 
 async function main() {
     const msPda = new PublicKey(args.multisig_pda);

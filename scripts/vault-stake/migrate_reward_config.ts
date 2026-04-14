@@ -1,5 +1,5 @@
 /**
- * update_reward_config.ts
+ * migrate_reward_config.ts
  *
  * Calls `migrate_reward_config` on vault-stake with the connected wallet as signer.
  * The wallet must be the program upgrade authority (typical for localnet / direct ops).
@@ -10,7 +10,7 @@
  *
  * Usage:
  *   ANCHOR_PROVIDER_URL=http://127.0.0.1:8899 ANCHOR_WALLET=~/.config/solana/id.json \
- *   yarn ts-node scripts/vault-stake/update_reward_config.ts --max_reward_bps 75
+ *   yarn ts-node scripts/vault-stake/migrate_reward_config.ts --max_reward_bps 75
  */
 
 import * as anchor from "@coral-xyz/anchor";

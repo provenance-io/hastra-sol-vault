@@ -146,6 +146,10 @@ async function main() {
         [Buffer.from("allowed_external_mint_programs"), configPda.toBuffer()],
         program.programId
     );
+    const [externalMintProgramsLimitConfigPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("external_mint_programs_limit"), configPda.toBuffer()],
+        program.programId
+    );
 
     const [programDataPda] = PublicKey.findProgramAddressSync(
         [program.programId.toBuffer()],
@@ -214,6 +218,7 @@ async function main() {
     console.log("  ↑ verify this matches the on-chain upgrade authority");
     console.log("Config PDA:                             ", configPda.toBase58());
     console.log("AllowedExternalMintPrograms PDA:       ", allowedExternalMintProgramsPda.toBase58());
+    console.log("ExternalMintProgramsLimitConfig PDA:   ", externalMintProgramsLimitConfigPda.toBase58());
     console.log("External program to register:          ", externalProgram.toBase58());
     console.log("Program Data:                           ", programDataPda.toBase58());
     console.log("Transaction PDA:                        ", txPda.toBase58());
@@ -222,11 +227,12 @@ async function main() {
 
     // --- Build inner instruction ----------------------------------------------
 
-    const innerIx = await program.methods
+    const innerIx = await (program.methods as any)
         .registerAllowedExternalMintProgram()
         .accountsStrict({
             config: configPda,
             allowedExternalMintPrograms: allowedExternalMintProgramsPda,
+            externalMintProgramsLimitConfig: externalMintProgramsLimitConfigPda,
             externalProgram: externalProgram,
             signer: vaultPda,
             programData: programDataPda,

@@ -117,7 +117,7 @@ This design ensures that yield generated from vault tokens is fairly distributed
 
 The staking programs (`vault-stake` for PRIME and `vault-stake-auto` for AUTO) allow users to deposit wYLDS and mint share tokens. Rewards increase the value backing each share token by minting additional wYLDS into the pool vault.
 
-Staking rewards are published via `publish_rewards`, which CPIs into **vault-mint** (`external_program_mint`) to mint additional wYLDS into the pool vault. The mint program must authorize the caller: **PRIME** uses the legacy `allowed_external_mint_program` on `Config`; **AUTO** is registered on the `**AllowedExternalMintPrograms`** PDA (`register_allowed_external_mint_program`). Users realize rewards when they redeem: the stake program burns PRIME or AUTO and transfers wYLDS per the oracle price.
+Staking rewards are published via `publish_rewards`, which CPIs into **vault-mint** (`external_program_mint`) to mint additional wYLDS into the pool vault. The mint program must authorize the caller: **PRIME** uses the legacy `allowed_external_mint_program` on `Config`; **AUTO** is registered on the `**AllowedExternalMintPrograms`** PDA (`register_allowed_external_mint_program`). The allow-list registration cap is managed separately via `update_external_mint_programs_limit` (script: `scripts/vault-mint/update_external_mint_programs_limit.ts`, range `0..=255`; `0` disables new registrations). Users realize rewards when they redeem: the stake program burns PRIME or AUTO and transfers wYLDS per the oracle price.
 
 ### Reward publication limits (`StakeRewardConfig`)
 

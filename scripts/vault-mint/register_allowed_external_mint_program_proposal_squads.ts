@@ -16,7 +16,7 @@
  *   ANCHOR_WALLET=~/.config/solana/squad-member.json \
  *   yarn ts-node scripts/vault-mint/register_allowed_external_mint_program_proposal_squads.ts \
  *     --multisig_pda <SQUADS_V4_MULTISIG_PDA> \
- *     --external_program <VAULT_STAKE_AUTO_PROGRAM_ID>
+ *     --external_program <VAULT_STAKE_PROGRAM_ID>
  *
  * Optional overrides (same semantics as initialize_price_config_proposal):
  *   --vault_pda <PUBKEY>        when upgrade authority differs from SDK-derived vault index 0
@@ -85,6 +85,10 @@ async function main() {
         [Buffer.from("allowed_external_mint_programs"), configPda.toBuffer()],
         program.programId
     );
+    const [externalMintProgramsLimitConfigPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("external_mint_programs_limit"), configPda.toBuffer()],
+        program.programId
+    );
 
     const [programData] = PublicKey.findProgramAddressSync(
         [program.programId.toBuffer()],
@@ -109,16 +113,18 @@ async function main() {
     console.log("Vault PDA (signer):                     ", vaultPda.toBase58());
     console.log("Config PDA:                             ", configPda.toBase58());
     console.log("AllowedExternalMintPrograms PDA:       ", allowedExternalMintProgramsPda.toBase58());
+    console.log("ExternalMintProgramsLimitConfig PDA:   ", externalMintProgramsLimitConfigPda.toBase58());
     console.log("External program to register:          ", externalProgram.toBase58());
     console.log("Program Data:                           ", programData.toBase58());
     console.log("Proposal index:                         ", transactionIndex.toString());
     console.log();
 
-    const ix = await program.methods
+    const ix = await (program.methods as any)
         .registerAllowedExternalMintProgram()
         .accountsStrict({
             config: configPda,
             allowedExternalMintPrograms: allowedExternalMintProgramsPda,
+            externalMintProgramsLimitConfig: externalMintProgramsLimitConfigPda,
             externalProgram: externalProgram,
             signer: vaultPda,
             programData: programData,

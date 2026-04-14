@@ -77,6 +77,8 @@ describe("vault-stake", () => {
     let programDataPda: PublicKey;
     /** vault-mint AllowedExternalMintPrograms PDA (passed through on publish_rewards CPI). */
     let allowedExternalMintProgramsPda: PublicKey;
+    /** vault-mint cap config PDA controlling allow-list capacity checks. */
+    let externalMintProgramsLimitConfigPda: PublicKey;
 
     let user: Keypair;
     let user2: Keypair;
@@ -184,6 +186,43 @@ describe("vault-stake", () => {
             .accountsStrict(stakeRewardConfigUpgradeAuthorityAccounts())
             .rpc();
         await sleep(REWARD_COOLDOWN_TEST_SLEEP_MS);
+    };
+
+    /**
+     * Ensures vault-mint's AllowedExternalMintPrograms PDA is allocated before
+     * the first publish_rewards CPI path is exercised.
+     */
+    const ensureAllowedExternalMintProgramsPdaInitialized = async () => {
+        const info = await provider.connection.getAccountInfo(allowedExternalMintProgramsPda);
+        if (info) {
+            return;
+        }
+        const [mintProgramDataPda] = PublicKey.findProgramAddressSync(
+            [mintProgram.programId.toBuffer()],
+            BPF_LOADER_UPGRADEABLE_ID
+        );
+        await (mintProgram.methods as any)
+            .updateExternalMintProgramsLimit(5)
+            .accountsStrict({
+                config: configPda,
+                externalMintProgramsLimitConfig: externalMintProgramsLimitConfigPda,
+                signer: provider.wallet.publicKey,
+                programData: mintProgramDataPda,
+                systemProgram: SystemProgram.programId,
+            })
+            .rpc();
+        await (mintProgram.methods as any)
+            .registerAllowedExternalMintProgram()
+            .accountsStrict({
+                config: configPda,
+                allowedExternalMintPrograms: allowedExternalMintProgramsPda,
+                externalMintProgramsLimitConfig: externalMintProgramsLimitConfigPda,
+                externalProgram: program.programId,
+                signer: provider.wallet.publicKey,
+                programData: mintProgramDataPda,
+                systemProgram: SystemProgram.programId,
+            })
+            .rpc();
     };
 
     const vaultSummary = (title: string) => {
@@ -310,6 +349,13 @@ describe("vault-stake", () => {
         [allowedExternalMintProgramsPda] = PublicKey.findProgramAddressSync(
             [
                 Buffer.from("allowed_external_mint_programs"),
+                configPda.toBuffer(),
+            ],
+            mintProgram.programId
+        );
+        [externalMintProgramsLimitConfigPda] = PublicKey.findProgramAddressSync(
+            [
+                Buffer.from("external_mint_programs_limit"),
                 configPda.toBuffer(),
             ],
             mintProgram.programId
@@ -1230,6 +1276,7 @@ describe("vault-stake", () => {
         });
 
         it("pause mint program", async () => {
+            await ensureAllowedExternalMintProgramsPdaInitialized();
             await mintProgram.methods
                 .pause(true)
                 .accountsStrict({
@@ -2113,44 +2160,6 @@ describe("vault-stake", () => {
                 } catch (err) {
                     expect(err).to.exist;
                 }
-            });
-
-            it("set-style sequential updates apply all three reward config fields", async () => {
-                const newMaxPeriodRewards = new BN("1000000000123");
-                const newRewardPeriodSeconds = new BN(1337);
-                const cfgBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
-                const distributed = new BN(cfgBefore.totalRewardsDistributed.toString());
-                const newMaxTotalRewards = distributed.add(new BN("2000000"));
-
-                await program.methods
-                    .updateMaxPeriodRewards(newMaxPeriodRewards)
-                    .accountsStrict(stakeRewardConfigAdminAccounts())
-                    .rpc();
-                await program.methods
-                    .updateRewardPeriodSeconds(newRewardPeriodSeconds)
-                    .accountsStrict(updateRewardPeriodSecondsAccounts())
-                    .rpc();
-                await program.methods
-                    .updateMaxTotalRewards(newMaxTotalRewards)
-                    .accountsStrict(stakeRewardConfigAdminAccounts())
-                    .rpc();
-
-                const cfgAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
-                assert.equal(
-                    cfgAfter.maxPeriodRewards.toString(),
-                    newMaxPeriodRewards.toString(),
-                    "max_period_rewards should match the set value"
-                );
-                assert.equal(
-                    cfgAfter.rewardPeriodSeconds.toString(),
-                    newRewardPeriodSeconds.toString(),
-                    "reward_period_seconds should match the set value"
-                );
-                assert.equal(
-                    cfgAfter.maxTotalRewards.toString(),
-                    newMaxTotalRewards.toString(),
-                    "max_total_rewards should match the set value"
-                );
             });
 
             it("set-style sequential updates apply all three reward config fields", async () => {
