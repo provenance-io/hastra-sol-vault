@@ -9,3 +9,4 @@ node_modules
 .idea
 *.log
 test-ledger/
+/scripts/.local-validator

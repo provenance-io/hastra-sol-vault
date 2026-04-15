@@ -21,6 +21,11 @@ import {
 import {assert, expect} from "chai";
 import BN from "bn.js";
 import {createBigInt} from "@metaplex-foundation/umi";
+import {
+    REWARD_COOLDOWN_TEST_SLEEP_MS,
+    STAKE_REWARD_CONFIG_DEFAULTS,
+    sleep,
+} from "./helpers";
 
 describe("vault-stake", () => {
     const provider = anchor.AnchorProvider.env();
@@ -70,6 +75,10 @@ describe("vault-stake", () => {
     let vaultAuthorityPda: PublicKey;
     let freezeAuthorityPda: PublicKey;
     let programDataPda: PublicKey;
+    /** vault-mint AllowedExternalMintPrograms PDA (passed through on publish_rewards CPI). */
+    let allowedExternalMintProgramsPda: PublicKey;
+    /** vault-mint cap config PDA controlling allow-list capacity checks. */
+    let externalMintProgramsLimitConfigPda: PublicKey;
 
     let user: Keypair;
     let user2: Keypair;
@@ -77,6 +86,8 @@ describe("vault-stake", () => {
     let userVaultTokenAccount: PublicKey;
     let user2MintTokenAccount: PublicKey;
     let user2VaultTokenAccount: PublicKey;
+    /** User 2's USDC (vault) token account — set in initialize; not necessarily the ATA. */
+    let user2MintProgramVaultedTokenAccount: PublicKey;
     let mintProgramVaultTokenAccount: PublicKey;
     let mintProgramVaultTokenAccountOwner: PublicKey;
     let externalMintAuthorityPda: PublicKey;
@@ -151,6 +162,65 @@ describe("vault-stake", () => {
                 stakePriceConfig: stakePriceConfigPda,
                 signer: provider.wallet.publicKey,
                 programData: programDataPda,
+            })
+            .rpc();
+    };
+
+    /** Accounts for upgrade-authority instructions that mutate StakeRewardConfig. */
+    const stakeRewardConfigUpgradeAuthorityAccounts = () => ({
+        stakeConfig: stakeConfigPda,
+        stakeRewardConfig: stakeRewardConfigPda,
+        signer: provider.wallet.publicKey,
+        programData: programDataPda,
+    });
+
+    /**
+     * Shorten reward cooldown to 1s so tests can chain publish_rewards without waiting for the
+     * default ~59m period. Waits so on-chain unix time advances past last_reward + period.
+     */
+    const ensureShortRewardCooldownForTests = async () => {
+        const info = await provider.connection.getAccountInfo(stakeRewardConfigPda);
+        if (!info) return;
+        await program.methods
+            .updateRewardPeriodSeconds(new BN(1))
+            .accountsStrict(stakeRewardConfigUpgradeAuthorityAccounts())
+            .rpc();
+        await sleep(REWARD_COOLDOWN_TEST_SLEEP_MS);
+    };
+
+    /**
+     * Ensures vault-mint's AllowedExternalMintPrograms PDA is allocated before
+     * the first publish_rewards CPI path is exercised.
+     */
+    const ensureAllowedExternalMintProgramsPdaInitialized = async () => {
+        const info = await provider.connection.getAccountInfo(allowedExternalMintProgramsPda);
+        if (info) {
+            return;
+        }
+        const [mintProgramDataPda] = PublicKey.findProgramAddressSync(
+            [mintProgram.programId.toBuffer()],
+            BPF_LOADER_UPGRADEABLE_ID
+        );
+        await (mintProgram.methods as any)
+            .updateExternalMintProgramsLimit(5)
+            .accountsStrict({
+                config: configPda,
+                externalMintProgramsLimitConfig: externalMintProgramsLimitConfigPda,
+                signer: provider.wallet.publicKey,
+                programData: mintProgramDataPda,
+                systemProgram: SystemProgram.programId,
+            })
+            .rpc();
+        await (mintProgram.methods as any)
+            .registerAllowedExternalMintProgram()
+            .accountsStrict({
+                config: configPda,
+                allowedExternalMintPrograms: allowedExternalMintProgramsPda,
+                externalMintProgramsLimitConfig: externalMintProgramsLimitConfigPda,
+                externalProgram: program.programId,
+                signer: provider.wallet.publicKey,
+                programData: mintProgramDataPda,
+                systemProgram: SystemProgram.programId,
             })
             .rpc();
     };
@@ -276,12 +346,31 @@ describe("vault-stake", () => {
             BPF_LOADER_UPGRADEABLE_ID
         );
 
+        [allowedExternalMintProgramsPda] = PublicKey.findProgramAddressSync(
+            [
+                Buffer.from("allowed_external_mint_programs"),
+                configPda.toBuffer(),
+            ],
+            mintProgram.programId
+        );
+        [externalMintProgramsLimitConfigPda] = PublicKey.findProgramAddressSync(
+            [
+                Buffer.from("external_mint_programs_limit"),
+                configPda.toBuffer(),
+            ],
+            mintProgram.programId
+        );
+
         // Create vault token account
+        // Pass an explicit keypair so createAccount uses SystemProgram + initialize (not ATA create).
+        // Omitting the keypair makes @solana/spl-token use createAssociatedTokenAccount, which can
+        // fail with InstructionError::IllegalOwner for some mint / toolchain combinations.
         vaultTokenAccount = await createAccount(
             provider.connection,
             provider.wallet.payer,
             vaultedToken,
-            provider.wallet.publicKey
+            provider.wallet.publicKey,
+            Keypair.generate()
         );
 
         // Create user token accounts with user as owner
@@ -289,28 +378,32 @@ describe("vault-stake", () => {
             provider.connection,
             provider.wallet.payer,
             mintedToken,
-            user.publicKey
+            user.publicKey,
+            Keypair.generate()
         );
 
         userVaultTokenAccount = await createAccount(
             provider.connection,
             provider.wallet.payer,
             vaultedToken,
-            user.publicKey
+            user.publicKey,
+            Keypair.generate()
         );
 
         user2MintTokenAccount = await createAccount(
             provider.connection,
             provider.wallet.payer,
             mintedToken,
-            user2.publicKey
+            user2.publicKey,
+            Keypair.generate()
         );
 
         user2VaultTokenAccount = await createAccount(
             provider.connection,
             provider.wallet.payer,
             vaultedToken,
-            user2.publicKey
+            user2.publicKey,
+            Keypair.generate()
         );
 
         mintProgramVaultTokenAccountOwner = Keypair.fromSeed(Buffer.alloc(32, 72)).publicKey;
@@ -378,11 +471,12 @@ describe("vault-stake", () => {
             const mintConfig = await mintProgram.account.config.fetch(configPda);
 
             const mintProgramVaultToken = mintConfig.vault; //USDC
-            const user2MintProgramVaultedTokenAccount = await createAccount(
+            user2MintProgramVaultedTokenAccount = await createAccount(
                 provider.connection,
                 provider.wallet.payer,
                 mintProgramVaultToken,
-                user2.publicKey
+                user2.publicKey,
+                Keypair.generate()
             ); // USDC
 
             // Mint vault tokens to user2 (USDC)
@@ -516,21 +610,7 @@ describe("vault-stake", () => {
             assert.equal(priceConfig.priceTimestamp.toString(), "0", "price not set until verify_price is called");
         });
 
-        it("initializes reward config with 0.75% default", async () => {
-            await program.methods
-                .initializeRewardConfig(new BN(75))
-                .accountsStrict({
-                    stakeConfig: stakeConfigPda,
-                    stakeRewardConfig: stakeRewardConfigPda,
-                    signer: provider.wallet.publicKey,
-                    programData: programDataPda,
-                    systemProgram: SystemProgram.programId,
-                })
-                .rpc();
-
-            const rewardConfig = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
-            assert.equal(rewardConfig.maxRewardBps.toNumber(), 75, "maxRewardBps should be 75 (0.75%)");
-        });
+        // stake_reward_config is created lazily on first publish_rewards (init_if_needed).
 
         it("set initial price for testing via set_price_for_testing", async () => {
             // Sets a 1:1 price with a fresh timestamp so deposit/redeem tests can proceed.
@@ -1058,6 +1138,12 @@ describe("vault-stake", () => {
     });
 
     describe("paused protocol", () => {
+        // Keeps parity with vault-stake-auto: if another suite ever publishes on this pool first,
+        // publish_rewards here still observes a cleared cooldown.
+        beforeEach(async () => {
+            await ensureShortRewardCooldownForTests();
+        });
+
         it("pauses all functionality", async () => {
             await program.methods
                 .pause(true)
@@ -1190,6 +1276,7 @@ describe("vault-stake", () => {
         });
 
         it("pause mint program", async () => {
+            await ensureAllowedExternalMintProgramsPdaInitialized();
             await mintProgram.methods
                 .pause(true)
                 .accountsStrict({
@@ -1224,6 +1311,8 @@ describe("vault-stake", () => {
                         mintConfig: configPda,
                         externalMintAuthority: externalMintAuthorityPda,
                         mintProgram: mintProgram.programId,
+                        thisProgram: program.programId,
+                        vaultMintAllowedExternalPrograms: allowedExternalMintProgramsPda,
                         admin: rewardsAdmin.publicKey,
                         rewardsMint: vaultedToken,
                         rewardsMintAuthority: rewardsMintAuthorityPda,
@@ -1231,7 +1320,7 @@ describe("vault-stake", () => {
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
-                    stakeRewardConfig: stakeRewardConfigPda,
+                        stakeRewardConfig: stakeRewardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
@@ -1241,7 +1330,12 @@ describe("vault-stake", () => {
                 assert.fail("Should have thrown error");
             } catch (err) {
                 expect(err).to.exist;
-                expect(err.toString()).to.include("ProtocolPaused");
+                // Fails in vault-mint::external_program_mint (CPI); on-chain msg is "Protocol is paused".
+                const msg = String(err);
+                expect(
+                    msg.includes("ProtocolPaused") || msg.includes("Protocol is paused"),
+                    msg
+                ).to.be.true;
             }
         });
 
@@ -1395,8 +1489,19 @@ describe("vault-stake", () => {
 
     //write test cases against the rewards merkle tree functionality
     describe("rewards", () => {
+        beforeEach(async () => {
+            await ensureShortRewardCooldownForTests();
+        });
+
         after(async () => {
-            vaultSummary("after rewards")
+            vaultSummary("after rewards");
+            const info = await provider.connection.getAccountInfo(stakeRewardConfigPda);
+            if (info) {
+                await program.methods
+                    .updateRewardPeriodSeconds(STAKE_REWARD_CONFIG_DEFAULTS.rewardPeriodSeconds)
+                    .accountsStrict(stakeRewardConfigUpgradeAuthorityAccounts())
+                    .rpc();
+            }
         });
 
         it("publish rewards", async () => {
@@ -1422,6 +1527,8 @@ describe("vault-stake", () => {
                     mintConfig: configPda,
                     externalMintAuthority: externalMintAuthorityPda,
                     mintProgram: mintProgram.programId,
+                    thisProgram: program.programId,
+                    vaultMintAllowedExternalPrograms: allowedExternalMintProgramsPda,
                     admin: rewardsAdmin.publicKey,
                     rewardsMint: vaultedToken,
                     rewardsMintAuthority: rewardsMintAuthorityPda,
@@ -1478,6 +1585,8 @@ describe("vault-stake", () => {
                         mintConfig: configPda,
                         externalMintAuthority: externalMintAuthorityPda,
                         mintProgram: mintProgram.programId,
+                        thisProgram: program.programId,
+                        vaultMintAllowedExternalPrograms: allowedExternalMintProgramsPda,
                         admin: rewardsAdmin.publicKey,
                         rewardsMint: vaultedToken,
                         rewardsMintAuthority: rewardsMintAuthorityPda,
@@ -1485,7 +1594,7 @@ describe("vault-stake", () => {
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
-                    stakeRewardConfig: stakeRewardConfigPda,
+                        stakeRewardConfig: stakeRewardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
@@ -1517,6 +1626,8 @@ describe("vault-stake", () => {
                     mintConfig: configPda,
                     externalMintAuthority: externalMintAuthorityPda,
                     mintProgram: mintProgram.programId,
+                    thisProgram: program.programId,
+                    vaultMintAllowedExternalPrograms: allowedExternalMintProgramsPda,
                     admin: rewardsAdmin.publicKey,
                     rewardsMint: vaultedToken,
                     rewardsMintAuthority: rewardsMintAuthorityPda,
@@ -1539,6 +1650,9 @@ describe("vault-stake", () => {
                 ],
                 program.programId);
 
+            // Same test: second publish must clear reward_period_seconds cooldown (Clock is second-granular).
+            await sleep(REWARD_COOLDOWN_TEST_SLEEP_MS);
+
             await program.methods
                 .publishRewards(publishRewardsId, new BN(amount))
                 .accountsStrict({
@@ -1547,6 +1661,8 @@ describe("vault-stake", () => {
                     mintConfig: configPda,
                     externalMintAuthority: externalMintAuthorityPda,
                     mintProgram: mintProgram.programId,
+                    thisProgram: program.programId,
+                    vaultMintAllowedExternalPrograms: allowedExternalMintProgramsPda,
                     admin: rewardsAdmin.publicKey,
                     rewardsMint: vaultedToken,
                     rewardsMintAuthority: rewardsMintAuthorityPda,
@@ -1588,6 +1704,8 @@ describe("vault-stake", () => {
                         mintConfig: configPda,
                         externalMintAuthority: externalMintAuthorityPda,
                         mintProgram: mintProgram.programId,
+                        thisProgram: program.programId,
+                        vaultMintAllowedExternalPrograms: allowedExternalMintProgramsPda,
                         admin: user.publicKey,
                         rewardsMint: vaultedToken,
                         rewardsMintAuthority: rewardsMintAuthorityPda,
@@ -1595,7 +1713,7 @@ describe("vault-stake", () => {
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
-                    stakeRewardConfig: stakeRewardConfigPda,
+                        stakeRewardConfig: stakeRewardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
@@ -1608,7 +1726,11 @@ describe("vault-stake", () => {
         });
     });
 
-    describe("reward cap (StakeRewardConfig)", () => {
+    describe("StakeRewardConfig", () => {
+        beforeEach(async () => {
+            await ensureShortRewardCooldownForTests();
+        });
+
         // Helpers to build publishRewards accounts without duplicating boilerplate
         const publishRewardsAccounts = (rewardsRecordPda: PublicKey) => ({
             stakeConfig: stakeConfigPda,
@@ -1616,6 +1738,8 @@ describe("vault-stake", () => {
             mintConfig: configPda,
             externalMintAuthority: externalMintAuthorityPda,
             mintProgram: mintProgram.programId,
+            thisProgram: program.programId,
+            vaultMintAllowedExternalPrograms: allowedExternalMintProgramsPda,
             admin: rewardsAdmin.publicKey,
             rewardsMint: vaultedToken,
             rewardsMintAuthority: rewardsMintAuthorityPda,
@@ -1647,14 +1771,42 @@ describe("vault-stake", () => {
             programData: programDataPda,
         });
 
+        const migrateRewardConfigAccounts = (signer: PublicKey) => ({
+            stakeConfig: stakeConfigPda,
+            stakeRewardConfig: stakeRewardConfigPda,
+            signer,
+            programData: programDataPda,
+            systemProgram: SystemProgram.programId,
+        });
+
         // ── Account state verification ──────────────────────────────────────
 
         describe("account state verification", () => {
-            it("explicitly initialized config has correct state: maxRewardBps = 75", async () => {
-                // initializeRewardConfig was called in the initialize describe block.
-                // Verify full on-chain state — not just behavior.
+            it("lazy-init config has correct default state", async () => {
+                // Parent beforeEach shortens cooldown to 1s; restore protocol default before
+                // asserting full lazy-init defaults.
+                await program.methods
+                    .updateRewardPeriodSeconds(STAKE_REWARD_CONFIG_DEFAULTS.rewardPeriodSeconds)
+                    .accountsStrict(stakeRewardConfigUpgradeAuthorityAccounts())
+                    .rpc();
+                // Created on first publish_rewards with default 75 BPS when max_reward_bps was 0.
                 const config = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
-                assert.equal(config.maxRewardBps.toNumber(), 75, "maxRewardBps must be 75 (0.75%) after explicit init");
+                assert.equal(config.maxRewardBps.toNumber(), 75, "maxRewardBps must be 75 (0.75%)");
+                assert.equal(
+                    config.maxPeriodRewards.toString(),
+                    STAKE_REWARD_CONFIG_DEFAULTS.maxPeriodRewards.toString(),
+                    "default max_period_rewards should be 1,000,000 wYLDS (6 decimals)"
+                );
+                assert.equal(
+                    config.rewardPeriodSeconds.toNumber(),
+                    STAKE_REWARD_CONFIG_DEFAULTS.rewardPeriodSeconds.toNumber(),
+                    "default reward_period_seconds should be 3540"
+                );
+                assert.equal(
+                    config.maxTotalRewards.toString(),
+                    STAKE_REWARD_CONFIG_DEFAULTS.maxTotalRewards.toString(),
+                    "default max_total_rewards should be 10,000,000 wYLDS (6 decimals)"
+                );
             });
 
             it("publish_rewards does not mutate config state (init_if_needed is idempotent)", async () => {
@@ -1678,22 +1830,33 @@ describe("vault-stake", () => {
                 );
             });
 
-            it("cannot call initializeRewardConfig a second time (account already exists)", async () => {
+            it("migrate_reward_config can be invoked more than once", async () => {
+                const d = STAKE_REWARD_CONFIG_DEFAULTS;
+                await program.methods
+                    .migrateRewardConfig(new BN(1_000), d.maxPeriodRewards, d.rewardPeriodSeconds, d.maxTotalRewards)
+                    .accountsStrict(migrateRewardConfigAccounts(provider.wallet.publicKey))
+                    .rpc();
+                const mid = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(mid.maxRewardBps.toNumber(), 1_000);
+                await program.methods
+                    .migrateRewardConfig(new BN(75), d.maxPeriodRewards, d.rewardPeriodSeconds, d.maxTotalRewards)
+                    .accountsStrict(migrateRewardConfigAccounts(provider.wallet.publicKey))
+                    .rpc();
+                const after = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(after.maxRewardBps.toNumber(), 75);
+            });
+
+            it("non-upgrade-authority cannot call migrate_reward_config", async () => {
+                const d = STAKE_REWARD_CONFIG_DEFAULTS;
                 try {
                     await program.methods
-                        .initializeRewardConfig(new BN(1_000))
-                        .accountsStrict({
-                            stakeConfig: stakeConfigPda,
-                            stakeRewardConfig: stakeRewardConfigPda,
-                            signer: provider.wallet.publicKey,
-                            programData: programDataPda,
-                            systemProgram: SystemProgram.programId,
-                        })
+                        .migrateRewardConfig(new BN(100), d.maxPeriodRewards, d.rewardPeriodSeconds, d.maxTotalRewards)
+                        .accountsStrict(migrateRewardConfigAccounts(rewardsAdmin.publicKey))
+                        .signers([rewardsAdmin])
                         .rpc();
-                    assert.fail("Should have thrown — account already initialized");
+                    assert.fail("Should have thrown — only the program upgrade authority may update reward config");
                 } catch (err) {
-                    // Anchor throws "already in use" when init is used on an existing account
-                    expect(err.toString()).to.include("already in use");
+                    expect(err).to.exist;
                 }
             });
         });
@@ -1734,7 +1897,7 @@ describe("vault-stake", () => {
 
         // ── Config changes via update_max_reward_bps ─────────────────────────
 
-        describe("update config", () => {
+        describe("update_max_reward_bps", () => {
             it("upgrade authority can raise cap: emits event and updates stored state", async () => {
                 const configBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
                 const oldBps = configBefore.maxRewardBps.toNumber();
@@ -1855,6 +2018,276 @@ describe("vault-stake", () => {
                 }
             });
         });
+
+        describe("period, cooldown, and lifetime caps", () => {
+            const stakeRewardConfigAdminAccounts = () => ({
+                stakeConfig: stakeConfigPda,
+                stakeRewardConfig: stakeRewardConfigPda,
+                signer: provider.wallet.publicKey,
+                programData: programDataPda,
+            });
+
+            const updateRewardPeriodSecondsAccounts = () => ({
+                ...stakeRewardConfigAdminAccounts(),
+            });
+
+            it("update_max_period_rewards updates state and emits event", async () => {
+                const cfgBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const oldValue = new BN(cfgBefore.maxPeriodRewards.toString());
+                const newValue = oldValue.add(new BN(123_456));
+
+                const sig = await program.methods
+                    .updateMaxPeriodRewards(newValue)
+                    .accountsStrict(stakeRewardConfigAdminAccounts())
+                    .rpc({ commitment: "confirmed", skipPreflight: true });
+
+                const cfgAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(
+                    cfgAfter.maxPeriodRewards.toString(),
+                    newValue.toString(),
+                    "max_period_rewards should be updated"
+                );
+
+                const events = await parseEvents(sig);
+                const event = events.find(e => e.name === "maxPeriodRewardsUpdated");
+                assert.isDefined(event, "MaxPeriodRewardsUpdated event must be emitted");
+                assert.equal((event.data.oldValue as BN).toString(), oldValue.toString());
+                assert.equal((event.data.newValue as BN).toString(), newValue.toString());
+            });
+
+            it("non-upgrade-authority cannot call update_max_period_rewards", async () => {
+                try {
+                    await program.methods
+                        .updateMaxPeriodRewards(new BN(999))
+                        .accountsStrict({
+                            stakeConfig: stakeConfigPda,
+                            stakeRewardConfig: stakeRewardConfigPda,
+                            signer: rewardsAdmin.publicKey,
+                            programData: programDataPda,
+                        })
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown — only upgrade authority can update max_period_rewards");
+                } catch (err) {
+                    expect(err).to.exist;
+                }
+            });
+
+            it("update_reward_period_seconds updates state and emits event", async () => {
+                const cfgBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const oldValue = cfgBefore.rewardPeriodSeconds.toNumber();
+                const newValue = oldValue === 3_600 ? 3_599 : 3_600;
+
+                const sig = await program.methods
+                    .updateRewardPeriodSeconds(new BN(newValue))
+                    .accountsStrict(updateRewardPeriodSecondsAccounts())
+                    .rpc({ commitment: "confirmed", skipPreflight: true });
+
+                const cfgAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(
+                    cfgAfter.rewardPeriodSeconds.toNumber(),
+                    newValue,
+                    "reward_period_seconds should be updated"
+                );
+
+                const events = await parseEvents(sig);
+                const event = events.find(e => e.name === "rewardPeriodSecondsUpdated");
+                assert.isDefined(event, "RewardPeriodSecondsUpdated event must be emitted");
+                assert.equal((event.data.oldValue as BN).toNumber(), oldValue);
+                assert.equal((event.data.newValue as BN).toNumber(), newValue);
+            });
+
+            it("non-upgrade-authority cannot call update_reward_period_seconds", async () => {
+                try {
+                    await program.methods
+                        .updateRewardPeriodSeconds(new BN(111))
+                        .accountsStrict({
+                            stakeConfig: stakeConfigPda,
+                            stakeRewardConfig: stakeRewardConfigPda,
+                            signer: rewardsAdmin.publicKey,
+                            programData: programDataPda,
+                        })
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown — only upgrade authority can update reward_period_seconds");
+                } catch (err) {
+                    expect(err).to.exist;
+                }
+            });
+
+            it("update_max_total_rewards updates state and emits event", async () => {
+                const cfgBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const distributed = new BN(cfgBefore.totalRewardsDistributed.toString());
+                const oldValue = new BN(cfgBefore.maxTotalRewards.toString());
+                const candidate = oldValue.add(new BN(999_999));
+                const newValue = candidate.gt(distributed) ? candidate : distributed.add(new BN(1));
+
+                const sig = await program.methods
+                    .updateMaxTotalRewards(newValue)
+                    .accountsStrict(stakeRewardConfigAdminAccounts())
+                    .rpc({ commitment: "confirmed", skipPreflight: true });
+
+                const cfgAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(
+                    cfgAfter.maxTotalRewards.toString(),
+                    newValue.toString(),
+                    "max_total_rewards should be updated"
+                );
+
+                const events = await parseEvents(sig);
+                const event = events.find(e => e.name === "maxTotalRewardsUpdated");
+                assert.isDefined(event, "MaxTotalRewardsUpdated event must be emitted");
+                assert.equal((event.data.oldValue as BN).toString(), oldValue.toString());
+                assert.equal((event.data.newValue as BN).toString(), newValue.toString());
+            });
+
+            it("non-upgrade-authority cannot call update_max_total_rewards", async () => {
+                const cfgBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const distributed = new BN(cfgBefore.totalRewardsDistributed.toString());
+                const attempt = distributed.add(new BN(1_000));
+                try {
+                    await program.methods
+                        .updateMaxTotalRewards(attempt)
+                        .accountsStrict({
+                            stakeConfig: stakeConfigPda,
+                            stakeRewardConfig: stakeRewardConfigPda,
+                            signer: rewardsAdmin.publicKey,
+                            programData: programDataPda,
+                        })
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown — only upgrade authority can update max_total_rewards");
+                } catch (err) {
+                    expect(err).to.exist;
+                }
+            });
+
+            it("set-style sequential updates apply all three reward config fields", async () => {
+                const newMaxPeriodRewards = new BN("1000000000123");
+                const newRewardPeriodSeconds = new BN(1337);
+                const cfgBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const distributed = new BN(cfgBefore.totalRewardsDistributed.toString());
+                const newMaxTotalRewards = distributed.add(new BN("2000000"));
+
+                await program.methods
+                    .updateMaxPeriodRewards(newMaxPeriodRewards)
+                    .accountsStrict(stakeRewardConfigAdminAccounts())
+                    .rpc();
+                await program.methods
+                    .updateRewardPeriodSeconds(newRewardPeriodSeconds)
+                    .accountsStrict(updateRewardPeriodSecondsAccounts())
+                    .rpc();
+                await program.methods
+                    .updateMaxTotalRewards(newMaxTotalRewards)
+                    .accountsStrict(stakeRewardConfigAdminAccounts())
+                    .rpc();
+
+                const cfgAfter = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                assert.equal(
+                    cfgAfter.maxPeriodRewards.toString(),
+                    newMaxPeriodRewards.toString(),
+                    "max_period_rewards should match the set value"
+                );
+                assert.equal(
+                    cfgAfter.rewardPeriodSeconds.toString(),
+                    newRewardPeriodSeconds.toString(),
+                    "reward_period_seconds should match the set value"
+                );
+                assert.equal(
+                    cfgAfter.maxTotalRewards.toString(),
+                    newMaxTotalRewards.toString(),
+                    "max_total_rewards should match the set value"
+                );
+            });
+
+            it("enforces per-call absolute cap", async () => {
+                await program.methods
+                    .updateRewardPeriodSeconds(new BN(1))
+                    .accountsStrict(updateRewardPeriodSecondsAccounts())
+                    .rpc();
+                await program.methods
+                    .updateMaxPeriodRewards(new BN(1))
+                    .accountsStrict(stakeRewardConfigAdminAccounts())
+                    .rpc();
+                await sleep(REWARD_COOLDOWN_TEST_SLEEP_MS);
+
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, BigInt(2));
+                try {
+                    await program.methods
+                        .publishRewards(publishRewardsId, new BN(2))
+                        .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown ExceedsPeriodRewardCap");
+                } catch (err) {
+                    expect(err.toString()).to.include("ExceedsPeriodRewardCap");
+                }
+            });
+
+            it("enforces cooldown between consecutive publishes", async () => {
+                await program.methods
+                    .updateMaxPeriodRewards(new BN("1000000000000"))
+                    .accountsStrict(stakeRewardConfigAdminAccounts())
+                    .rpc();
+                // Parent beforeEach leaves reward_period_seconds = 1 and sleeps so the first publish
+                // here is allowed even after prior tests published. Raise the cooldown only after that
+                // publish, so the immediate second publish hits RewardCooldownNotElapsed.
+                const firstRewardRecordPda = makeRewardsRecordPda(++publishRewardsId, BigInt(1));
+                await program.methods
+                    .publishRewards(publishRewardsId, new BN(1))
+                    .accountsStrict(publishRewardsAccounts(firstRewardRecordPda))
+                    .signers([rewardsAdmin])
+                    .rpc();
+
+                await program.methods
+                    .updateRewardPeriodSeconds(new BN(3600))
+                    .accountsStrict(updateRewardPeriodSecondsAccounts())
+                    .rpc();
+
+                const secondRewardRecordPda = makeRewardsRecordPda(++publishRewardsId, BigInt(1));
+                try {
+                    await program.methods
+                        .publishRewards(publishRewardsId, new BN(1))
+                        .accountsStrict(publishRewardsAccounts(secondRewardRecordPda))
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown RewardCooldownNotElapsed");
+                } catch (err) {
+                    expect(err.toString()).to.include("RewardCooldownNotElapsed");
+                }
+            });
+
+            it("enforces lifetime rewards cap", async () => {
+                const cfgBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+                const distributed = new BN(cfgBefore.totalRewardsDistributed.toString());
+
+                await program.methods
+                    .updateRewardPeriodSeconds(new BN(1))
+                    .accountsStrict(updateRewardPeriodSecondsAccounts())
+                    .rpc();
+                await program.methods
+                    .updateMaxPeriodRewards(new BN("1000000000000"))
+                    .accountsStrict(stakeRewardConfigAdminAccounts())
+                    .rpc();
+                await program.methods
+                    .updateMaxTotalRewards(distributed.add(new BN(1)))
+                    .accountsStrict(stakeRewardConfigAdminAccounts())
+                    .rpc();
+                await sleep(REWARD_COOLDOWN_TEST_SLEEP_MS);
+
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, BigInt(2));
+                try {
+                    await program.methods
+                        .publishRewards(publishRewardsId, new BN(2))
+                        .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown ExceedsLifetimeRewardCap");
+                } catch (err) {
+                    expect(err.toString()).to.include("ExceedsLifetimeRewardCap");
+                }
+            });
+        });
     });
 
     describe("updateability", () => {
@@ -1877,7 +2310,8 @@ describe("vault-stake", () => {
                 provider.connection,
                 provider.wallet.payer,
                 vaultedToken,
-                newVaultTokenAccountOwner
+                newVaultTokenAccountOwner,
+                Keypair.generate()
             );
         });
 
@@ -1998,6 +2432,8 @@ describe("vault-stake", () => {
                         mintConfig: configPda,
                         externalMintAuthority: externalMintAuthorityPda,
                         mintProgram: mintProgram.programId,
+                        thisProgram: program.programId,
+                        vaultMintAllowedExternalPrograms: allowedExternalMintProgramsPda,
                         admin: addRewardsAdmin.publicKey,
                         rewardsMint: vaultedToken,
                         rewardsMintAuthority: rewardsMintAuthorityPda,
@@ -2005,7 +2441,7 @@ describe("vault-stake", () => {
                         vaultAuthority: vaultAuthorityPda,
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
-                    stakeRewardConfig: stakeRewardConfigPda,
+                        stakeRewardConfig: stakeRewardConfigPda,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
@@ -2024,12 +2460,11 @@ describe("vault-stake", () => {
         before(async () => {
             const mintConfig = await mintProgram.account.config.fetch(configPda);
             const mintProgramVaultToken = mintConfig.vault; //USDC
-            const user2MintProgramVaultedTokenAccount = await getAssociatedTokenAddress(
-                mintProgramVaultToken,
-                user2.publicKey
-            );
 
-            const user2UsdcBalance = await getAccount(provider.connection, user2MintProgramVaultedTokenAccount);
+            const user2UsdcBalance = await getAccount(
+                provider.connection,
+                user2MintProgramVaultedTokenAccount
+            );
             const [mintProgramMintAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
                 [Buffer.from("mint_authority")],
                 mintProgram.programId

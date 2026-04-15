@@ -10,7 +10,7 @@ pub struct Config {
     pub redeem_vault: Pubkey,
     pub bump: u8,
     pub paused: bool,
-    pub allowed_external_mint_program: Pubkey
+    pub allowed_external_mint_program: Pubkey,
 }
 
 impl Config {
@@ -73,3 +73,39 @@ impl VaultTokenAccountConfig {
     pub const LEN: usize = 8 + 32 + 1; // discriminator + pubkey + bump
 }
 
+// Stores additional external programs authorized to call external_program_mint via CPI,
+// extending the single allowed_external_mint_program field in Config without changing the
+// Config account layout. Follows the same additive PDA pattern used for
+// VaultTokenAccountConfig and StakePriceConfig — existing deployments upgrade cleanly
+// because the original Config account is never reallocated. The legacy single-program
+// field continues to authorize the first staking program; this PDA authorizes any
+// subsequent programs (e.g. vault-stake-auto).
+#[account]
+pub struct AllowedExternalMintPrograms {
+    pub programs: Vec<Pubkey>,
+    pub bump: u8,
+}
+
+impl AllowedExternalMintPrograms {
+    // Account allocations used with Anchor's `init_if_needed` must keep a stable
+    // configured size across repeated calls. Pre-allocate enough room for the full
+    // u8 domain so registration remains idempotent and doesn't trip ConstraintSpace
+    // when existing accounts were previously expanded.
+    pub const LEN: usize = 8 + 4 + (32 * (u8::MAX as usize)) + 1;
+
+    pub fn len_for_program_count(program_count: usize) -> usize {
+        8 + 4 + (32 * program_count) + 1
+    }
+}
+
+/// Stores the active registration cap for allowed external mint programs.
+/// Kept in a separate PDA to avoid reallocating the legacy Config account.
+#[account]
+pub struct ExternalMintProgramsLimitConfig {
+    pub max_programs: u8,
+    pub bump: u8,
+}
+
+impl ExternalMintProgramsLimitConfig {
+    pub const LEN: usize = 8 + 1 + 1;
+}

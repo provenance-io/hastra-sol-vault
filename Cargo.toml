@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "programs/vault-mint",
-    "programs/vault-stake"
+    "programs/vault-stake",
 ]
 resolver = "2"
 

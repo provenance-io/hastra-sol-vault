@@ -5,7 +5,8 @@ import {
     VersionedTransaction,
 } from "@solana/web3.js";
 import * as anchor from "@coral-xyz/anchor";
-import { BN, Program } from "@coral-xyz/anchor";
+import { Program } from "@coral-xyz/anchor";
+import BN from "bn.js";
 import { VaultStake } from "../../target/types/vault_stake";
 import yargs from "yargs";
 

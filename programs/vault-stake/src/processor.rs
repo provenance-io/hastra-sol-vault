@@ -2,16 +2,17 @@ use crate::account_structs::*;
 use crate::error::*;
 use crate::events::*;
 use crate::guard::validate_program_update_authority;
-use crate::state::{MAX_ADMINISTRATORS, StakeRewardConfig};
+use crate::state::{StakeRewardConfig, MAX_ADMINISTRATORS};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::{get_return_data, invoke};
+use anchor_lang::solana_program::program_error::ProgramError;
+use anchor_lang::solana_program::system_instruction;
 use anchor_spl::token::spl_token::instruction::AuthorityType;
 use anchor_spl::token::{self, Burn, MintTo, Transfer};
 use chainlink_data_streams_report::feed_id::ID as FeedId;
 use chainlink_data_streams_report::report::v7::ReportDataV7;
 use chainlink_solana_data_streams::VerifierInstructions;
 use num_traits::ToPrimitive;
-
 
 pub fn initialize(
     ctx: Context<Initialize>,
@@ -129,6 +130,10 @@ pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
     // Require that user receives at least some shares
     require!(shares_to_mint > 0, CustomErrorCode::DepositTooSmall);
 
+    let shares_to_mint_u64: u64 = shares_to_mint
+        .try_into()
+        .map_err(|_| CustomErrorCode::Overflow)?;
+
     let cpi_accounts = Transfer {
         from: ctx.accounts.user_vault_token_account.to_account_info(),
         to: ctx.accounts.vault_token_account.to_account_info(),
@@ -152,14 +157,14 @@ pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
             cpi_accounts,
             signer,
         ),
-        shares_to_mint.try_into().unwrap(),
+        shares_to_mint_u64,
     )?;
 
     let result_total_assets = total_assets
         .checked_add(amount)
         .ok_or(CustomErrorCode::Overflow)?;
     let result_total_shares = total_shares
-        .checked_add(shares_to_mint as u64)
+        .checked_add(shares_to_mint_u64)
         .ok_or(CustomErrorCode::Overflow)?;
     let totals_last_update_slot = Clock::get()?.slot;
 
@@ -167,7 +172,7 @@ pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
     emit!(DepositEvent {
         user: ctx.accounts.signer.key(),
         deposit_amount: amount,
-        minted_amount: (shares_to_mint as u64),
+        minted_amount: shares_to_mint_u64,
         mint: ctx.accounts.mint.key(),
         mint_supply: ctx.accounts.mint.supply,
         vault: ctx.accounts.vault_token_account.key(),
@@ -235,8 +240,12 @@ pub fn redeem(ctx: Context<Redeem>, amount: u64) -> Result<()> {
     // Guard against dust amounts rounding down to zero
     require!(amount_to_withdraw > 0, CustomErrorCode::InvalidAmount);
 
+    let amount_to_withdraw_u64: u64 = amount_to_withdraw
+        .try_into()
+        .map_err(|_| CustomErrorCode::Overflow)?;
+
     require!(
-        ctx.accounts.vault_token_account.amount >= amount_to_withdraw as u64,
+        ctx.accounts.vault_token_account.amount >= amount_to_withdraw_u64,
         CustomErrorCode::InsufficientVaultBalance
     );
 
@@ -263,11 +272,11 @@ pub fn redeem(ctx: Context<Redeem>, amount: u64) -> Result<()> {
             transfer_accounts,
             signer,
         ),
-        amount_to_withdraw.try_into().unwrap(),
+        amount_to_withdraw_u64,
     )?;
 
     let result_total_assets = total_assets
-        .checked_sub(amount_to_withdraw as u64)
+        .checked_sub(amount_to_withdraw_u64)
         .ok_or(CustomErrorCode::Overflow)?;
     let result_total_shares = total_shares
         .checked_sub(amount)
@@ -281,7 +290,7 @@ pub fn redeem(ctx: Context<Redeem>, amount: u64) -> Result<()> {
         requested_mint_amount: amount,
         mint_supply: ctx.accounts.mint.supply,
         vault: ctx.accounts.vault_token_account.key(),
-        redeemed_vault_amount: amount_to_withdraw as u64,
+        redeemed_vault_amount: amount_to_withdraw_u64,
         vault_balance: ctx.accounts.vault_token_account.amount,
         shares_burned: amount,
         total_assets: result_total_assets,
@@ -433,22 +442,65 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
     // This assignment is idempotent and does not rely on any sentinel value.
     ctx.accounts.stake_reward_config.bump = ctx.bumps.stake_reward_config;
 
+    // Lazily initialize defaults for any newly-added fields (for realloc-based migrations).
+    let config = &mut ctx.accounts.stake_reward_config;
+    if config.max_reward_bps == 0 {
+        config.max_reward_bps = StakeRewardConfig::DEFAULT_BPS;
+    }
+    if config.max_period_rewards == 0 {
+        config.max_period_rewards = StakeRewardConfig::DEFAULT_MAX_PERIOD_REWARDS;
+    }
+    if config.reward_period_seconds <= 0 {
+        config.reward_period_seconds = StakeRewardConfig::DEFAULT_REWARD_PERIOD_SECONDS;
+    }
+    if config.max_total_rewards == 0 {
+        config.max_total_rewards = StakeRewardConfig::DEFAULT_MAX_TOTAL_REWARDS;
+    }
+
     // Enforce reward cap: amount must not exceed max_reward_bps % of current total_assets.
     // Skip only when the vault is truly empty (bootstrap) — cap applies whenever assets exist.
     let total_assets = ctx.accounts.vault_token_account.amount;
     if total_assets > 0 {
-        let effective_bps = if ctx.accounts.stake_reward_config.max_reward_bps == 0 {
-            StakeRewardConfig::DEFAULT_BPS
-        } else {
-            ctx.accounts.stake_reward_config.max_reward_bps
-        };
+        let effective_bps = config.max_reward_bps;
         let max_allowed = (total_assets as u128)
             .checked_mul(effective_bps as u128)
             .and_then(|v| v.checked_div(StakeRewardConfig::MAX_BPS as u128))
             .and_then(|v| v.to_u64())
             .ok_or(CustomErrorCode::Overflow)?;
-        require!(amount <= max_allowed, CustomErrorCode::RewardExceedsMaxDelta);
+        require!(
+            amount <= max_allowed,
+            CustomErrorCode::RewardExceedsMaxDelta
+        );
     }
+
+    // Absolute per-call cap.
+    require!(
+        amount <= config.max_period_rewards,
+        CustomErrorCode::ExceedsPeriodRewardCap
+    );
+
+    // Cooldown between reward publications (first publication is always allowed).
+    let now = Clock::get()?.unix_timestamp;
+    if config.last_reward_distributed_at > 0 {
+        let next_allowed_at = config
+            .last_reward_distributed_at
+            .checked_add(config.reward_period_seconds)
+            .ok_or(CustomErrorCode::Overflow)?;
+        require!(
+            now >= next_allowed_at,
+            CustomErrorCode::RewardCooldownNotElapsed
+        );
+    }
+
+    // Lifetime cap.
+    let next_total = config
+        .total_rewards_distributed
+        .checked_add(amount)
+        .ok_or(CustomErrorCode::Overflow)?;
+    require!(
+        next_total <= config.max_total_rewards,
+        CustomErrorCode::ExceedsLifetimeRewardCap
+    );
 
     // Initialize the reward record
     let reward_record = &mut ctx.accounts.reward_record;
@@ -467,24 +519,32 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
     ];
     let signer = &[&seeds[..]];
 
-    // at this point, use CPI to call the mint_to instruction on the hastra-vault-mint
+    // CPI into vault-mint::external_program_mint.
+    // calling_program (this_program) and allowed_external_mint_programs are the two new
+    // accounts required by vault-mint's updated ExternalProgramMint context; they allow
+    // vault-mint to verify caller identity without a fixed single-program config field.
     let cpi_program = ctx.accounts.mint_program.to_account_info();
     let cpi_accounts = vault_mint::cpi::accounts::ExternalProgramMint {
         config: ctx.accounts.mint_config.to_account_info(),
+        calling_program: ctx.accounts.this_program.to_account_info(),
         external_mint_authority: ctx.accounts.external_mint_authority.to_account_info(),
         mint: ctx.accounts.rewards_mint.to_account_info(),
         mint_authority: ctx.accounts.rewards_mint_authority.to_account_info(),
         admin: ctx.accounts.admin.to_account_info(),
         destination: ctx.accounts.vault_token_account.to_account_info(),
+        allowed_external_mint_programs: ctx
+            .accounts
+            .vault_mint_allowed_external_programs
+            .to_account_info(),
         token_program: ctx.accounts.token_program.to_account_info(),
     };
-    // Use new_with_signer to sign with the PDA
-    let cpi_ctx = CpiContext::new_with_signer(
-        cpi_program,
-        cpi_accounts,
-        signer, // Sign with vault-stake's PDA
-    );
+    let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer);
     vault_mint::cpi::external_program_mint(cpi_ctx, amount)?;
+
+    // Update guard state after successful mint CPI.
+    config.last_reward_distributed_at = now;
+    config.total_rewards_distributed = next_total;
+
     // reload the vault token account to get the updated amount for publishing the event
     ctx.accounts.vault_token_account.reload()?;
 
@@ -522,7 +582,11 @@ pub fn set_price_for_testing(
     let config = &mut ctx.accounts.stake_price_config;
     config.price = price;
     config.price_timestamp = price_timestamp;
-    msg!("set_price_for_testing: price={}, price_timestamp={}", price, price_timestamp);
+    msg!(
+        "set_price_for_testing: price={}, price_timestamp={}",
+        price,
+        price_timestamp
+    );
     Ok(())
 }
 
@@ -629,23 +693,128 @@ pub fn update_price_config(
     Ok(())
 }
 
-/// Initializes the StakeRewardConfig PDA for the given StakeConfig.
+/// Migrates the StakeRewardConfig PDA for the given StakeConfig.
 /// Explicitly sets `max_reward_bps` to the provided value (subject to MAX_BPS validation).
-/// This is an optional, proactive setup step; the config may also be lazily created by
-/// `publish_rewards` via `init_if_needed` using the program's default cap semantics.
+/// This is a one-time migration step required after program upgrade as the config schema has changed.
 /// Only callable by the program upgrade authority.
-pub fn initialize_reward_config(ctx: Context<InitializeRewardConfig>, max_reward_bps: u64) -> Result<()> {
+pub fn migrate_reward_config(
+    ctx: Context<MigrateRewardConfig>,
+    max_reward_bps: u64,
+    max_period_rewards: u64,
+    reward_period_seconds: i64,
+    max_total_rewards: u64,
+) -> Result<()> {
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
     require!(
         max_reward_bps > 0 && max_reward_bps <= StakeRewardConfig::MAX_BPS,
         CustomErrorCode::InvalidMaxRewardBps
     );
+    require!(
+        max_period_rewards > 0,
+        CustomErrorCode::InvalidMaxPeriodRewards
+    );
+    require!(
+        reward_period_seconds > 0,
+        CustomErrorCode::InvalidRewardPeriodSeconds
+    );
+    require!(
+        max_total_rewards > 0,
+        CustomErrorCode::InvalidMaxTotalRewards
+    );
 
-    let config = &mut ctx.accounts.stake_reward_config;
-    config.max_reward_bps = max_reward_bps;
-    config.bump = ctx.bumps.stake_reward_config;
+    const LEGACY_STAKE_REWARD_CONFIG_LEN: usize = 17; // discriminator + max_reward_bps + bump
+    let stake_reward_config_info = ctx.accounts.stake_reward_config.to_account_info();
+    let old_len = stake_reward_config_info.data_len();
 
-    msg!("StakeRewardConfig initialized: max_reward_bps={}", max_reward_bps);
+    // Top up rent before realloc so account growth is deterministic.
+    if old_len < StakeRewardConfig::LEN {
+        let rent = Rent::get()?;
+        let required_lamports = rent.minimum_balance(StakeRewardConfig::LEN);
+        let current_lamports = stake_reward_config_info.lamports();
+        if current_lamports < required_lamports {
+            let delta = required_lamports
+                .checked_sub(current_lamports)
+                .ok_or(CustomErrorCode::Overflow)?;
+            invoke(
+                &system_instruction::transfer(
+                    &ctx.accounts.signer.key(),
+                    &stake_reward_config_info.key(),
+                    delta,
+                ),
+                &[
+                    ctx.accounts.signer.to_account_info(),
+                    stake_reward_config_info.clone(),
+                    ctx.accounts.system_program.to_account_info(),
+                ],
+            )?;
+        }
+        stake_reward_config_info.realloc(StakeRewardConfig::LEN, false)?;
+    }
+
+    let mut migrated_config = StakeRewardConfig {
+        max_reward_bps,
+        max_period_rewards,
+        reward_period_seconds,
+        last_reward_distributed_at: 0,
+        max_total_rewards,
+        total_rewards_distributed: 0,
+        bump: 0,
+    };
+
+    let stake_reward_config_data = stake_reward_config_info.try_borrow_data()?;
+    if stake_reward_config_data.len() < 8 {
+        return Err(ProgramError::InvalidAccountData.into());
+    }
+    if &stake_reward_config_data[0..8] != StakeRewardConfig::DISCRIMINATOR {
+        return Err(ProgramError::InvalidAccountData.into());
+    }
+
+    if old_len == StakeRewardConfig::LEN {
+        let mut data_slice: &[u8] = stake_reward_config_data.as_ref();
+        let current_config = StakeRewardConfig::try_deserialize(&mut data_slice)
+            .map_err(|_| ProgramError::InvalidAccountData)?;
+        migrated_config.max_period_rewards = if current_config.max_period_rewards > 0 {
+            current_config.max_period_rewards
+        } else {
+            max_period_rewards
+        };
+        migrated_config.reward_period_seconds = if current_config.reward_period_seconds > 0 {
+            current_config.reward_period_seconds
+        } else {
+            reward_period_seconds
+        };
+        migrated_config.max_total_rewards = if current_config.max_total_rewards > 0 {
+            current_config.max_total_rewards
+        } else {
+            max_total_rewards
+        };
+        migrated_config.last_reward_distributed_at = current_config.last_reward_distributed_at;
+        migrated_config.total_rewards_distributed = current_config.total_rewards_distributed;
+        migrated_config.bump = current_config.bump;
+    } else if old_len == LEGACY_STAKE_REWARD_CONFIG_LEN {
+        // Legacy layout only had `max_reward_bps` + `bump`, so all new fields are initialized
+        // from instruction arguments while preserving bump.
+        migrated_config.bump = stake_reward_config_data[16];
+    } else {
+        return Err(ProgramError::InvalidAccountData.into());
+    }
+    drop(stake_reward_config_data);
+
+    let mut stake_reward_config_data_mut = stake_reward_config_info.try_borrow_mut_data()?;
+    let mut out_slice: &mut [u8] = stake_reward_config_data_mut.as_mut();
+    migrated_config
+        .try_serialize(&mut out_slice)
+        .map_err(|_| ProgramError::InvalidAccountData)?;
+
+    msg!(
+        "StakeRewardConfig migrated: old_len={}, max_reward_bps={}, max_period_rewards={}, reward_period_seconds={}, max_total_rewards={}, bump={}",
+        old_len,
+        migrated_config.max_reward_bps,
+        migrated_config.max_period_rewards,
+        migrated_config.reward_period_seconds,
+        migrated_config.max_total_rewards,
+        migrated_config.bump
+    );
     Ok(())
 }
 
@@ -670,6 +839,78 @@ pub fn update_max_reward_bps(ctx: Context<UpdateMaxRewardBps>, new_bps: u64) -> 
     });
 
     msg!("max_reward_bps updated: {} -> {}", old_bps, new_bps);
+    Ok(())
+}
+
+pub fn update_max_period_rewards(ctx: Context<UpdateMaxPeriodRewards>, new_cap: u64) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    require!(new_cap > 0, CustomErrorCode::InvalidMaxPeriodRewards);
+
+    let config = &mut ctx.accounts.stake_reward_config;
+    let old_value = config.max_period_rewards;
+    config.max_period_rewards = new_cap;
+
+    emit!(MaxPeriodRewardsUpdated {
+        admin: ctx.accounts.signer.key(),
+        old_value,
+        new_value: new_cap,
+        stake_config: ctx.accounts.stake_config.key(),
+    });
+
+    msg!("max_period_rewards updated: {} -> {}", old_value, new_cap);
+    Ok(())
+}
+
+/// Updates reward_period_seconds on an existing StakeRewardConfig.
+/// Only callable by the program upgrade authority.
+pub fn update_reward_period_seconds(
+    ctx: Context<UpdateRewardPeriodSeconds>,
+    new_seconds: i64,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    require!(new_seconds > 0, CustomErrorCode::InvalidRewardPeriodSeconds);
+
+    let config = &mut ctx.accounts.stake_reward_config;
+    let old_value = config.reward_period_seconds;
+    config.reward_period_seconds = new_seconds;
+
+    emit!(RewardPeriodSecondsUpdated {
+        admin: ctx.accounts.signer.key(),
+        old_value,
+        new_value: new_seconds,
+        stake_config: ctx.accounts.stake_config.key(),
+    });
+
+    msg!(
+        "reward_period_seconds updated: {} -> {}",
+        old_value,
+        new_seconds
+    );
+    Ok(())
+}
+
+/// Updates max_total_rewards on an existing StakeRewardConfig.
+/// Only callable by the program upgrade authority.
+pub fn update_max_total_rewards(ctx: Context<UpdateMaxTotalRewards>, new_cap: u64) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    let distributed = ctx.accounts.stake_reward_config.total_rewards_distributed;
+    require!(
+        new_cap > 0 && new_cap >= distributed,
+        CustomErrorCode::InvalidMaxTotalRewards
+    );
+
+    let config = &mut ctx.accounts.stake_reward_config;
+    let old_value = config.max_total_rewards;
+    config.max_total_rewards = new_cap;
+
+    emit!(MaxTotalRewardsUpdated {
+        admin: ctx.accounts.signer.key(),
+        old_value,
+        new_value: new_cap,
+        stake_config: ctx.accounts.stake_config.key(),
+    });
+
+    msg!("max_total_rewards updated: {} -> {}", old_value, new_cap);
     Ok(())
 }
 
@@ -727,12 +968,17 @@ pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result
 
     // Decode the verified report from return data
     let (_, return_data) = get_return_data().ok_or(CustomErrorCode::ChainlinkVerifyFailed)?;
-    let report = ReportDataV7::decode(&return_data)
-        .map_err(|_| CustomErrorCode::ChainlinkVerifyFailed)?;
+    let report =
+        ReportDataV7::decode(&return_data).map_err(|_| CustomErrorCode::ChainlinkVerifyFailed)?;
 
     let current_time = Clock::get()?.unix_timestamp;
 
-    msg!("Chainlink report verified - current_time: {}, valid_from_timestamp: {}, expires_at: {}", current_time, report.valid_from_timestamp, report.expires_at);
+    msg!(
+        "Chainlink report verified - current_time: {}, valid_from_timestamp: {}, expires_at: {}",
+        current_time,
+        report.valid_from_timestamp,
+        report.expires_at
+    );
     // Validate the report is within its valid time window
     require!(
         current_time >= i64::from(report.valid_from_timestamp),

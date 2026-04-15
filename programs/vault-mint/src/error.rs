@@ -60,6 +60,8 @@ pub enum CustomErrorCode {
     InsufficientRedemptionBalance = 28,
     #[msg("Invalid vault token account")]
     InvalidVaultTokenAccount = 34,
-
-
+    #[msg("Too many allowed external mint programs.")]
+    TooManyAllowedExternalMintPrograms = 29,
+    #[msg("Invalid allowed external mint programs limit.")]
+    InvalidAllowedExternalMintProgramsLimit = 35,
 }

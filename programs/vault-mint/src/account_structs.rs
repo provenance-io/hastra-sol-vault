@@ -28,7 +28,7 @@ pub struct Initialize<'info> {
         bump
     )]
     pub vault_token_account_config: Account<'info, VaultTokenAccountConfig>,
-    
+
     #[account(
         constraint = vault_token_account.mint == vault_token_mint.key() @ CustomErrorCode::InvalidMint
     )]
@@ -206,7 +206,6 @@ pub struct FreezeTokenAccount<'info> {
     #[account(
         constraint = mint.freeze_authority == Some(freeze_authority_pda.key()).into() @ CustomErrorCode::InvalidFreezeAuthority,
         constraint = config.mint == mint.key() @ CustomErrorCode::InvalidMint
-    
     )]
     pub mint: Account<'info, Mint>,
 
@@ -438,14 +437,23 @@ pub struct ExternalProgramMint<'info> {
     )]
     pub config: Account<'info, Config>,
 
-    /// PDA from the calling program that proves CPI origin
-    /// This PDA is derived using the allowed_external_mint_program's ID
-    /// Only that program can sign for this PDA, proving the call is from CPI
-    /// CHECK: Verified by seeds constraint against allowed_external_mint_program
+    /// The program making this CPI call. Must be authorized via config.allowed_external_mint_program
+    /// (legacy single-program field) or registered in the allowed_external_mint_programs PDA.
+    /// Passing the caller's program as an explicit account allows the seeds constraint on
+    /// external_mint_authority below to bind to it, cryptographically proving CPI origin.
+    /// CHECK: Authorization is checked in processor against the allowed program list
+    #[account(executable)]
+    pub calling_program: AccountInfo<'info>,
+
+    /// PDA from the calling program that proves CPI origin. Anchor verifies that this
+    /// account's address is derived from [b"external_mint_authority"] under calling_program's
+    /// program id. Only calling_program can produce a valid signer for this PDA, so a valid
+    /// signature here proves the CPI came from calling_program and not an impersonator.
+    /// CHECK: Verified by seeds constraint against calling_program
     #[account(
         signer,
         seeds = [b"external_mint_authority"],
-        seeds::program = config.allowed_external_mint_program,
+        seeds::program = calling_program.key(),
         bump,
     )]
     pub external_mint_authority: UncheckedAccount<'info>,
@@ -464,19 +472,110 @@ pub struct ExternalProgramMint<'info> {
     )]
     pub mint_authority: UncheckedAccount<'info>,
 
-    /// The rewards administrator who authorized this mint operation
-    /// This is NOT a Signer in the CPI context - the PDA signs the CPI, not the admin
-    /// The admin's pubkey is just passed through for authorization checking
+    /// The rewards administrator who authorized this mint operation.
+    /// This is NOT a Signer in the CPI context — the PDA signs, not the admin.
+    /// The admin's pubkey is passed through for rewards_administrators list verification.
     /// CHECK: Verified against config.rewards_administrators list in processor
     pub admin: AccountInfo<'info>,
-    
     #[account(
         mut,
         constraint = destination.mint == mint.key() @ CustomErrorCode::InvalidMint
     )]
     pub destination: Account<'info, TokenAccount>,
 
+    /// Additional allowed programs PDA. When calling_program does not match the legacy
+    /// config.allowed_external_mint_program field, the processor checks this account.
+    /// This account is required in the instruction, so it must already exist on-chain
+    /// (e.g. created during program upgrade / migration via
+    /// register_allowed_external_mint_program, which uses init_if_needed) before callers
+    /// invoke external_program_mint. Until any programs are registered, account data may
+    /// be empty or too short to deserialize; the processor then treats the extended list
+    /// as empty and authorization falls through to the legacy field only.
+    /// CHECK: Seeds-validated; list membership is enforced in the processor
+    #[account(
+        seeds = [b"allowed_external_mint_programs", config.key().as_ref()],
+        bump,
+    )]
+    pub allowed_external_mint_programs: UncheckedAccount<'info>,
+
     pub token_program: Program<'info, Token>,
+}
+
+/// Registers an additional external program as authorized to call external_program_mint.
+/// Uses init_if_needed so the PDA is created on the first registration and updated on
+/// subsequent calls. Only callable by the program upgrade authority. Idempotent: re-registering
+/// a program that is already in the list is a no-op.
+#[derive(Accounts)]
+pub struct RegisterAllowedExternalMintProgram<'info> {
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, Config>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        space = AllowedExternalMintPrograms::LEN,
+        seeds = [b"allowed_external_mint_programs", config.key().as_ref()],
+        bump
+    )]
+    pub allowed_external_mint_programs: Account<'info, AllowedExternalMintPrograms>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        space = ExternalMintProgramsLimitConfig::LEN,
+        seeds = [b"external_mint_programs_limit", config.key().as_ref()],
+        bump
+    )]
+    pub external_mint_programs_limit_config: Account<'info, ExternalMintProgramsLimitConfig>,
+
+    /// CHECK: The external program being registered as an authorized caller; must be executable
+    #[account(executable)]
+    pub external_program: AccountInfo<'info>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Updates the registration limit used by register_allowed_external_mint_program.
+/// Only callable by the program upgrade authority.
+#[derive(Accounts)]
+pub struct UpdateExternalMintProgramsLimit<'info> {
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump,
+    )]
+    pub config: Account<'info, Config>,
+
+    #[account(
+        init_if_needed,
+        payer = signer,
+        space = ExternalMintProgramsLimitConfig::LEN,
+        seeds = [b"external_mint_programs_limit", config.key().as_ref()],
+        bump
+    )]
+    pub external_mint_programs_limit_config: Account<'info, ExternalMintProgramsLimitConfig>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -504,7 +603,7 @@ pub struct UpdateVaultTokenAccount<'info> {
         constraint = vault_token_account.mint == config.vault @ CustomErrorCode::InvalidVaultMint,
     )]
     pub vault_token_account: Account<'info, TokenAccount>,
-    
+
     /// CHECK: This is the program data account that contains the update authority
     #[account(
         constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
@@ -546,10 +645,9 @@ pub struct SweepRedeemVaultFunds<'info> {
     pub vault_token_account: Account<'info, TokenAccount>,
 
     pub signer: Signer<'info>,
-    
+
     pub token_program: Program<'info, Token>,
 }
-
 
 #[derive(Accounts)]
 pub struct SetVaultTokenAccountConfig<'info> {

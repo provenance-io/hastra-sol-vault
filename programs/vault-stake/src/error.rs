@@ -72,5 +72,16 @@ pub enum CustomErrorCode {
     RewardExceedsMaxDelta = 41,
     #[msg("Invalid max reward BPS: must be greater than 0 and at most 10_000")]
     InvalidMaxRewardBps = 42,
-
+    #[msg("Reward cooldown period has not elapsed")]
+    RewardCooldownNotElapsed = 43,
+    #[msg("Reward amount exceeds maximum allowed period cap")]
+    ExceedsPeriodRewardCap = 44,
+    #[msg("Reward amount exceeds remaining lifetime cap")]
+    ExceedsLifetimeRewardCap = 45,
+    #[msg("Invalid reward period: must be greater than 0 seconds")]
+    InvalidRewardPeriodSeconds = 46,
+    #[msg("Invalid max period rewards: must be greater than 0")]
+    InvalidMaxPeriodRewards = 47,
+    #[msg("Invalid max total rewards: must be greater than 0 and not below distributed total")]
+    InvalidMaxTotalRewards = 48,
 }

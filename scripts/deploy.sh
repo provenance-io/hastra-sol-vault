@@ -9,8 +9,8 @@
 # Typical flow for a new environment:
 #   1. Run setup-tokens.sh to create tokens and accounts.
 #   2. Run this script → Build Programs → Write Buffers → copy buffer addresses to Squads.
-#   3. After Squads executes the upgrade, run Initialize (Mint then Stake).
-#   4. Set Mint and Freeze Authorities.
+#   3. After Squads executes the upgrade, run Initialize (Mint then Stake PRIME).
+#   4. Set Mint and Freeze Authorities (mint, PRIME stake).
 #
 # Typical flow for an upgrade:
 #   1. Run this script → Build Programs → Write Buffers.
@@ -245,21 +245,21 @@ configure_squads_vault() {
 # ---------------------------------------------------------------------------
 while true; do
   MY_KEY=$(solana-keygen pubkey "$KEYPAIR")
-  VAULT_MINT_PROGRAM_ID=$(grep -oE 'declare_id!\("([A-Za-z0-9]+)"\);' ../programs/vault-mint/src/lib.rs | grep -oE '"([A-Za-z0-9]+)"' | tr -d '"')
-  VAULT_STAKE_PROGRAM_ID=$(grep -oE 'declare_id!\("([A-Za-z0-9]+)"\);' ../programs/vault-stake/src/lib.rs | grep -oE '"([A-Za-z0-9]+)"' | tr -d '"')
+  VAULT_MINT_PROGRAM_ID=$(resolve_program_id "vault_mint" "../programs/vault-mint/src/lib.rs")
+  VAULT_STAKE_PROGRAM_ID=$(resolve_program_id "vault_stake" "../programs/vault-stake/src/lib.rs")
 
   SOL_BALANCE=$(solana balance --url "$SOLANA_URL" --keypair "$KEYPAIR" 2>/dev/null || echo "0 SOL")
   solana config get
   echo ""
-  echo "Public Key:             $MY_KEY ($SOL_BALANCE)"
-  echo "Vault Mint Program ID:  $VAULT_MINT_PROGRAM_ID"
-  echo "Vault Stake Program ID: $VAULT_STAKE_PROGRAM_ID"
-  echo "Mint Token (wYLDS):     $MINT_PROG_MINT_TOKEN"
-  echo "Vault Token (USDC):     $MINT_PROG_VAULT_MINT"
-  echo "Staking Token (PRIME):  $STAKE_PROG_MINT_TOKEN"
-  echo "Squads Vault:           ${SQUADS_VAULT_ADDRESS:-<not set>}"
-  echo "Mint Buffer:            ${MINT_PROGRAM_BUFFER_ADDRESS:-<none>}"
-  echo "Stake Buffer:           ${STAKE_PROGRAM_BUFFER_ADDRESS:-<none>}"
+  echo "Public Key:                   $MY_KEY ($SOL_BALANCE)"
+  echo "Vault Mint Program ID:        $VAULT_MINT_PROGRAM_ID"
+  echo "Vault Stake Program ID (PRIME): $VAULT_STAKE_PROGRAM_ID"
+  echo "Mint Token (wYLDS):           $MINT_PROG_MINT_TOKEN"
+  echo "Vault Token (USDC):           $MINT_PROG_VAULT_MINT"
+  echo "Staking Token (PRIME):        $STAKE_PROG_MINT_TOKEN"
+  echo "Squads Vault:                 ${SQUADS_VAULT_ADDRESS:-<not set>}"
+  echo "Mint Buffer:                  ${MINT_PROGRAM_BUFFER_ADDRESS:-<none>}"
+  echo "Stake Buffer (PRIME):         ${STAKE_PROGRAM_BUFFER_ADDRESS:-<none>}"
   echo ""
 
   echo "Select an action:"
@@ -269,9 +269,9 @@ while true; do
     "Write Vault Stake Buffer (for Squads upgrade)" \
     "Write All Buffers" \
     "Initialize Mint Program" \
-    "Initialize Stake Program" \
+    "Initialize Stake Program (PRIME)" \
     "Set Mint Program Mint and Freeze Authorities" \
-    "Set Stake Program Mint and Freeze Authorities" \
+    "Set Stake Program (PRIME) Mint and Freeze Authorities" \
     "Configure Squads Vault Address" \
     "Show Accounts & PDAs" \
     "Exit"

@@ -49,13 +49,17 @@ jobs:
     - name: Install yarn dependencies
       run: yarn install --frozen-lockfile
 
+    - name: Sync Anchor program IDs to deploy keypairs
+      run: anchor keys sync
+
     - name: Anchor build
       run: anchor build
 
-    - name: Rebuild vault-stake with testing feature
+    # IDL includes set_price_for_testing (via idl-build → testing); the default
+    # anchor build deploy artifact omits those instructions unless this step runs.
+    - name: Rebuild stake programs with testing feature
       run: |
-        cd programs/vault-stake
-        cargo build-sbf --features testing
+        cargo build-sbf --manifest-path programs/vault-stake/Cargo.toml --features testing
 
     - name: Setup solana node
       run: |

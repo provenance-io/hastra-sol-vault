@@ -21,7 +21,7 @@ create_mint_prog_mint_token() {
 }
 
 create_stake_prog_mint_token() {
-  echo "Creating Stake Program mint token..."
+  echo "Creating Stake Program mint token (PRIME)..."
   STAKE_PROG_MINT_TOKEN=$(spl-token create-token --decimals 6 --enable-freeze \
     --url "$SOLANA_URL" \
     --config "$CONFIG_FILE" | grep -oE 'Address:  ([A-Za-z0-9]+)' | awk '{print $NF}')
@@ -66,13 +66,13 @@ setup_metaplex() {
     --token_meta_url "$MINT_METAPLEX_META_URL"
 
   if [ -z "$STAKE_METAPLEX_NAME" ]; then
-    prompt_with_default STAKE_METAPLEX_NAME "Enter Stake Token Metaplex Token Name"
+    prompt_with_default STAKE_METAPLEX_NAME "Enter Stake Token (PRIME) Metaplex Token Name"
   fi
   if [ -z "$STAKE_METAPLEX_SYMBOL" ]; then
-    prompt_with_default STAKE_METAPLEX_SYMBOL "Enter Stake Token Metaplex Token Symbol"
+    prompt_with_default STAKE_METAPLEX_SYMBOL "Enter Stake Token (PRIME) Metaplex Token Symbol"
   fi
   if [ -z "$STAKE_METAPLEX_META_URL" ]; then
-    prompt_with_default STAKE_METAPLEX_META_URL "Enter Stake Token Metaplex Token Metadata URL (must be a valid JSON URL)"
+    prompt_with_default STAKE_METAPLEX_META_URL "Enter Stake Token (PRIME) Metaplex Token Metadata URL (must be a valid JSON URL)"
   fi
 
   yarn run ts-node scripts/register_meta.ts \
@@ -88,18 +88,18 @@ setup_metaplex() {
 # ---------------------------------------------------------------------------
 while true; do
   MY_KEY=$(solana-keygen pubkey "$KEYPAIR")
-  VAULT_MINT_PROGRAM_ID=$(grep -oE 'declare_id!\("([A-Za-z0-9]+)"\);' ../programs/vault-mint/src/lib.rs | grep -oE '"([A-Za-z0-9]+)"' | tr -d '"')
-  VAULT_STAKE_PROGRAM_ID=$(grep -oE 'declare_id!\("([A-Za-z0-9]+)"\);' ../programs/vault-stake/src/lib.rs | grep -oE '"([A-Za-z0-9]+)"' | tr -d '"')
+  VAULT_MINT_PROGRAM_ID=$(resolve_program_id "vault_mint" "../programs/vault-mint/src/lib.rs")
+  VAULT_STAKE_PROGRAM_ID=$(resolve_program_id "vault_stake" "../programs/vault-stake/src/lib.rs")
 
   SOL_BALANCE=$(solana balance --url "$SOLANA_URL" --keypair "$KEYPAIR" 2>/dev/null || echo "0 SOL")
   solana config get
   echo ""
-  echo "Public Key:             $MY_KEY ($SOL_BALANCE)"
-  echo "Vault Mint Program ID:  $VAULT_MINT_PROGRAM_ID"
-  echo "Vault Stake Program ID: $VAULT_STAKE_PROGRAM_ID"
-  echo "Mint Token (wYLDS):     $MINT_PROG_MINT_TOKEN"
-  echo "Vault Token (USDC):     $MINT_PROG_VAULT_MINT"
-  echo "Staking Token (PRIME):  $STAKE_PROG_MINT_TOKEN"
+  echo "Public Key:                   $MY_KEY ($SOL_BALANCE)"
+  echo "Vault Mint Program ID:        $VAULT_MINT_PROGRAM_ID"
+  echo "Vault Stake Program ID (PRIME):       $VAULT_STAKE_PROGRAM_ID"
+  echo "Mint Token (wYLDS):           $MINT_PROG_MINT_TOKEN"
+  echo "Vault Token (USDC):           $MINT_PROG_VAULT_MINT"
+  echo "Staking Token (PRIME):        $STAKE_PROG_MINT_TOKEN"
   echo ""
 
   echo "Select an action:"
@@ -107,8 +107,8 @@ while true; do
     "Create Mint Token (wYLDS)" \
     "Create Stake Token (PRIME)" \
     "Create Mint Program Redeem Vault Token Account" \
-    "Create Stake Program Vault Token Account" \
-    "Setup Metaplex Metadata" \
+    "Create Stake Program Vault Token Account (PRIME - uses wYLDS)" \
+    "Setup Metaplex Metadata (wYLDS + PRIME)" \
     "Show Accounts & PDAs" \
     "Exit"
   do

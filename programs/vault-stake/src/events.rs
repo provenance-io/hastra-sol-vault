@@ -45,7 +45,7 @@ pub struct RewardsPublished {
 
 #[event]
 pub struct PriceVerifiedEvent {
-    pub verifier: Pubkey,      // rewards admin who submitted the report
+    pub verifier: Pubkey, // rewards admin who submitted the report
     pub feed_id: [u8; 32],
     pub price: i128,
     pub price_scale: u64,
@@ -59,5 +59,29 @@ pub struct MaxRewardBpsUpdated {
     pub admin: Pubkey,
     pub old_bps: u64,
     pub new_bps: u64,
+    pub stake_config: Pubkey,
+}
+
+#[event]
+pub struct MaxPeriodRewardsUpdated {
+    pub admin: Pubkey,
+    pub old_value: u64,
+    pub new_value: u64,
+    pub stake_config: Pubkey,
+}
+
+#[event]
+pub struct RewardPeriodSecondsUpdated {
+    pub admin: Pubkey,
+    pub old_value: i64,
+    pub new_value: i64,
+    pub stake_config: Pubkey,
+}
+
+#[event]
+pub struct MaxTotalRewardsUpdated {
+    pub admin: Pubkey,
+    pub old_value: u64,
+    pub new_value: u64,
     pub stake_config: Pubkey,
 }

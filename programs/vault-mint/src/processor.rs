@@ -2,19 +2,27 @@ use crate::account_structs::*;
 use crate::error::*;
 use crate::events::*;
 use crate::guard::validate_program_update_authority;
-use crate::state::ProofNode;
+use crate::state::{AllowedExternalMintPrograms, ProofNode};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::hash::hashv;
+use anchor_lang::solana_program::program::invoke;
+use anchor_lang::solana_program::system_instruction;
 use anchor_spl::token::spl_token::instruction::AuthorityType;
 use anchor_spl::token::{self, MintTo, Transfer};
 
 pub fn initialize(
     ctx: Context<Initialize>,
     freeze_administrators: Vec<Pubkey>,
-    rewards_administrators: Vec<Pubkey>
+    rewards_administrators: Vec<Pubkey>,
 ) -> Result<()> {
-    msg!("Initializing with vault_token_mint: {}", ctx.accounts.vault_token_mint.key());
-    msg!("Vault mint account: {}", ctx.accounts.vault_token_mint.key());
+    msg!(
+        "Initializing with vault_token_mint: {}",
+        ctx.accounts.vault_token_mint.key()
+    );
+    msg!(
+        "Vault mint account: {}",
+        ctx.accounts.vault_token_mint.key()
+    );
 
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
 
@@ -153,7 +161,10 @@ pub fn request_redeem(ctx: Context<RequestRedeem>, amount: u64) -> Result<()> {
     // redeem amount against the user balance at the time of completion to
     // prevent burn error.
     let amount_to_redeem = std::cmp::min(user_balance, amount);
-    require!(amount_to_redeem > 0, CustomErrorCode::InsufficientRedemptionBalance);
+    require!(
+        amount_to_redeem > 0,
+        CustomErrorCode::InsufficientRedemptionBalance
+    );
 
     msg!("RequestRedeem user account balance: {}", user_balance);
     msg!("Requested amount to redeem: {}", amount);
@@ -398,10 +409,7 @@ pub fn create_rewards_epoch(
     merkle_root: [u8; 32],
     total: u64,
 ) -> Result<()> {
-    require!(
-        !ctx.accounts.config.paused,
-        CustomErrorCode::ProtocolPaused
-    );
+    require!(!ctx.accounts.config.paused, CustomErrorCode::ProtocolPaused);
     require!(
         ctx.accounts
             .config
@@ -500,26 +508,72 @@ pub fn claim_rewards(ctx: Context<ClaimRewards>, amount: u64, proof: Vec<ProofNo
     Ok(())
 }
 
-// Allows an external program (specified in config) to mint tokens to a destination account
+/// Allows an authorized external program to mint wYLDS tokens into a destination account.
+/// Authorization uses two complementary paths for a safe, zero-downtime migration:
+///
+/// **Legacy path** (`config.allowed_external_mint_program`): The original single-program
+/// field set at `initialize` time. The existing vault-stake (PRIME) deployment continues
+/// to work without any re-initialization.
+///
+/// **Extended path** (`allowed_external_mint_programs` PDA): An additive PDA that holds a
+/// `Vec<Pubkey>` of additional authorized programs. vault-stake-auto (and future pools) are
+/// registered here via `register_allowed_external_mint_program`. Deployments must create this
+/// PDA on-chain before relying on `external_program_mint` (typically as part of the upgrade
+/// proposal: run `register_allowed_external_mint_program` once so `init_if_needed` allocates
+/// the account). If account data is empty or fails to deserialize, the extended list is
+/// treated as empty and only the legacy `allowed_external_mint_program` check applies.
+///
+/// Cryptographic proof of caller identity comes from the `external_mint_authority` PDA
+/// signer: its address is derived with `seeds = [b"external_mint_authority"]` under
+/// `calling_program`'s program id, so only `calling_program` can produce a valid signer.
 pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> Result<()> {
     require!(!ctx.accounts.config.paused, CustomErrorCode::ProtocolPaused);
 
     let config = &ctx.accounts.config;
 
-    // Verify admin is a rewards administrator
-    // Note: admin is not a Signer here (it's just an AccountInfo whose pubkey we check)
-    // The PDA (external_mint_authority) is the actual signer of the CPI
+    // Verify admin is a rewards administrator.
+    // Note: admin is not a Signer here — the PDA (external_mint_authority) is the actual
+    // CPI signer. The admin pubkey is just passed through for authorization checking.
     require!(
-        config.rewards_administrators.contains(&ctx.accounts.admin.key()),
+        config
+            .rewards_administrators
+            .contains(&ctx.accounts.admin.key()),
         CustomErrorCode::InvalidRewardsAdministrator
     );
 
+    // Verify calling_program is authorized. The external_mint_authority PDA seeds constraint
+    // in account_structs already proves that the signer was derived from calling_program's id;
+    // here we verify that program id is actually permitted.
+    let calling_key = ctx.accounts.calling_program.key();
 
-    // The external_mint_authority PDA verification happens automatically
-    // via the seeds constraint. The constraint ensures:
-    // 1. The PDA address matches derivation from [b"external_mint_authority"] + allowed_external_mint_program
-    // 2. The PDA is properly signed (only possible if called via CPI from allowed_external_mint_program)
-    // Mint tokens using the mint_authority PDA
+    // Legacy path: the single program id stored in Config at initialization time.
+    let is_legacy_caller = calling_key == config.allowed_external_mint_program;
+
+    // Extended path: try to deserialize the allow-list PDA. The account may be empty
+    // (PDA not yet initialized) for deployments that have not registered extra programs.
+    let is_registered_caller = if !is_legacy_caller {
+        let data = ctx
+            .accounts
+            .allowed_external_mint_programs
+            .try_borrow_data()?;
+        if data.len() >= 8 {
+            let mut slice: &[u8] = &*data;
+            AllowedExternalMintPrograms::try_deserialize(&mut slice)
+                .map(|allowed| allowed.programs.contains(&calling_key))
+                .unwrap_or(false)
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    require!(
+        is_legacy_caller || is_registered_caller,
+        CustomErrorCode::InvalidMintProgramCaller
+    );
+
+    // Mint tokens using the mint_authority PDA.
     let seeds: &[&[u8]] = &[b"mint_authority", &[ctx.bumps.mint_authority]];
     let signer = &[&seeds[..]];
     let cpi_accounts = MintTo {
@@ -550,9 +604,7 @@ pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> 
 }
 
 // create a function called by program update authority to update the vault token account
-pub fn update_vault_token_account(
-    ctx: Context<UpdateVaultTokenAccount>,
-) -> Result<()> {   
+pub fn update_vault_token_account(ctx: Context<UpdateVaultTokenAccount>) -> Result<()> {
     // Validate that the signer is the program's update authority
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
 
@@ -562,15 +614,98 @@ pub fn update_vault_token_account(
     let vault_token_account_config = &mut ctx.accounts.vault_token_account_config;
     vault_token_account_config.vault_token_account = ctx.accounts.vault_token_account.key();
 
-    msg!("Vault token authority updated to: {}", ctx.accounts.vault_token_account.owner.key());
-    msg!("Vault token account updated to: {}", ctx.accounts.vault_token_account.key());
+    msg!(
+        "Vault token authority updated to: {}",
+        ctx.accounts.vault_token_account.owner.key()
+    );
+    msg!(
+        "Vault token account updated to: {}",
+        ctx.accounts.vault_token_account.key()
+    );
     Ok(())
 }
 
-pub fn sweep_redeem_vault_funds(
-    ctx: Context<SweepRedeemVaultFunds>,
-    amount: u64,
+/// Registers an additional external program as authorized to call external_program_mint.
+/// Idempotent: re-registering an already-listed program is a no-op.
+/// Enforces the configurable cap stored in ExternalMintProgramsLimitConfig.
+/// Only callable by the program upgrade authority.
+pub fn register_allowed_external_mint_program(
+    ctx: Context<RegisterAllowedExternalMintProgram>,
 ) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+
+    let program_key = ctx.accounts.external_program.key();
+    let allowed = &mut ctx.accounts.allowed_external_mint_programs;
+    let limit_config = &mut ctx.accounts.external_mint_programs_limit_config;
+
+    // Idempotent: skip if the program is already in the list.
+    if allowed.programs.contains(&program_key) {
+        msg!("Program {} is already registered; no-op", program_key);
+        return Ok(());
+    }
+
+    require!(
+        allowed.programs.len() < limit_config.max_programs as usize,
+        CustomErrorCode::TooManyAllowedExternalMintPrograms
+    );
+
+    let required_len =
+        AllowedExternalMintPrograms::len_for_program_count(allowed.programs.len() + 1);
+    let allowed_info = allowed.to_account_info();
+    if allowed_info.data_len() < required_len {
+        let rent = Rent::get()?;
+        let required_lamports = rent.minimum_balance(required_len);
+        let current_lamports = allowed_info.lamports();
+        if current_lamports < required_lamports {
+            let delta = required_lamports
+                .checked_sub(current_lamports)
+                .ok_or(ProgramError::ArithmeticOverflow)?;
+            invoke(
+                &system_instruction::transfer(
+                    &ctx.accounts.signer.key(),
+                    &allowed_info.key(),
+                    delta,
+                ),
+                &[
+                    ctx.accounts.signer.to_account_info(),
+                    allowed_info.clone(),
+                    ctx.accounts.system_program.to_account_info(),
+                ],
+            )?;
+        }
+        allowed_info.realloc(required_len, false)?;
+    }
+
+    allowed.programs.push(program_key);
+    allowed.bump = ctx.bumps.allowed_external_mint_programs;
+
+    msg!(
+        "Registered authorized external mint program: {}",
+        program_key
+    );
+    Ok(())
+}
+
+/// Updates the cap used when registering authorized external mint callers.
+/// Only callable by the program upgrade authority.
+pub fn update_external_mint_programs_limit(
+    ctx: Context<UpdateExternalMintProgramsLimit>,
+    max_programs: u8,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+
+    let limit_config = &mut ctx.accounts.external_mint_programs_limit_config;
+    limit_config.max_programs = max_programs;
+    limit_config.bump = ctx.bumps.external_mint_programs_limit_config;
+
+    msg!(
+        "Updated allowed external mint program limit to {}",
+        max_programs
+    );
+    Ok(())
+}
+
+pub fn sweep_redeem_vault_funds(ctx: Context<SweepRedeemVaultFunds>, amount: u64) -> Result<()> {
     // Validate the signer is a rewards administrator
     require!(
         ctx.accounts
@@ -584,7 +719,7 @@ pub fn sweep_redeem_vault_funds(
 
     let vault_balance = ctx.accounts.redeem_vault_token_account.amount;
     require!(
-        vault_balance >= amount, 
+        vault_balance >= amount,
         CustomErrorCode::InsufficientRedeemVaultFunds
     );
 
@@ -605,7 +740,7 @@ pub fn sweep_redeem_vault_funds(
             },
             signer,
         ),
-        amount
+        amount,
     )?;
 
     msg!("Emitting SweepRedeemVaultEvent");
