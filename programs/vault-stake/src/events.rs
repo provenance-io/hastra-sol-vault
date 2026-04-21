@@ -49,6 +49,7 @@ pub struct PriceVerifiedEvent {
     pub feed_id: [u8; 32],
     pub price: i128,
     pub price_scale: u64,
+    /// Report `observations_timestamp` (staleness anchor for deposit/redeem), not the verify tx time.
     pub price_timestamp: i64,
     pub expires_at: u64,
     pub slot: u64,

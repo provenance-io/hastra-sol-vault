@@ -89,7 +89,7 @@ async function main() {
 
     console.log(`✅ verify_price succeeded`);
     console.log(`   Transaction: ${tx}`);
-    console.log(`\n   StakePriceConfig.price and price_timestamp have been updated.`);
+    console.log(`\n   StakePriceConfig.price and price_timestamp (observations_timestamp) have been updated.`);
 }
 
 main().catch((err) => {
