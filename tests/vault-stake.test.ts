@@ -705,47 +705,50 @@ describe("vault-stake", () => {
         });
 
         it("updates price config parameters", async () => {
-            await program.methods
-                .updatePriceConfig(
-                    PublicKey.default,
-                    PublicKey.default,
-                    PublicKey.default,
-                    TEST_FEED_ID,
-                    TEST_PRICE_SCALE,
-                    new BN(7200) // update staleness to 2 hours
-                )
-                .accountsStrict({
-                    stakeConfig: stakeConfigPda,
-                    stakePriceConfig: stakePriceConfigPda,
-                    signer: provider.wallet.publicKey,
-                    programData: programDataPda,
-                })
-                .rpc();
+            try {
+                await program.methods
+                    .updatePriceConfig(
+                        PublicKey.default,
+                        PublicKey.default,
+                        PublicKey.default,
+                        TEST_FEED_ID,
+                        TEST_PRICE_SCALE,
+                        new BN(7200) // update staleness to 2 hours
+                    )
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        stakePriceConfig: stakePriceConfigPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programDataPda,
+                    })
+                    .rpc();
 
-            const priceConfig = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
-            assert.equal(priceConfig.priceMaxStaleness.toString(), "7200");
-            // feed_id and price_scale unchanged: stored price and timestamp are preserved
-            // (changing feed_id or price_scale invalidates; see next test)
-            assert.ok(priceConfig.price.toString() === TEST_PRICE_1TO1.toString(), "price unchanged");
-            assert.ok(priceConfig.priceTimestamp.toNumber() > 0, "price_timestamp unchanged");
-
-            // Restore staleness to 3600 for remaining tests
-            await program.methods
-                .updatePriceConfig(
-                    PublicKey.default,
-                    PublicKey.default,
-                    PublicKey.default,
-                    TEST_FEED_ID,
-                    TEST_PRICE_SCALE,
-                    new BN(3600)
-                )
-                .accountsStrict({
-                    stakeConfig: stakeConfigPda,
-                    stakePriceConfig: stakePriceConfigPda,
-                    signer: provider.wallet.publicKey,
-                    programData: programDataPda,
-                })
-                .rpc();
+                const priceConfig = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
+                assert.equal(priceConfig.priceMaxStaleness.toString(), "7200");
+                // feed_id and price_scale unchanged: stored price and timestamp are preserved
+                // (changing feed_id or price_scale invalidates; see next test)
+                assert.ok(priceConfig.price.toString() === TEST_PRICE_1TO1.toString(), "price unchanged");
+                assert.ok(priceConfig.priceTimestamp.toNumber() > 0, "price_timestamp unchanged");
+            } finally {
+                // Always restore price_max_staleness so a failed fetch/assertion cannot strand the suite
+                // at 7200s (order-dependent follow-on failures).
+                await program.methods
+                    .updatePriceConfig(
+                        PublicKey.default,
+                        PublicKey.default,
+                        PublicKey.default,
+                        TEST_FEED_ID,
+                        TEST_PRICE_SCALE,
+                        new BN(3600)
+                    )
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        stakePriceConfig: stakePriceConfigPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programDataPda,
+                    })
+                    .rpc();
+            }
         });
 
         it("clears price and price_timestamp when feed_id or price_scale changes", async () => {
@@ -761,69 +764,72 @@ describe("vault-stake", () => {
                 chainlinkAccessController: PublicKey.default,
             };
 
-            await setPriceForTesting(TEST_PRICE_1TO1);
-            const altFeedId = [...TEST_FEED_ID];
-            altFeedId[0] = 1;
+            try {
+                await setPriceForTesting(TEST_PRICE_1TO1);
+                const altFeedId = [...TEST_FEED_ID];
+                altFeedId[0] = 1;
 
-            await program.methods
-                .updatePriceConfig(
-                    chainlinkPlaceholders.chainlinkProgram,
-                    chainlinkPlaceholders.chainlinkVerifierAccount,
-                    chainlinkPlaceholders.chainlinkAccessController,
-                    altFeedId,
-                    TEST_PRICE_SCALE,
-                    new BN(3600)
-                )
-                .accountsStrict(upgradeAccounts)
-                .rpc();
+                await program.methods
+                    .updatePriceConfig(
+                        chainlinkPlaceholders.chainlinkProgram,
+                        chainlinkPlaceholders.chainlinkVerifierAccount,
+                        chainlinkPlaceholders.chainlinkAccessController,
+                        altFeedId,
+                        TEST_PRICE_SCALE,
+                        new BN(3600)
+                    )
+                    .accountsStrict(upgradeAccounts)
+                    .rpc();
 
-            let cfg = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
-            assert.equal(cfg.price.toString(), "0", "price cleared when feed_id changes");
-            assert.equal(cfg.priceTimestamp.toString(), "0", "price_timestamp cleared when feed_id changes");
+                let cfg = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
+                assert.equal(cfg.price.toString(), "0", "price cleared when feed_id changes");
+                assert.equal(cfg.priceTimestamp.toString(), "0", "price_timestamp cleared when feed_id changes");
 
-            await program.methods
-                .updatePriceConfig(
-                    chainlinkPlaceholders.chainlinkProgram,
-                    chainlinkPlaceholders.chainlinkVerifierAccount,
-                    chainlinkPlaceholders.chainlinkAccessController,
-                    TEST_FEED_ID,
-                    TEST_PRICE_SCALE,
-                    new BN(3600)
-                )
-                .accountsStrict(upgradeAccounts)
-                .rpc();
-            await setPriceForTesting(TEST_PRICE_1TO1);
+                await program.methods
+                    .updatePriceConfig(
+                        chainlinkPlaceholders.chainlinkProgram,
+                        chainlinkPlaceholders.chainlinkVerifierAccount,
+                        chainlinkPlaceholders.chainlinkAccessController,
+                        TEST_FEED_ID,
+                        TEST_PRICE_SCALE,
+                        new BN(3600)
+                    )
+                    .accountsStrict(upgradeAccounts)
+                    .rpc();
+                await setPriceForTesting(TEST_PRICE_1TO1);
 
-            const altScale = new BN(2_000_000_000);
-            await program.methods
-                .updatePriceConfig(
-                    chainlinkPlaceholders.chainlinkProgram,
-                    chainlinkPlaceholders.chainlinkVerifierAccount,
-                    chainlinkPlaceholders.chainlinkAccessController,
-                    TEST_FEED_ID,
-                    altScale,
-                    new BN(3600)
-                )
-                .accountsStrict(upgradeAccounts)
-                .rpc();
-            cfg = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
-            assert.equal(cfg.price.toString(), "0", "price cleared when price_scale changes");
-            assert.equal(cfg.priceTimestamp.toString(), "0", "price_timestamp cleared when price_scale changes");
-            assert.equal(cfg.priceScale.toString(), altScale.toString(), "new price_scale is stored");
-
-            // Restore defaults for the rest of the suite
-            await program.methods
-                .updatePriceConfig(
-                    chainlinkPlaceholders.chainlinkProgram,
-                    chainlinkPlaceholders.chainlinkVerifierAccount,
-                    chainlinkPlaceholders.chainlinkAccessController,
-                    TEST_FEED_ID,
-                    TEST_PRICE_SCALE,
-                    new BN(3600)
-                )
-                .accountsStrict(upgradeAccounts)
-                .rpc();
-            await setPriceForTesting(TEST_PRICE_1TO1);
+                const altScale = new BN(2_000_000_000);
+                await program.methods
+                    .updatePriceConfig(
+                        chainlinkPlaceholders.chainlinkProgram,
+                        chainlinkPlaceholders.chainlinkVerifierAccount,
+                        chainlinkPlaceholders.chainlinkAccessController,
+                        TEST_FEED_ID,
+                        altScale,
+                        new BN(3600)
+                    )
+                    .accountsStrict(upgradeAccounts)
+                    .rpc();
+                cfg = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
+                assert.equal(cfg.price.toString(), "0", "price cleared when price_scale changes");
+                assert.equal(cfg.priceTimestamp.toString(), "0", "price_timestamp cleared when price_scale changes");
+                assert.equal(cfg.priceScale.toString(), altScale.toString(), "new price_scale is stored");
+            } finally {
+                // Restore default feed, scale, staleness, and a fresh test price for the rest of the suite
+                // even when an earlier assertion or RPC fails mid-test.
+                await program.methods
+                    .updatePriceConfig(
+                        chainlinkPlaceholders.chainlinkProgram,
+                        chainlinkPlaceholders.chainlinkVerifierAccount,
+                        chainlinkPlaceholders.chainlinkAccessController,
+                        TEST_FEED_ID,
+                        TEST_PRICE_SCALE,
+                        new BN(3600)
+                    )
+                    .accountsStrict(upgradeAccounts)
+                    .rpc();
+                await setPriceForTesting(TEST_PRICE_1TO1);
+            }
         });
     });
 

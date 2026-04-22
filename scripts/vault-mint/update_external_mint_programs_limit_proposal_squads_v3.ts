@@ -160,8 +160,18 @@ async function main() {
 
     // --- Next transaction index -----------------------------------------------
 
+    const U32_MAX = 0xffffffff;
     let nextTxIndex: number;
     if (args.transaction_index !== undefined) {
+        if (
+            !Number.isInteger(args.transaction_index) ||
+            args.transaction_index < 0 ||
+            args.transaction_index > U32_MAX
+        ) {
+            throw new Error(
+                `Invalid --transaction_index: ${args.transaction_index}. Expected a non-negative integer within u32 range (0-${U32_MAX}).`
+            );
+        }
         nextTxIndex = args.transaction_index;
     } else {
         const msAccountInfo = await connection.getAccountInfo(msPDA);
