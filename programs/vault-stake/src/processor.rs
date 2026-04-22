@@ -705,6 +705,11 @@ pub fn update_price_config(
         config.price = 0;
         config.price_timestamp = 0;
         msg!("Stored price invalidated due to feed_id/price_scale change");
+        emit!(PriceInvalidated {
+            verifier: ctx.accounts.signer.key(),
+            feed_id: feed_id,
+            price_scale: price_scale,
+        });
     }
 
     Ok(())

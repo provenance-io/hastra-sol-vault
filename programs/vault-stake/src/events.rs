@@ -86,3 +86,10 @@ pub struct MaxTotalRewardsUpdated {
     pub new_value: u64,
     pub stake_config: Pubkey,
 }
+
+#[event]
+pub struct PriceInvalidated {
+    pub verifier: Pubkey,
+    pub feed_id: [u8; 32],
+    pub price_scale: u64,
+}

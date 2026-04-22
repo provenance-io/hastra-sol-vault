@@ -706,7 +706,7 @@ describe("vault-stake", () => {
 
         it("updates price config parameters", async () => {
             try {
-                await program.methods
+                const sig = await program.methods
                     .updatePriceConfig(
                         PublicKey.default,
                         PublicKey.default,
@@ -729,6 +729,12 @@ describe("vault-stake", () => {
                 // (changing feed_id or price_scale invalidates; see next test)
                 assert.ok(priceConfig.price.toString() === TEST_PRICE_1TO1.toString(), "price unchanged");
                 assert.ok(priceConfig.priceTimestamp.toNumber() > 0, "price_timestamp unchanged");
+
+                const ev = (await parseEvents(sig)).find(e => e.name === "priceInvalidated");
+                assert.isUndefined(
+                    ev,
+                    "PriceInvalidated is emitted only when feed_id or price_scale semantics change"
+                );
             } finally {
                 // Always restore price_max_staleness so a failed fetch/assertion cannot strand the suite
                 // at 7200s (order-dependent follow-on failures).
@@ -769,7 +775,7 @@ describe("vault-stake", () => {
                 const altFeedId = [...TEST_FEED_ID];
                 altFeedId[0] = 1;
 
-                await program.methods
+                const sigFeedId = await program.methods
                     .updatePriceConfig(
                         chainlinkPlaceholders.chainlinkProgram,
                         chainlinkPlaceholders.chainlinkVerifierAccount,
@@ -780,6 +786,25 @@ describe("vault-stake", () => {
                     )
                     .accountsStrict(upgradeAccounts)
                     .rpc();
+
+                const feedChangeEvents = await parseEvents(sigFeedId);
+                const evFeed = feedChangeEvents.find(e => e.name === "priceInvalidated");
+                assert.isDefined(evFeed, "PriceInvalidated must be emitted when feed_id changes");
+                assert.isTrue(
+                    (evFeed!.data as {verifier: PublicKey}).verifier.equals(provider.wallet.publicKey),
+                    "event verifier should be the upgrade authority signer"
+                );
+                {
+                    const want = Buffer.from(altFeedId);
+                    const raw = (evFeed!.data as {feedId: number[] | Buffer}).feedId;
+                    const got = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+                    assert.equal(got.toString("hex"), want.toString("hex"), "event feed_id should match the new value");
+                }
+                assert.equal(
+                    (evFeed!.data as {priceScale: BN}).priceScale.toString(),
+                    TEST_PRICE_SCALE.toString(),
+                    "event price_scale should match the new config"
+                );
 
                 let cfg = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
                 assert.equal(cfg.price.toString(), "0", "price cleared when feed_id changes");
@@ -799,7 +824,7 @@ describe("vault-stake", () => {
                 await setPriceForTesting(TEST_PRICE_1TO1);
 
                 const altScale = new BN(2_000_000_000);
-                await program.methods
+                const sigScale = await program.methods
                     .updatePriceConfig(
                         chainlinkPlaceholders.chainlinkProgram,
                         chainlinkPlaceholders.chainlinkVerifierAccount,
@@ -810,6 +835,25 @@ describe("vault-stake", () => {
                     )
                     .accountsStrict(upgradeAccounts)
                     .rpc();
+                const scaleChangeEvents = await parseEvents(sigScale);
+                const evScale = scaleChangeEvents.find(e => e.name === "priceInvalidated");
+                assert.isDefined(evScale, "PriceInvalidated must be emitted when price_scale changes");
+                assert.isTrue(
+                    (evScale!.data as {verifier: PublicKey}).verifier.equals(provider.wallet.publicKey),
+                    "event verifier should be the upgrade authority signer"
+                );
+                {
+                    const want = Buffer.from(TEST_FEED_ID);
+                    const raw = (evScale!.data as {feedId: number[] | Buffer}).feedId;
+                    const got = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+                    assert.equal(got.toString("hex"), want.toString("hex"), "event feed_id should match the new value");
+                }
+                assert.equal(
+                    (evScale!.data as {priceScale: BN}).priceScale.toString(),
+                    altScale.toString(),
+                    "event price_scale should match the new config"
+                );
+
                 cfg = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
                 assert.equal(cfg.price.toString(), "0", "price cleared when price_scale changes");
                 assert.equal(cfg.priceTimestamp.toString(), "0", "price_timestamp cleared when price_scale changes");
