@@ -162,7 +162,8 @@ pub mod vault_stake {
     }
 
     /// Submits a signed Chainlink Data Streams report for on-chain verification.
-    /// On success, stores the verified price in StakePriceConfig for use by deposit and redeem.
+    /// On success, stores the verified price and the report’s `observations_timestamp` in
+    /// StakePriceConfig; deposit and redeem measure staleness from that observation time.
     /// Only callable by rewards administrators.
     pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result<()> {
         processor::verify_price(ctx, signed_report)

@@ -113,7 +113,11 @@ pub struct StakePriceConfig {
     //   e.g. if 1 PRIME = 1.5 wYLDS and price_scale = 1_000_000_000, price = 1_500_000_000
     pub price: i128,
     pub price_scale: u64, // Precision factor that matches the Chainlink feed (e.g. 1e9 or 1e18)
-    pub price_timestamp: i64, // Unix timestamp of last successful verify_price (0 = never set)
+    // Staleness anchor: latest unix second for which the stored price is vouched (Chainlink
+    // ReportDataV7.observations_timestamp). Set from each successful verify_price — not the local
+    // submission instant — so deposit/redeem age the oracle from the observation clock, matching
+    // common FeedVerifier-style usage on other chains. Zero means never set.
+    pub price_timestamp: i64,
     pub price_max_staleness: i64, // Max seconds the stored price may be old before deposit/redeem reject it
     pub bump: u8,
 }

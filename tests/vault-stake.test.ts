@@ -1,7 +1,7 @@
 import * as anchor from "@coral-xyz/anchor";
-import {Program} from "@coral-xyz/anchor";
-import {VaultMint} from "../target/types/vault_mint";
-import {VaultStake} from "../target/types/vault_stake";
+import { Program } from "@coral-xyz/anchor";
+import { VaultMint } from "../target/types/vault_mint";
+import { VaultStake } from "../target/types/vault_stake";
 import {
     Keypair,
     LAMPORTS_PER_SOL,
@@ -18,9 +18,9 @@ import {
     TOKEN_PROGRAM_ID,
     transfer,
 } from "@solana/spl-token";
-import {assert, expect} from "chai";
+import { assert, expect } from "chai";
 import BN from "bn.js";
-import {createBigInt} from "@metaplex-foundation/umi";
+import { createBigInt } from "@metaplex-foundation/umi";
 import {
     REWARD_COOLDOWN_TEST_SLEEP_MS,
     STAKE_REWARD_CONFIG_DEFAULTS,
@@ -38,11 +38,34 @@ describe("vault-stake", () => {
     // Derives the actual on-chain program ID from the transaction logs rather
     // than relying on the workspace program ID, making this robust to
     // `anchor keys sync` changing the declared ID in the IDL.
+    // Explicitly waits for the signature to reach "confirmed" commitment
+    // before calling getTransaction: Anchor's .rpc() resolves once the tx is
+    // processed by the validator's configured commitment, which on some CI
+    // runners races ahead of the cluster reaching "confirmed", causing
+    // getTransaction({commitment:"confirmed"}) to return null and losing logs.
     const parseEvents = async (sig: string) => {
-        const tx = await provider.connection.getTransaction(sig, {
-            commitment: "confirmed",
-            maxSupportedTransactionVersion: 0,
-        });
+        try {
+            const latestBlockhash = await provider.connection.getLatestBlockhash("confirmed");
+            await provider.connection.confirmTransaction(
+                { signature: sig, ...latestBlockhash },
+                "confirmed"
+            );
+        } catch (err) {
+            console.log("DEBUG parseEvents: confirmTransaction threw for sig", sig, err);
+        }
+
+        // Poll getTransaction briefly in case the cluster still hasn't caught
+        // up after confirmTransaction returns. Empirically observed in CI.
+        let tx: anchor.web3.VersionedTransactionResponse | null = null;
+        for (let attempt = 0; attempt < 5 && tx === null; attempt++) {
+            tx = await provider.connection.getTransaction(sig, {
+                commitment: "confirmed",
+                maxSupportedTransactionVersion: 0,
+            });
+            if (tx === null) {
+                await new Promise(r => setTimeout(r, 200));
+            }
+        }
         if (!tx?.meta?.logMessages) {
             console.log("DEBUG parseEvents: no logMessages for sig", sig);
             return [];
@@ -104,8 +127,8 @@ describe("vault-stake", () => {
     // Deposit formula:  shares = amount * price_scale / price = amount (1:1 at these values)
     // Redeem formula:   wYLDS  = shares * price / price_scale = shares (1:1 at these values)
     const TEST_PRICE_SCALE = new BN(1_000_000_000);   // 1e9
-    const TEST_PRICE_1TO1  = new BN(1_000_000_000);   // 1 PRIME per 1 wYLDS
-    const TEST_FEED_ID= Array.from(Buffer.alloc(32, 0));
+    const TEST_PRICE_1TO1 = new BN(1_000_000_000);   // 1 PRIME per 1 wYLDS
+    const TEST_FEED_ID = Array.from(Buffer.alloc(32, 0));
 
     let publishRewardsId = 0;
 
@@ -235,13 +258,13 @@ describe("vault-stake", () => {
             totalAssets = await getAccount(provider.connection, vaultTokenAccount)
             rate = await exchangeRate();
         })().then(_ => {
-                console.log(`\n======== ${title} ========`);
-                console.table({
-                    "Total Shares": totalShares.supply.toString(),
-                    "Total Assets": totalAssets.amount.toString(),
-                    "Exchange Rate (assets per share)": (() => { const s = rate.toString(); return s.length > 9 ? `${s.slice(0, -9)}.${s.slice(-9)}` : s; })(),
-                });
-            }
+            console.log(`\n======== ${title} ========`);
+            console.table({
+                "Total Shares": totalShares.supply.toString(),
+                "Total Assets": totalAssets.amount.toString(),
+                "Exchange Rate (assets per share)": (() => { const s = rate.toString(); return s.length > 9 ? `${s.slice(0, -9)}.${s.slice(-9)}` : s; })(),
+            });
+        }
         );
     }
     before(async () => {
@@ -705,46 +728,175 @@ describe("vault-stake", () => {
         });
 
         it("updates price config parameters", async () => {
-            await program.methods
-                .updatePriceConfig(
-                    PublicKey.default,
-                    PublicKey.default,
-                    PublicKey.default,
-                    TEST_FEED_ID,
-                    TEST_PRICE_SCALE,
-                    new BN(7200) // update staleness to 2 hours
-                )
-                .accountsStrict({
-                    stakeConfig: stakeConfigPda,
-                    stakePriceConfig: stakePriceConfigPda,
-                    signer: provider.wallet.publicKey,
-                    programData: programDataPda,
-                })
-                .rpc();
+            try {
+                const sig = await program.methods
+                    .updatePriceConfig(
+                        PublicKey.default,
+                        PublicKey.default,
+                        PublicKey.default,
+                        TEST_FEED_ID,
+                        TEST_PRICE_SCALE,
+                        new BN(7200) // update staleness to 2 hours
+                    )
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        stakePriceConfig: stakePriceConfigPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programDataPda,
+                    })
+                    .rpc();
 
-            const priceConfig = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
-            assert.equal(priceConfig.priceMaxStaleness.toString(), "7200");
-            // price and price_timestamp should NOT be reset by update_price_config
-            assert.ok(priceConfig.price.toString() === TEST_PRICE_1TO1.toString(), "price unchanged");
-            assert.ok(priceConfig.priceTimestamp.toNumber() > 0, "price_timestamp unchanged");
+                const priceConfig = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
+                assert.equal(priceConfig.priceMaxStaleness.toString(), "7200");
+                // feed_id and price_scale unchanged: stored price and timestamp are preserved
+                // (changing feed_id or price_scale invalidates; see next test)
+                assert.ok(priceConfig.price.toString() === TEST_PRICE_1TO1.toString(), "price unchanged");
+                assert.ok(priceConfig.priceTimestamp.toNumber() > 0, "price_timestamp unchanged");
 
-            // Restore staleness to 3600 for remaining tests
-            await program.methods
-                .updatePriceConfig(
-                    PublicKey.default,
-                    PublicKey.default,
-                    PublicKey.default,
-                    TEST_FEED_ID,
-                    TEST_PRICE_SCALE,
-                    new BN(3600)
-                )
-                .accountsStrict({
-                    stakeConfig: stakeConfigPda,
-                    stakePriceConfig: stakePriceConfigPda,
-                    signer: provider.wallet.publicKey,
-                    programData: programDataPda,
-                })
-                .rpc();
+                const ev = (await parseEvents(sig)).find(e => e.name === "priceInvalidated");
+                assert.isUndefined(
+                    ev,
+                    "PriceInvalidated is emitted only when feed_id or price_scale semantics change"
+                );
+            } finally {
+                // Always restore price_max_staleness so a failed fetch/assertion cannot strand the suite
+                // at 7200s (order-dependent follow-on failures).
+                await program.methods
+                    .updatePriceConfig(
+                        PublicKey.default,
+                        PublicKey.default,
+                        PublicKey.default,
+                        TEST_FEED_ID,
+                        TEST_PRICE_SCALE,
+                        new BN(3600)
+                    )
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        stakePriceConfig: stakePriceConfigPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programDataPda,
+                    })
+                    .rpc();
+            }
+        });
+
+        it("clears price and price_timestamp when feed_id or price_scale changes", async () => {
+            const upgradeAccounts = {
+                stakeConfig: stakeConfigPda,
+                stakePriceConfig: stakePriceConfigPda,
+                signer: provider.wallet.publicKey,
+                programData: programDataPda,
+            };
+            const chainlinkPlaceholders = {
+                chainlinkProgram: PublicKey.default,
+                chainlinkVerifierAccount: PublicKey.default,
+                chainlinkAccessController: PublicKey.default,
+            };
+
+            try {
+                await setPriceForTesting(TEST_PRICE_1TO1);
+                const altFeedId = [...TEST_FEED_ID];
+                altFeedId[0] = 1;
+
+                const sigFeedId = await program.methods
+                    .updatePriceConfig(
+                        chainlinkPlaceholders.chainlinkProgram,
+                        chainlinkPlaceholders.chainlinkVerifierAccount,
+                        chainlinkPlaceholders.chainlinkAccessController,
+                        altFeedId,
+                        TEST_PRICE_SCALE,
+                        new BN(3600)
+                    )
+                    .accountsStrict(upgradeAccounts)
+                    .rpc();
+
+                const feedChangeEvents = await parseEvents(sigFeedId);
+                const evFeed = feedChangeEvents.find(e => e.name === "priceInvalidated");
+                assert.isDefined(evFeed, "PriceInvalidated must be emitted when feed_id changes");
+                assert.isTrue(
+                    (evFeed!.data as { verifier: PublicKey }).verifier.equals(provider.wallet.publicKey),
+                    "event verifier should be the upgrade authority signer"
+                );
+                {
+                    const want = Buffer.from(altFeedId);
+                    const raw = (evFeed!.data as { feedId: number[] | Buffer }).feedId;
+                    const got = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+                    assert.equal(got.toString("hex"), want.toString("hex"), "event feed_id should match the new value");
+                }
+                assert.equal(
+                    (evFeed!.data as { priceScale: BN }).priceScale.toString(),
+                    TEST_PRICE_SCALE.toString(),
+                    "event price_scale should match the new config"
+                );
+
+                let cfg = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
+                assert.equal(cfg.price.toString(), "0", "price cleared when feed_id changes");
+                assert.equal(cfg.priceTimestamp.toString(), "0", "price_timestamp cleared when feed_id changes");
+
+                await program.methods
+                    .updatePriceConfig(
+                        chainlinkPlaceholders.chainlinkProgram,
+                        chainlinkPlaceholders.chainlinkVerifierAccount,
+                        chainlinkPlaceholders.chainlinkAccessController,
+                        TEST_FEED_ID,
+                        TEST_PRICE_SCALE,
+                        new BN(3600)
+                    )
+                    .accountsStrict(upgradeAccounts)
+                    .rpc();
+                await setPriceForTesting(TEST_PRICE_1TO1);
+
+                const altScale = new BN(2_000_000_000);
+                const sigScale = await program.methods
+                    .updatePriceConfig(
+                        chainlinkPlaceholders.chainlinkProgram,
+                        chainlinkPlaceholders.chainlinkVerifierAccount,
+                        chainlinkPlaceholders.chainlinkAccessController,
+                        TEST_FEED_ID,
+                        altScale,
+                        new BN(3600)
+                    )
+                    .accountsStrict(upgradeAccounts)
+                    .rpc();
+                const scaleChangeEvents = await parseEvents(sigScale);
+                const evScale = scaleChangeEvents.find(e => e.name === "priceInvalidated");
+                assert.isDefined(evScale, "PriceInvalidated must be emitted when price_scale changes");
+                assert.isTrue(
+                    (evScale!.data as { verifier: PublicKey }).verifier.equals(provider.wallet.publicKey),
+                    "event verifier should be the upgrade authority signer"
+                );
+                {
+                    const want = Buffer.from(TEST_FEED_ID);
+                    const raw = (evScale!.data as { feedId: number[] | Buffer }).feedId;
+                    const got = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+                    assert.equal(got.toString("hex"), want.toString("hex"), "event feed_id should match the new value");
+                }
+                assert.equal(
+                    (evScale!.data as { priceScale: BN }).priceScale.toString(),
+                    altScale.toString(),
+                    "event price_scale should match the new config"
+                );
+
+                cfg = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
+                assert.equal(cfg.price.toString(), "0", "price cleared when price_scale changes");
+                assert.equal(cfg.priceTimestamp.toString(), "0", "price_timestamp cleared when price_scale changes");
+                assert.equal(cfg.priceScale.toString(), altScale.toString(), "new price_scale is stored");
+            } finally {
+                // Restore default feed, scale, staleness, and a fresh test price for the rest of the suite
+                // even when an earlier assertion or RPC fails mid-test.
+                await program.methods
+                    .updatePriceConfig(
+                        chainlinkPlaceholders.chainlinkProgram,
+                        chainlinkPlaceholders.chainlinkVerifierAccount,
+                        chainlinkPlaceholders.chainlinkAccessController,
+                        TEST_FEED_ID,
+                        TEST_PRICE_SCALE,
+                        new BN(3600)
+                    )
+                    .accountsStrict(upgradeAccounts)
+                    .rpc();
+                await setPriceForTesting(TEST_PRICE_1TO1);
+            }
         });
     });
 

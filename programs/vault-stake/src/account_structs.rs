@@ -591,7 +591,8 @@ pub struct UpdatePriceConfig<'info> {
 }
 
 /// Submits a signed Chainlink Data Streams report for on-chain verification.
-/// On success, stores the benchmark_price and timestamp in StakePriceConfig.
+/// On success, stores the verified price and the report’s observations timestamp (staleness anchor) in
+/// StakePriceConfig.
 /// Only callable by rewards administrators.
 #[derive(Accounts)]
 pub struct VerifyPrice<'info> {

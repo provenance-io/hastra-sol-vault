@@ -111,6 +111,9 @@ pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
         price_config.price_timestamp > 0,
         CustomErrorCode::PriceNotInitialized
     );
+    // Staleness is measured from price_timestamp, which (after a real verify_price) is the report’s
+    // observations_timestamp — the end of the Chainlink-vouched applicability window, not the
+    // on-chain time when verify_price was executed.
     require!(
         current_time
             .checked_sub(price_config.price_timestamp)
@@ -208,6 +211,7 @@ pub fn redeem(ctx: Context<Redeem>, amount: u64) -> Result<()> {
         price_config.price_timestamp > 0,
         CustomErrorCode::PriceNotInitialized
     );
+    // Same staleness basis as deposit: age from the stored observations_timestamp, not the verify tx time.
     require!(
         current_time
             .checked_sub(price_config.price_timestamp)
@@ -678,6 +682,13 @@ pub fn update_price_config(
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
 
     let config = &mut ctx.accounts.stake_price_config;
+
+    // Any field that changes how the stored price should be read must
+    // invalidate the price; deposit/redeem already require price > 0
+    // and price_timestamp > 0, so the protocol auto-quiesces until the
+    // next verify_price succeeds under the new configuration.
+    let semantics_changed = config.feed_id != feed_id || config.price_scale != price_scale;
+
     config.chainlink_program = chainlink_program;
     config.chainlink_verifier_account = chainlink_verifier_account;
     config.chainlink_access_controller = chainlink_access_controller;
@@ -689,6 +700,17 @@ pub fn update_price_config(
     msg!("chainlink_program: {}", chainlink_program);
     msg!("price_scale: {}", price_scale);
     msg!("price_max_staleness: {}s", price_max_staleness);
+
+    if semantics_changed {
+        config.price = 0;
+        config.price_timestamp = 0;
+        msg!("Stored price invalidated due to feed_id/price_scale change");
+        emit!(PriceInvalidated {
+            verifier: ctx.accounts.signer.key(),
+            feed_id: feed_id,
+            price_scale: price_scale,
+        });
+    }
 
     Ok(())
 }
@@ -918,7 +940,9 @@ pub fn update_max_total_rewards(ctx: Context<UpdateMaxTotalRewards>, new_cap: u6
 /// On successful verification:
 ///   1. The report's feed ID is checked against the configured feed ID.
 ///   2. The report's validity window is checked (valid_from_timestamp <= now <= expires_at).
-///   3. exchange_rate is stored as the new price and price_timestamp is updated.
+///   3. `exchange_rate` is stored as the new price, and `price_timestamp` is set to
+///      `observations_timestamp` (the Chainlink vouched “latest” instant for the price; downstream
+///      staleness uses that observation clock, not the local submission time of this instruction).
 /// Only callable by rewards administrators.
 pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result<()> {
     // Authorization: signer must be a rewards administrator
@@ -974,9 +998,10 @@ pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result
     let current_time = Clock::get()?.unix_timestamp;
 
     msg!(
-        "Chainlink report verified - current_time: {}, valid_from_timestamp: {}, expires_at: {}",
+        "Chainlink report verified - current_time: {}, valid_from: {}, observations_timestamp: {}, expires_at: {}",
         current_time,
         report.valid_from_timestamp,
+        report.observations_timestamp,
         report.expires_at
     );
     // Validate the report is within its valid time window
@@ -995,20 +1020,28 @@ pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result
         CustomErrorCode::InvalidFeedId
     );
 
+    // Require consistent applicability window: valid_from is the earliest second the price
+    // applies, observations the latest (per ReportDataV7).
+    require!(
+        report.valid_from_timestamp <= report.observations_timestamp,
+        CustomErrorCode::InvalidReportTimestamps
+    );
+
     // Store price — exchange_rate is an i192-equivalent BigInt; i128 covers all realistic
     // token pair prices (up to ~1.7e38 with 18 decimal precision).
     let price_i128 = report
         .exchange_rate
         .to_i128()
         .ok_or(CustomErrorCode::Overflow)?;
+    let observation_ts = i64::from(report.observations_timestamp);
 
     let price_config = &mut ctx.accounts.stake_price_config;
     price_config.price = price_i128;
-    price_config.price_timestamp = current_time;
+    price_config.price_timestamp = observation_ts;
 
     msg!("Price verified and stored");
     msg!("price: {}", price_config.price);
-    msg!("price_timestamp: {}", price_config.price_timestamp);
+    msg!("price_timestamp (observations_timestamp): {}", price_config.price_timestamp);
     msg!("expires_at: {}", report.expires_at);
 
     msg!("Emitting PriceVerifiedEvent");
@@ -1017,7 +1050,7 @@ pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result
         feed_id: report.feed_id.0,
         price: price_config.price,
         price_scale: price_config.price_scale,
-        price_timestamp: current_time,
+        price_timestamp: observation_ts,
         expires_at: report.expires_at as u64,
         slot: Clock::get()?.slot,
     });

@@ -148,10 +148,10 @@ For existing deployments, newly added fields are also lazily defaulted on first 
 Scripts:
 
 
-| Path                                                                   | When to use                                                        |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `scripts/vault-stake/migrate_reward_config.ts`                         | Direct migration path; use default program id for PRIME, or pass `--program_id <VAULT_STAKE_AUTO_PROGRAM_ID>` for AUTO. |
-| `scripts/vault-stake/migrate_reward_config_proposal_squads_v3.ts`      | Squads v3 proposal helper; pass the target program id (PRIME or AUTO) via script inputs. |
+| Path                                                              | When to use                                                                                                             |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `scripts/vault-stake/migrate_reward_config.ts`                    | Direct migration path; use default program id for PRIME, or pass `--program_id <VAULT_STAKE_AUTO_PROGRAM_ID>` for AUTO. |
+| `scripts/vault-stake/migrate_reward_config_proposal_squads_v3.ts` | Squads v3 proposal helper; pass the target program id (PRIME or AUTO) via script inputs.                                |
 
 
 Example (local wallet is upgrade authority, set multiple fields in one run):
@@ -199,28 +199,28 @@ price = (wYLDS per 1 PRIME) × price_scale
 Price configuration lives in a dedicated PDA with seeds `[b"stake_price_config", stake_config.key()]`, keeping the existing `StakeConfig` account layout unchanged.
 
 
-| Field                         | Type       | Description                                                                                |
-| ----------------------------- | ---------- | ------------------------------------------------------------------------------------------ |
-| `chainlink_program`           | `Pubkey`   | Chainlink verifier program ID                                                              |
-| `chainlink_verifier_account`  | `Pubkey`   | Verifier state account                                                                     |
-| `chainlink_access_controller` | `Pubkey`   | Access controller account                                                                  |
-| `feed_id`                     | `[u8; 32]` | Expected feed ID, validated on each `verify_price` call                                    |
-| `price`                       | `i128`     | Last verified benchmark price                                                              |
-| `price_scale`                 | `u64`      | Scale factor matching Chainlink feed precision (e.g. `1_000_000_000_000_000_000` for 1e18) |
-| `price_timestamp`             | `i64`      | Unix timestamp when price was last set (`0` = not yet initialized)                         |
-| `price_max_staleness`         | `i64`      | Maximum age of stored price in seconds before deposit/redeem reject it                     |
-| `bump`                        | `u8`       | PDA bump                                                                                   |
+| Field                         | Type       | Description                                                                                               |
+| ----------------------------- | ---------- | --------------------------------------------------------------------------------------------------------- |
+| `chainlink_program`           | `Pubkey`   | Chainlink verifier program ID                                                                             |
+| `chainlink_verifier_account`  | `Pubkey`   | Verifier state account                                                                                    |
+| `chainlink_access_controller` | `Pubkey`   | Access controller account                                                                                 |
+| `feed_id`                     | `[u8; 32]` | Expected feed ID, validated on each `verify_price` call                                                   |
+| `price`                       | `i128`     | Last verified benchmark price                                                                             |
+| `price_scale`                 | `u64`      | Scale factor matching Chainlink feed precision (e.g. `1_000_000_000_000_000_000` for 1e18)                |
+| `price_timestamp`             | `i64`      | Report `observations_timestamp` from the last successful `verify_price` (staleness anchor; `0` = not set) |
+| `price_max_staleness`         | `i64`      | Maximum age of stored price in seconds before deposit/redeem reject it                                    |
+| `bump`                        | `u8`       | PDA bump                                                                                                  |
 
 
 ### Price Instructions
 
 
-| Instruction               | Authority                 | Description                                                                                                                      |
-| ------------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `initialize_price_config` | Program upgrade authority | Creates the `StakePriceConfig` PDA. Must be called once after each program deployment before any deposit or redeem.              |
-| `update_price_config`     | Program upgrade authority | Updates Chainlink addresses, feed ID, price scale, or staleness without resetting the stored price.                              |
-| `verify_price`            | Rewards administrators    | Submits a signed Chainlink report for on-chain verification via CPI. On success, stores `benchmark_price` and current timestamp. |
-| `set_price_for_testing`   | Program upgrade authority | Directly sets `price` and `price_timestamp`. For localnet testing only — not for production use.                                 |
+| Instruction               | Authority                 | Description                                                                                                                                                                                                                                                      |
+| ------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `initialize_price_config` | Program upgrade authority | Creates the `StakePriceConfig` PDA. Must be called once after each program deployment before any deposit or redeem.                                                                                                                                              |
+| `update_price_config`     | Program upgrade authority | Updates Chainlink addresses, feed ID, price scale, or staleness. If `feed_id` or `price_scale` changes, the stored `price` and `price_timestamp` are cleared, so deposits/redeems halt until the next `verify_price`; otherwise the stored price remains intact. |
+| `verify_price`            | Rewards administrators    | Submits a signed Chainlink report for on-chain verification via CPI. On success, stores the verified price and the report’s `observations_timestamp` (staleness anchor).                                                                                         |
+| `set_price_for_testing`   | Program upgrade authority | Directly sets `price` and `price_timestamp`. For localnet testing only — not for production use.                                                                                                                                                                 |
 
 
 The same instruction set exists on **vault-stake-auto** (AUTO). Operational tooling is unified under `scripts/vault-stake/`; target AUTO by passing `--program_id <VAULT_STAKE_AUTO_PROGRAM_ID>` where supported.
@@ -231,6 +231,8 @@ Both `deposit` and `redeem` reject a stored price that is too old:
 
 - `price_timestamp == 0` → `PriceNotInitialized` (oracle not yet seeded)
 - `current_time − price_timestamp > price_max_staleness` → `PriceTooStale`
+
+`price_timestamp` is the Chainlink report’s **observations** time (set in `verify_price`), not the wall-clock time of the verify transaction, so age is measured from the oracle’s vouched validity window end.
 
 The oracle check runs **before** the user balance check in `redeem`, so a stale oracle fails fast regardless of user balance.
 
@@ -576,7 +578,6 @@ Select an action:
 3. Write Vault Stake Buffer (for Squads upgrade)
 4. Write Vault Stake Auto Buffer (for Squads upgrade)
 5. Write All Buffers
- …
 
 ```
 
@@ -624,9 +625,11 @@ Program file: ../target/deploy/vault_mint.so
 SHA-256: a3f2c1d4e5b6789012345678abcdef01234567890abcdef1234567890abcdef12
 
 # ============================================================
+
   Vault Mint Program Buffer Written
 
-#   Buffer Address : 5tWAz76wZXCB3GFzpdswa7E9ZkVP6R9KrsmBZ9sV3fQX
+# Buffer Address : 5tWAz76wZXCB3GFzpdswa7E9ZkVP6R9KrsmBZ9sV3fQX
+
   SHA-256        : a3f2c1d4e5b6789012345678abcdef01234567890abcdef1234567890abcdef12
 
 Next steps:
@@ -1041,7 +1044,7 @@ After the extension lands, re-simulate the upgrade proposal in Squads — it sho
 
 After upgrading the program to use the **new Chain Link pricing**, two instructions must be called **before** allowing user transactions:
 
-1. `**initialize_price_config`** — creates the `StakePriceConfig` PDA and sets Chainlink parameters
+1. `**initialize_price_config**` — creates the `StakePriceConfig` PDA and sets Chainlink parameters
 2. `**verify_price**` — seeds the initial price by submitting a fresh signed Chainlink report
 
 These two instructions have different authority requirements and therefore different execution paths.
