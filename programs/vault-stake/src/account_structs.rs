@@ -470,18 +470,14 @@ pub struct PublishRewards<'info> {
     )]
     pub reward_record: Box<Account<'info, RewardPublicationRecord>>,
 
-    /// Reward cap config — enforces max_reward_bps limit on each publish.
-    /// Created on first use with DEFAULT_BPS (75 BPS = 0.75%) if not yet initialized.
-    /// This allows seamless upgrades without a separate initialization step.
+    /// Reward cap config — must exist (see `initialize_stake_reward_config`).
     #[account(
-        init_if_needed,
-        payer = admin,
-        space = StakeRewardConfig::LEN,
+        mut,
         seeds = [
             b"stake_reward_config",
             stake_config.key().as_ref(),
         ],
-        bump,
+        bump = stake_reward_config.bump,
     )]
     pub stake_reward_config: Box<Account<'info, StakeRewardConfig>>,
 
@@ -659,14 +655,11 @@ pub struct SetPriceForTesting<'info> {
     pub program_data: UncheckedAccount<'info>,
 }
 
-/// Migrates the StakeRewardConfig PDA for a given StakeConfig.
-///
-/// This is intended to handle realloc-based, in-place layout upgrades for `stake_reward_config`
-/// while keeping the PDA seeds stable.
-///
+/// Creates the StakeRewardConfig PDA with protocol default caps and cooldown.
+/// Must be called once before `publish_rewards` can enforce limits.
 /// Only callable by the program upgrade authority.
 #[derive(Accounts)]
-pub struct MigrateRewardConfig<'info> {
+pub struct InitializeStakeRewardConfig<'info> {
     #[account(
         seeds = [b"stake_config"],
         bump = stake_config.bump
@@ -674,18 +667,16 @@ pub struct MigrateRewardConfig<'info> {
     pub stake_config: Account<'info, StakeConfig>,
 
     #[account(
-        mut,
+        init,
+        payer = signer,
+        space = StakeRewardConfig::LEN,
         seeds = [
             b"stake_reward_config",
             stake_config.key().as_ref(),
         ],
-        bump,
-        owner = crate::id()
+        bump
     )]
-    /// CHECK: This account intentionally accepts legacy layouts that may fail typed deserialization
-    /// during migration. Safety is enforced by PDA seeds + owner checks above, and processor logic
-    /// validates discriminator/length before reallocating and rewriting the account data.
-    pub stake_reward_config: UncheckedAccount<'info>,
+    pub stake_reward_config: Account<'info, StakeRewardConfig>,
 
     #[account(mut)]
     pub signer: Signer<'info>,
