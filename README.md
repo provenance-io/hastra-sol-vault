@@ -561,7 +561,7 @@ Select Solana network (localnet, devnet, mainnet-beta, testnet) []: devnet
 Public Key:             HT9c4xkDT9bx2JyMfLrauNmg8BA7bjUm7qba1vdMsMrz (8.34021568 SOL)
 Vault Mint Program ID:  9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV
 Vault Stake Program ID: 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY
-Squads Vault:           ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K
+Squads Vault:           FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv
 Mint Buffer:            <none>
 Stake Buffer:           <none>
 
@@ -587,7 +587,7 @@ Set the Squads vault PDA once so subsequent buffer writes can optionally transfe
 
 ```
 
-Enter Squads vault address (used as upgrade authority) []: ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K
+Enter Squads vault address (used as upgrade authority) []: FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv
 
 ```
 
@@ -642,7 +642,7 @@ Next steps:
   Buffer Refund  : your wallet address
 
 Transfer buffer authority to Squads vault now? [y/N]: y
-Buffer authority transferred to ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K
+Buffer authority transferred to FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv
 
 ```
 
@@ -850,9 +850,23 @@ These have all the values needed for the FE and BE services.
 
 ---
 
+## CI and build artifacts
+
+| Workflow | When | Output |
+| -------- | ---- | ------ |
+| `pr-validation.yml` | Pull requests | Production `.so` (no `testing` feature on stake), IDL, types — **unverified**; for devnet integration and middleware |
+| `main-verify.yml` | Push to `main` | [solana-verify](https://solana.com/docs/programs/verified-builds) `.so`, `pda-tx-*.txt`, `checksums.txt` |
+| `release.yml` | Tag `v*` | Same as main, attached to a GitHub Release (+ IDL/types) |
+
+PR builds use `anchor build -- --features testing` for local validator tests, then rebuild `vault_stake` without `testing` before uploading artifacts.
+
+Devnet Squads v4 vault (upgrade authority / verify uploader): `FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv` (see `.github/verify-config.env`).
+
+---
+
 ## GitHub Release
 
-The `.github/workflows/release.yml` workflow triggers when a version tag is pushed. It builds both programs, computes SHA-256 checksums, and publishes a GitHub Release containing the `.so` artifacts and a `checksums.txt` file.
+The `.github/workflows/release.yml` workflow runs on version tags. It builds both programs with **solana-verify**, exports Squads verify PDA transactions, and publishes a GitHub Release.
 
 > This section assumes you have set up a Squads vault and have configured the `vault_mint` and `vault_stake` programs to use it. See [Post-Upgrade Initialization](#post-upgrade-initialization) above.
 
@@ -866,31 +880,37 @@ git push origin v1.0.0
 The release will contain:
 
 
-| File                    | Description                                              |
-| ----------------------- | -------------------------------------------------------- |
-| `vault_mint.so`         | Compiled vault-mint program binary                       |
-| `vault_stake.so`        | Compiled vault-stake program binary                      |
-| `vault_stake_auto.so`   | Compiled vault-stake-auto program binary                 |
-| `vault_mint.json`       | Anchor IDL for the vault-mint program                    |
-| `vault_stake.json`      | Anchor IDL for the vault-stake program                   |
-| `vault_stake_auto.json` | Anchor IDL for the vault-stake-auto program              |
-| `vault_mint.ts`         | TypeScript types generated from the vault-mint IDL       |
-| `vault_stake.ts`        | TypeScript types generated from the vault-stake IDL      |
-| `vault_stake_auto.ts`   | TypeScript types generated from the vault-stake-auto IDL |
-| `checksums.txt`         | SHA-256 of all release artifacts                         |
+| File | Description |
+| ---- | ----------- |
+| `vault_mint.so` | Verifiable vault-mint program binary |
+| `vault_stake.so` | Verifiable vault-stake (PRIME) program binary |
+| `pda-tx-vault_mint.txt` | Base58 tx to import in Squads v4 after upgrade (verify PDA) |
+| `pda-tx-vault_stake.txt` | Base58 tx to import in Squads v4 after upgrade (verify PDA) |
+| `vault_mint.json` | Anchor IDL for vault-mint |
+| `vault_stake.json` | Anchor IDL for vault-stake |
+| `vault_mint.ts` | TypeScript types from vault-mint IDL |
+| `vault_stake.ts` | TypeScript types from vault-stake IDL |
+| `checksums.txt` | SHA-256 of all release artifacts |
 
+
+### Deploy from release artifacts
+
+1. Download the release assets (or main-branch CI artifact for a pre-release soak).
+2. In `scripts/deploy.sh`, choose **Set verified .so directory** and point at the folder with `vault_mint.so` / `vault_stake.so`.
+3. **Write buffers** → create Squads program upgrade proposals.
+4. After upgrade executes, import `pda-tx-vault_mint.txt` and `pda-tx-vault_stake.txt` in Squads v4 Transaction Builder ([docs](https://solana.com/docs/programs/verified-builds#how-to-verify-your-program-when-its-controlled-by-a-multisig-like-squads)).
+5. Run `solana-verify remote submit-job` per program with `--uploader` set to the Squads vault PDA.
+
+To regenerate PDA txs locally: `./scripts/export_verify_pda_tx.sh both`.
 
 ### Verify a Buffer Before Approving in Squads
 
-Before approving a Squads upgrade proposal, confirm the buffer on-chain was built from the tagged release:
+Before approving a program upgrade proposal, confirm the buffer SHA-256 matches the release:
 
 ```bash
-# Download the .so from the GitHub release and hash it locally
 shasum -a 256 vault_mint.so
-
-# Compare against the hash printed by deploy.sh when the buffer was written,
-# and against checksums.txt attached to the release.
-# All three must match before approving the proposal.
+shasum -a 256 vault_stake.so
+# Compare against checksums.txt and deploy.sh output
 ```
 
 Any discrepancy means the buffer was **not** built from the tagged release and the upgrade should be rejected.
@@ -914,24 +934,24 @@ The devnet Squad address is `FftEXgzqaJNm8A6ynAmyfixBpHZtEJNr22q4KvUydByB`
 #### Both Mint and Stake Programs Upgrade Authority Moved to Squad
 
 The **vault-mint** program `9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV` upgrade authority was transferred from
-`93cFkHJZR2AqjTJ1rqrAbvLsh5WqtKr6q8jh3LdH8tAq` to the Squad's vault PDA `ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K`
+`93cFkHJZR2AqjTJ1rqrAbvLsh5WqtKr6q8jh3LdH8tAq` to the Squad's vault PDA `FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv`
 using: 
 
 ```bash
 $ solana program set-upgrade-authority 9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV \
-       --new-upgrade-authority ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K \
+       --new-upgrade-authority FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv \
        --skip-new-upgrade-authority-signer-check \
        --keypair <Current Upgrade Auth Key Pair> \
        --url devnet
 ```
 
 The **vault-stake** program `97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY` upgrade authority was transferred from
-`93cFkHJZR2AqjTJ1rqrAbvLsh5WqtKr6q8jh3LdH8tAq` to the Squad's vault PDA `ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K`
+`93cFkHJZR2AqjTJ1rqrAbvLsh5WqtKr6q8jh3LdH8tAq` to the Squad's vault PDA `FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv`
 using: 
 
 ```bash
 $ solana program set-upgrade-authority 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY \
-       --new-upgrade-authority ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K \
+       --new-upgrade-authority FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv \
        --skip-new-upgrade-authority-signer-check \
        --keypair <Current Upgrade Auth Key Pair> \
        --url devnet
@@ -967,12 +987,12 @@ Note the `Buffer` address. Record its SHA-256 and verify it matches the [GitHub 
 
 ```bash
 $ solana program set-buffer-authority 5tWAz76wZXCB3GFzpdswa7E9ZkVP6R9KrsmBZ9sV3fQX \
-  --new-buffer-authority ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K \
+  --new-buffer-authority FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv \
   --keypair <KEY PAIR Used to create Buffer> \
   --url devnet
 
 Account Type: Buffer
-Authority: ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K
+Authority: FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv
 ```
 
 1. Connect to [Devnet Squads](devnet.squads.so) with Squad owner and open the `FftEXgzqaJNm8A6ynAmyfixBpHZtEJNr22q4KvUydByB` Squad.
@@ -1014,7 +1034,7 @@ Program invoked: BPF Upgradeable Loader
 
 the new binary (in the buffer) is larger than the current on-chain `programData` account. The BPF loader's `Upgrade` instruction writes into the existing account without resizing it, so the account mu--st be pre-extended to fit the new binary.
 
-**Why `solana program extend` fails here:** the CLI refuses to run unless the `--keypair` you pass is the program's upgrade authority. Since the upgrade authority is the Squads vault PDA (`ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K`), no keypair on disk can satisfy that check. The on-chain `ExtendProgram` instruction only requires a payer, however, so the CLI check can be bypassed by constructing the instruction directly.
+**Why `solana program extend` fails here:** the CLI refuses to run unless the `--keypair` you pass is the program's upgrade authority. Since the upgrade authority is the Squads vault PDA (`FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv`), no keypair on disk can satisfy that check. The on-chain `ExtendProgram` instruction only requires a payer, however, so the CLI check can be bypassed by constructing the instruction directly.
 
 **Fix:** run `scripts/extend_program.ts` with any funded wallet as the payer:
 
@@ -1051,7 +1071,7 @@ These two instructions have different authority requirements and therefore diffe
 
 #### `initialize_price_config` — via Squads transaction proposal
 
-`initialize_price_config` calls `validate_program_update_authority`, which requires that the transaction signer **exactly matches** the program's on-chain upgrade authority. Since the upgrade authority is the Squads vault PDA (`ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K`), this instruction cannot be submitted by a local keypair — it must be submitted as a Squads vault transaction proposal so the vault PDA co-signs the inner message when the proposal executes.
+`initialize_price_config` calls `validate_program_update_authority`, which requires that the transaction signer **exactly matches** the program's on-chain upgrade authority. Since the upgrade authority is the Squads vault PDA (`FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv`), this instruction cannot be submitted by a local keypair — it must be submitted as a Squads vault transaction proposal so the vault PDA co-signs the inner message when the proposal executes.
 
 > `initialize_price_config` creates the `StakePriceConfig` account, so the Squads vault PDA is also the rent payer. Ensure the vault has enough SOL before submitting the proposal.
 
@@ -1090,7 +1110,7 @@ $ /Users/jd/provenanceio/git/hastra-sol-vault/node_modules/.bin/ts-node scripts/
 
 Program ID:               97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY
 Multisig PDA:             FftEXgzqaJNm8A6ynAmyfixBpHZtEJNr22q4KvUydByB
-Vault PDA (signer):       ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K
+Vault PDA (signer):       FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv
   ↑ verify this matches the on-chain upgrade authority
 Transaction PDA:          dw8sHHZRZASAhKdm1PotWNojgGAVgsALs2fMAzJGXnX
 Instruction PDA:          FPhLE3Go3yv5oJCkYBevZ9xAXxPBjt4MFXKQ6rzJFtzN
@@ -1266,11 +1286,11 @@ This wrote the program to the buffer `CV926m5MZU6XPBqhDLs4zf4Dh9zN4dNTXdsjUNZPGG
 ```bash
 $ solana program set-buffer-authority CV926m5MZU6XPBqhDLs4zf4Dh9zN4dNTXdsjUNZPGGfK \
          --keypair ~/.config/solana/<YOUR KEY>.json \
-         --new-buffer-authority ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K \ 
+         --new-buffer-authority FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv \ 
          --url d
          
 Account Type: Buffer
-Authority: ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K 
+Authority: FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv 
 ```
 
 - Go back to the Squads dashboard and click the `Verify authority` to ensure the buffer authority is correct.

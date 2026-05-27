@@ -1,0 +1,100 @@
+name: Main Verify
+
+# Reproducible program builds (solana-verify) and Squads verify PDA export txs for devnet.
+# No deployer secrets — download artifacts to write buffers and import PDA txs in Squads v4.
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  SOLANA_VERIFY_VERSION: "0.4.15"
+
+jobs:
+  verified-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Load verify config
+      run: cat .github/verify-config.env >> $GITHUB_ENV
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          pkg-config \
+          libudev-dev \
+          llvm \
+          libclang-dev \
+          protobuf-compiler \
+          libssl-dev
+
+    - uses: solana-developers/github-actions/extract-versions@v0.2.10
+      id: versions
+
+    - uses: solana-developers/github-actions/setup-all@v0.2.10
+      with:
+        solana_version: ${{ steps.versions.outputs.solana_version }}
+        anchor_version: ${{ steps.versions.outputs.anchor_version }}
+        verify_version: ${{ env.SOLANA_VERIFY_VERSION }}
+
+    - name: Install yarn dependencies
+      run: yarn install --frozen-lockfile
+
+    - name: Verifiable build vault_mint
+      run: solana-verify build --library-name vault_mint
+
+    - name: Verifiable build vault_stake
+      run: solana-verify build --library-name vault_stake
+
+    - name: Export verify PDA transactions
+      run: |
+        mkdir -p artifacts
+        REPO_URL="https://github.com/${GITHUB_REPOSITORY}"
+
+        solana-verify export-pda-tx "${REPO_URL}" \
+          --program-id "${DEVNET_VAULT_MINT_PROGRAM_ID}" \
+          --uploader "${DEVNET_SQUADS_VAULT}" \
+          --commit-hash "${GITHUB_SHA}" \
+          --encoding base58 \
+          --url "${DEVNET_RPC_URL}" \
+          --compute-unit-price 0 \
+          > artifacts/pda-tx-vault_mint.txt
+
+        solana-verify export-pda-tx "${REPO_URL}" \
+          --program-id "${DEVNET_VAULT_STAKE_PROGRAM_ID}" \
+          --uploader "${DEVNET_SQUADS_VAULT}" \
+          --commit-hash "${GITHUB_SHA}" \
+          --encoding base58 \
+          --url "${DEVNET_RPC_URL}" \
+          --compute-unit-price 0 \
+          > artifacts/pda-tx-vault_stake.txt
+
+        echo "PDA export (vault_mint) length: $(wc -c < artifacts/pda-tx-vault_mint.txt)"
+        echo "PDA export (vault_stake) length: $(wc -c < artifacts/pda-tx-vault_stake.txt)"
+
+    - name: Generate SHA-256 checksums
+      run: |
+        sha256sum target/deploy/vault_mint.so  > artifacts/checksums.txt
+        sha256sum target/deploy/vault_stake.so >> artifacts/checksums.txt
+        cat artifacts/checksums.txt
+
+    - name: Upload verified program artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: verified-program-builds-${{ github.sha }}
+        retention-days: 30
+        path: |
+          target/deploy/vault_mint.so
+          target/deploy/vault_stake.so
+          artifacts/pda-tx-vault_mint.txt
+          artifacts/pda-tx-vault_stake.txt
+          artifacts/checksums.txt

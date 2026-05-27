@@ -11,6 +11,8 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      AGAVE_BIN: ${{ env.HOME }}/.local/share/solana/install/active_release/bin
 
     steps:
     - name: Checkout code
@@ -32,10 +34,16 @@ jobs:
       with:
         save-if: ${{ github.ref == 'refs/heads/main' }}
 
+    # Install Anza Solana first; platform-tools must ship rustc >= 1.82 for indexmap 2.12+.
     - name: Install Solana CLI
       run: |
         sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
-        echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+        AGAVE_BIN="$HOME/.local/share/solana/install/active_release/bin"
+        echo "$AGAVE_BIN" >> $GITHUB_PATH
+        # GITHUB_PATH applies on the next step; export for commands in this step.
+        export PATH="$AGAVE_BIN:$PATH"
+        solana --version
+        cargo-build-sbf --version
 
     - name: Install avm
       run: cargo install --git https://github.com/coral-xyz/anchor avm --force
@@ -46,22 +54,29 @@ jobs:
         avm install ${anchor_version}
         avm use ${anchor_version}
 
+    # avm prepends Anchor's bundled Solana (rustc 1.79 SBF tools). Prefer Anza install.
+    - name: Prefer Anza Solana platform tools on PATH
+      run: |
+        AGAVE_BIN="$HOME/.local/share/solana/install/active_release/bin"
+        echo "$AGAVE_BIN" >> $GITHUB_PATH
+        export PATH="$AGAVE_BIN:$PATH"
+        which cargo-build-sbf
+        cargo-build-sbf --version
+
     - name: Install yarn dependencies
       run: yarn install --frozen-lockfile
 
     - name: Sync Anchor program IDs to deploy keypairs
       run: anchor keys sync
 
-    - name: Anchor build
-      run: anchor build
-
-    # IDL includes set_price_for_testing (via idl-build → testing); the default
-    # anchor build deploy artifact omits those instructions unless this step runs.
-    - name: Rebuild stake programs with testing feature
-      run: |
-        cargo build-sbf --manifest-path programs/vault-stake/Cargo.toml --features testing
+    - name: Anchor build (testing)
+      env:
+        PATH: ${{ env.AGAVE_BIN }}:${{ env.PATH }}
+      run: anchor build -- --features testing
 
     - name: Setup solana node
+      env:
+        PATH: ${{ env.AGAVE_BIN }}:${{ env.PATH }}
       run: |
         solana-test-validator --reset &
         echo "VALIDATOR_PID=$!" >> $GITHUB_ENV
@@ -78,3 +93,21 @@ jobs:
 
     - name: Stop local validator
       run: kill ${VALIDATOR_PID}
+
+    - name: Anchor build vault_stake (production)
+      env:
+        PATH: ${{ env.AGAVE_BIN }}:${{ env.PATH }}
+      run: anchor build --program-name vault_stake
+
+    - name: Upload production program artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: program-builds-pr-${{ github.event.pull_request.number || github.run_id }}
+        retention-days: 14
+        path: |
+          target/deploy/vault_mint.so
+          target/deploy/vault_stake.so
+          target/idl/vault_mint.json
+          target/idl/vault_stake.json
+          target/types/vault_mint.ts
+          target/types/vault_stake.ts
