@@ -52,14 +52,8 @@ jobs:
     - name: Sync Anchor program IDs to deploy keypairs
       run: anchor keys sync
 
-    - name: Anchor build
-      run: anchor build
-
-    # IDL includes set_price_for_testing (via idl-build → testing); the default
-    # anchor build deploy artifact omits those instructions unless this step runs.
-    - name: Rebuild stake programs with testing feature
-      run: |
-        cargo build-sbf --manifest-path programs/vault-stake/Cargo.toml --features testing
+    - name: Anchor build (testing)
+      run: anchor build -- --features testing
 
     - name: Setup solana node
       run: |
@@ -78,3 +72,19 @@ jobs:
 
     - name: Stop local validator
       run: kill ${VALIDATOR_PID}
+
+    - name: Anchor build vault_stake (production)
+      run: anchor build --program-name vault_stake
+
+    - name: Upload production program artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: program-builds-pr-${{ github.event.pull_request.number || github.run_id }}
+        retention-days: 14
+        path: |
+          target/deploy/vault_mint.so
+          target/deploy/vault_stake.so
+          target/idl/vault_mint.json
+          target/idl/vault_stake.json
+          target/types/vault_mint.ts
+          target/types/vault_stake.ts
