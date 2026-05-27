@@ -11,8 +11,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      AGAVE_BIN: ${{ env.HOME }}/.local/share/solana/install/active_release/bin
 
     steps:
     - name: Checkout code
@@ -34,49 +32,44 @@ jobs:
       with:
         save-if: ${{ github.ref == 'refs/heads/main' }}
 
-    # Install Anza Solana first; platform-tools must ship rustc >= 1.82 for indexmap 2.12+.
     - name: Install Solana CLI
       run: |
         sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
-        AGAVE_BIN="$HOME/.local/share/solana/install/active_release/bin"
-        echo "$AGAVE_BIN" >> $GITHUB_PATH
-        # GITHUB_PATH applies on the next step; export for commands in this step.
-        export PATH="$AGAVE_BIN:$PATH"
+        echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+
+    - name: Install Anchor (avm)
+      run: |
+        cargo install --git https://github.com/coral-xyz/anchor avm --force
+        anchor_version=$(grep '^anchor_version' Anchor.toml | awk '{print $NF}' | tr -d '"')
+        avm install "${anchor_version}"
+        avm use "${anchor_version}"
+        echo "$HOME/.avm/bin" >> $GITHUB_PATH
+
+    - name: Verify toolchain on PATH
+      run: |
+        export PATH="$HOME/.local/share/solana/install/active_release/bin:$HOME/.avm/bin:$PATH"
+        echo "AGAVE_BIN=$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_ENV
+        echo "TOOLCHAIN_PATH=$HOME/.local/share/solana/install/active_release/bin:$HOME/.avm/bin" >> $GITHUB_ENV
         solana --version
-        cargo-build-sbf --version
-
-    - name: Install avm
-      run: cargo install --git https://github.com/coral-xyz/anchor avm --force
-
-    - name: Install Anchor
-      run: |
-        anchor_version=$(cat Anchor.toml | grep anchor_version | awk '{print $NF}' | tr -d '"')
-        avm install ${anchor_version}
-        avm use ${anchor_version}
-
-    # avm prepends Anchor's bundled Solana (rustc 1.79 SBF tools). Prefer Anza install.
-    - name: Prefer Anza Solana platform tools on PATH
-      run: |
-        AGAVE_BIN="$HOME/.local/share/solana/install/active_release/bin"
-        echo "$AGAVE_BIN" >> $GITHUB_PATH
-        export PATH="$AGAVE_BIN:$PATH"
-        which cargo-build-sbf
+        anchor --version
         cargo-build-sbf --version
 
     - name: Install yarn dependencies
       run: yarn install --frozen-lockfile
 
     - name: Sync Anchor program IDs to deploy keypairs
+      env:
+        PATH: ${{ env.TOOLCHAIN_PATH }}:${{ env.PATH }}
       run: anchor keys sync
 
     - name: Anchor build (testing)
       env:
-        PATH: ${{ env.AGAVE_BIN }}:${{ env.PATH }}
+        PATH: ${{ env.TOOLCHAIN_PATH }}:${{ env.PATH }}
       run: anchor build -- --features testing
 
     - name: Setup solana node
       env:
-        PATH: ${{ env.AGAVE_BIN }}:${{ env.PATH }}
+        PATH: ${{ env.TOOLCHAIN_PATH }}:${{ env.PATH }}
       run: |
         solana-test-validator --reset &
         echo "VALIDATOR_PID=$!" >> $GITHUB_ENV
@@ -89,14 +82,17 @@ jobs:
         solana airdrop 1000
 
     - name: Anchor test
+      env:
+        PATH: ${{ env.TOOLCHAIN_PATH }}:${{ env.PATH }}
       run: anchor test --skip-local-validator --skip-build
 
     - name: Stop local validator
-      run: kill ${VALIDATOR_PID}
+      if: always()
+      run: kill ${VALIDATOR_PID} 2>/dev/null || true
 
     - name: Anchor build vault_stake (production)
       env:
-        PATH: ${{ env.AGAVE_BIN }}:${{ env.PATH }}
+        PATH: ${{ env.TOOLCHAIN_PATH }}:${{ env.PATH }}
       run: anchor build --program-name vault_stake
 
     - name: Upload production program artifacts
