@@ -73,6 +73,13 @@ jobs:
         chmod +x .github/scripts/export_verify_pda_txs_ci.sh
         .github/scripts/export_verify_pda_txs_ci.sh artifacts
 
+    # solana-verify build uses Docker as root; anchor build must write to target/
+    - name: Fix target directory ownership after solana-verify
+      run: |
+        if [ -d target ]; then
+          sudo chown -R "$(id -u):$(id -g)" target
+        fi
+
     - name: Generate Anchor IDL and types
       run: anchor build
 
