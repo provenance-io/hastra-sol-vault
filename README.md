@@ -860,7 +860,14 @@ These have all the values needed for the FE and BE services.
 
 PR builds use `anchor build -- --features testing` for local validator tests, then rebuild `vault_stake` without `testing` before uploading artifacts.
 
-Devnet Squads v4 vault (upgrade authority / verify uploader): `FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv` (see `.github/verify-config.env`).
+Squads v4 settings are in `.github/verify-config.env`:
+
+| Cluster | Vault PDA (upgrade authority / verify `--uploader`) | Multisig (proposals) | Squads program |
+| ------- | --------------------------------------------------- | -------------------- | -------------- |
+| Devnet | `FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv` | — | — |
+| Mainnet | `8fDTne6mBYfQXYHtsFWrBvrxUFqqXrFcJ83ZQwUBfmSD` | `FCdUkkK7YcsyW24H1Sjba1jgK53nuMMqqjqaHYAoSgJm` | `SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf` |
+
+Program IDs are the same on both clusters (`9WUyNREi…` / `97V7JsEx…`).
 
 ---
 
@@ -884,8 +891,10 @@ The release will contain:
 | ---- | ----------- |
 | `vault_mint.so` | Verifiable vault-mint program binary |
 | `vault_stake.so` | Verifiable vault-stake (PRIME) program binary |
-| `pda-tx-vault_mint.txt` | Base58 tx to import in Squads v4 after upgrade (verify PDA) |
-| `pda-tx-vault_stake.txt` | Base58 tx to import in Squads v4 after upgrade (verify PDA) |
+| `pda-tx-vault_mint.txt` | Devnet: verify PDA tx for vault-mint |
+| `pda-tx-vault_stake.txt` | Devnet: verify PDA tx for vault-stake |
+| `pda-tx-mainnet-vault_mint.txt` | Mainnet: verify PDA tx for vault-mint |
+| `pda-tx-mainnet-vault_stake.txt` | Mainnet: verify PDA tx for vault-stake |
 | `vault_mint.json` | Anchor IDL for vault-mint |
 | `vault_stake.json` | Anchor IDL for vault-stake |
 | `vault_mint.ts` | TypeScript types from vault-mint IDL |
@@ -898,10 +907,10 @@ The release will contain:
 1. Download the release assets (or main-branch CI artifact for a pre-release soak).
 2. In `scripts/deploy.sh`, choose **Set verified .so directory** and point at the folder with `vault_mint.so` / `vault_stake.so`.
 3. **Write buffers** → create Squads program upgrade proposals.
-4. After upgrade executes, import `pda-tx-vault_mint.txt` and `pda-tx-vault_stake.txt` in Squads v4 Transaction Builder ([docs](https://solana.com/docs/programs/verified-builds#how-to-verify-your-program-when-its-controlled-by-a-multisig-like-squads)).
-5. Run `solana-verify remote submit-job` per program with `--uploader` set to the Squads vault PDA.
+4. After upgrade executes, import the **cluster-matching** PDA files in Squads v4 Transaction Builder ([docs](https://solana.com/docs/programs/verified-builds#how-to-verify-your-program-when-its-controlled-by-a-multisig-like-squads)).
+5. Run `solana-verify remote submit-job` per program with `--uploader` set to that cluster's Squads **vault** PDA.
 
-To regenerate PDA txs locally: `./scripts/export_verify_pda_tx.sh both`.
+To regenerate PDA txs locally: `./scripts/export_verify_pda_tx.sh both devnet` or `… both mainnet`.
 
 ### Verify a Buffer Before Approving in Squads
 

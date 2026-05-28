@@ -3,11 +3,12 @@
 #
 # Usage (from repo root):
 #   ./scripts/export_verify_pda_tx.sh both
-#   ./scripts/export_verify_pda_tx.sh mint
-#   ./scripts/export_verify_pda_tx.sh stake
+#   ./scripts/export_verify_pda_tx.sh both mainnet
+#   ./scripts/export_verify_pda_tx.sh mint devnet
 #   ./scripts/export_verify_pda_tx.sh show /path/to/downloaded/artifacts
 #
-# Requires: solana-verify on PATH, git, devnet values in .github/verify-config.env
+# Cluster defaults to devnet. Values: devnet | mainnet (mainnet-beta).
+# Requires: solana-verify on PATH, git, .github/verify-config.env
 
 set -euo pipefail
 
@@ -17,10 +18,12 @@ VERIFY_CONFIG="${REPO_ROOT}/.github/verify-config.env"
 OUTPUT_DIR="${VERIFY_ARTIFACTS_DIR:-${REPO_ROOT}/verify-artifacts}"
 
 usage() {
-  echo "Usage: $0 {mint|stake|both|show <dir>}"
+  echo "Usage: $0 {mint|stake|both|show <dir>} [devnet|mainnet]"
   echo ""
   echo "  mint|stake|both  Run solana-verify export-pda-tx into ${OUTPUT_DIR}/"
-  echo "  show <dir>       Print paths and first bytes of pda-tx-*.txt from a CI download"
+  echo "  show <dir>       List pda-tx-*.txt from a CI download or release"
+  echo ""
+  echo "  Second argument selects cluster (default: devnet)."
   exit 1
 }
 
@@ -31,6 +34,40 @@ load_verify_config() {
   fi
   # shellcheck source=/dev/null
   source "$VERIFY_CONFIG"
+}
+
+normalize_cluster() {
+  local cluster="${1:-devnet}"
+  case "$cluster" in
+    devnet) echo devnet ;;
+    mainnet|mainnet-beta) echo mainnet ;;
+    *)
+      echo "ERROR: Unknown cluster: $cluster (use devnet or mainnet)"
+      exit 1
+      ;;
+  esac
+}
+
+resolve_cluster_env() {
+  local cluster="$1"
+  case "$cluster" in
+    devnet)
+      VERIFY_CLUSTER_LABEL=devnet
+      VERIFY_RPC_URL="${DEVNET_RPC_URL}"
+      VERIFY_SQUADS_VAULT="${DEVNET_SQUADS_VAULT}"
+      VERIFY_MINT_PROGRAM_ID="${DEVNET_VAULT_MINT_PROGRAM_ID}"
+      VERIFY_STAKE_PROGRAM_ID="${DEVNET_VAULT_STAKE_PROGRAM_ID}"
+      VERIFY_PDA_SUFFIX=""
+      ;;
+    mainnet)
+      VERIFY_CLUSTER_LABEL=mainnet
+      VERIFY_RPC_URL="${MAINNET_RPC_URL}"
+      VERIFY_SQUADS_VAULT="${MAINNET_SQUADS_VAULT}"
+      VERIFY_MINT_PROGRAM_ID="${MAINNET_VAULT_MINT_PROGRAM_ID}"
+      VERIFY_STAKE_PROGRAM_ID="${MAINNET_VAULT_STAKE_PROGRAM_ID}"
+      VERIFY_PDA_SUFFIX="-mainnet"
+      ;;
+  esac
 }
 
 git_https_repo_url() {
@@ -67,25 +104,27 @@ require_solana_verify() {
 export_pda_tx() {
   local library_label="$1"
   local program_id="$2"
-  local outfile="${OUTPUT_DIR}/pda-tx-${library_label}.txt"
+  local outfile="${OUTPUT_DIR}/pda-tx${VERIFY_PDA_SUFFIX}-${library_label}.txt"
 
   mkdir -p "$OUTPUT_DIR"
   local repo_url commit
   repo_url=$(git_https_repo_url)
   commit=$(git -C "$REPO_ROOT" rev-parse HEAD)
 
-  echo "Exporting verify PDA tx for ${library_label}..."
+  echo "Exporting verify PDA tx for ${library_label} (${VERIFY_CLUSTER_LABEL})..."
   echo "  program-id: ${program_id}"
-  echo "  uploader:   ${DEVNET_SQUADS_VAULT}"
+  echo "  uploader:   ${VERIFY_SQUADS_VAULT}"
+  echo "  rpc:        ${VERIFY_RPC_URL}"
   echo "  commit:     ${commit}"
   echo "  output:     ${outfile}"
 
   solana-verify export-pda-tx "${repo_url}" \
+    --library-name "${library_label}" \
     --program-id "${program_id}" \
-    --uploader "${DEVNET_SQUADS_VAULT}" \
+    --uploader "${VERIFY_SQUADS_VAULT}" \
     --commit-hash "${commit}" \
     --encoding base58 \
-    --url "${DEVNET_RPC_URL}" \
+    --url "${VERIFY_RPC_URL}" \
     --compute-unit-price 0 \
     > "${outfile}"
 
@@ -93,18 +132,31 @@ export_pda_tx() {
 }
 
 print_squads_instructions() {
+  local squads_app="https://devnet.squads.so"
+  if [ "${VERIFY_CLUSTER_LABEL}" = "mainnet" ]; then
+    squads_app="https://app.squads.so"
+  fi
+
   echo ""
   echo "============================================================"
-  echo "  Squads v4 — verify PDA transaction"
+  echo "  Squads v4 — verify PDA transaction (${VERIFY_CLUSTER_LABEL})"
   echo "============================================================"
+  echo "  Vault / uploader:     ${VERIFY_SQUADS_VAULT}"
+  if [ "${VERIFY_CLUSTER_LABEL}" = "mainnet" ]; then
+    echo "  Multisig (proposals): ${MAINNET_SQUADS_MULTISIG}"
+    echo "  Squads program:       ${MAINNET_SQUADS_PROGRAM_ID}"
+  fi
+  echo ""
   echo "  1. Execute the program upgrade proposal first."
-  echo "  2. Open Squads Transaction Builder → Import transaction."
-  echo "  3. Paste base58 from pda-tx-vault_mint.txt / pda-tx-vault_stake.txt."
+  echo "  2. Open ${squads_app} → Transaction Builder → Import transaction."
+  echo "  3. Paste base58 from:"
+  echo "       pda-tx${VERIFY_PDA_SUFFIX}-vault_mint.txt"
+  echo "       pda-tx${VERIFY_PDA_SUFFIX}-vault_stake.txt"
   echo "  4. Simulate: only otter verify + compute budget instructions."
   echo "  5. After execution, per program:"
   echo "       solana-verify remote submit-job \\"
   echo "         --program-id <PROGRAM_ID> \\"
-  echo "         --uploader ${DEVNET_SQUADS_VAULT}"
+  echo "         --uploader ${VERIFY_SQUADS_VAULT}"
   echo "============================================================"
   echo ""
 }
@@ -116,12 +168,15 @@ show_pda_tx_dir() {
     exit 1
   fi
   echo "Verify PDA files in ${dir}:"
-  for f in "$dir"/pda-tx-vault_mint.txt "$dir"/pda-tx-vault_stake.txt; do
-    if [ -f "$f" ]; then
-      echo "  $(basename "$f") ($(wc -c < "$f" | tr -d ' ') bytes)"
-    else
-      echo "  $(basename "$f") (missing)"
-    fi
+  shopt -s nullglob
+  local files=("$dir"/pda-tx*.txt)
+  shopt -u nullglob
+  if [ ${#files[@]} -eq 0 ]; then
+    echo "  (no pda-tx*.txt files)"
+    return
+  fi
+  for f in "${files[@]}"; do
+    echo "  $(basename "$f") ($(wc -c < "$f" | tr -d ' ') bytes)"
   done
 }
 
@@ -133,19 +188,22 @@ main() {
       show_pda_tx_dir "$2"
       ;;
     mint|stake|both)
+      local cluster
+      cluster=$(normalize_cluster "${2:-devnet}")
       load_verify_config
+      resolve_cluster_env "$cluster"
       require_solana_verify
       warn_if_dirty_tree
       case "$1" in
         mint)
-          export_pda_tx "vault_mint" "${DEVNET_VAULT_MINT_PROGRAM_ID}"
+          export_pda_tx "vault_mint" "${VERIFY_MINT_PROGRAM_ID}"
           ;;
         stake)
-          export_pda_tx "vault_stake" "${DEVNET_VAULT_STAKE_PROGRAM_ID}"
+          export_pda_tx "vault_stake" "${VERIFY_STAKE_PROGRAM_ID}"
           ;;
         both)
-          export_pda_tx "vault_mint" "${DEVNET_VAULT_MINT_PROGRAM_ID}"
-          export_pda_tx "vault_stake" "${DEVNET_VAULT_STAKE_PROGRAM_ID}"
+          export_pda_tx "vault_mint" "${VERIFY_MINT_PROGRAM_ID}"
+          export_pda_tx "vault_stake" "${VERIFY_STAKE_PROGRAM_ID}"
           ;;
       esac
       print_squads_instructions

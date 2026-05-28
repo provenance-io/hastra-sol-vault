@@ -27,14 +27,23 @@ source ./common.sh
 VERIFY_CONFIG_FILE="../.github/verify-config.env"
 VERIFIED_SO_DIR="${VERIFIED_SO_DIR:-}"
 
-load_devnet_verify_defaults() {
-  if [ -f "$VERIFY_CONFIG_FILE" ] && [ "$SOLANA_NETWORK" = "devnet" ]; then
-    # shellcheck source=/dev/null
-    source "$VERIFY_CONFIG_FILE"
-    if [ -z "$SQUADS_VAULT_ADDRESS" ] && [ -n "${DEVNET_SQUADS_VAULT:-}" ]; then
-      SQUADS_VAULT_ADDRESS="$DEVNET_SQUADS_VAULT"
-    fi
+load_verify_defaults_from_config() {
+  if [ ! -f "$VERIFY_CONFIG_FILE" ]; then
+    return
   fi
+  # shellcheck source=/dev/null
+  source "$VERIFY_CONFIG_FILE"
+  if [ -n "$SQUADS_VAULT_ADDRESS" ]; then
+    return
+  fi
+  case "$SOLANA_NETWORK" in
+    devnet)
+      [ -n "${DEVNET_SQUADS_VAULT:-}" ] && SQUADS_VAULT_ADDRESS="$DEVNET_SQUADS_VAULT"
+      ;;
+    mainnet-beta|mainnet)
+      [ -n "${MAINNET_SQUADS_VAULT:-}" ] && SQUADS_VAULT_ADDRESS="$MAINNET_SQUADS_VAULT"
+      ;;
+  esac
 }
 
 resolve_program_so() {
@@ -50,7 +59,7 @@ print_verify_pda_reminder() {
   echo ""
   echo "  After the upgrade executes:"
   echo "    • Import pda-tx-vault_mint.txt / pda-tx-vault_stake.txt in Squads v4 (from release or CI)."
-  echo "    • Or run: ./scripts/export_verify_pda_tx.sh both"
+  echo "    • Or run: ./scripts/export_verify_pda_tx.sh both [devnet|mainnet]"
   echo "    • Then: solana-verify remote submit-job --program-id <ID> --uploader \$SQUADS_VAULT_ADDRESS"
   echo ""
 }
@@ -125,8 +134,12 @@ configure_verified_so_dir() {
 }
 
 export_verify_pda_transactions() {
+  local cluster=devnet
+  case "$SOLANA_NETWORK" in
+    mainnet-beta|mainnet) cluster=mainnet ;;
+  esac
   chmod +x ./export_verify_pda_tx.sh 2>/dev/null || true
-  ./export_verify_pda_tx.sh both
+  ./export_verify_pda_tx.sh both "$cluster"
 }
 
 show_verify_pda_from_directory() {
@@ -319,7 +332,7 @@ configure_squads_vault() {
 # Main loop
 # ---------------------------------------------------------------------------
 while true; do
-  load_devnet_verify_defaults
+  load_verify_defaults_from_config
   MY_KEY=$(solana-keygen pubkey "$KEYPAIR")
   VAULT_MINT_PROGRAM_ID=$(resolve_program_id "vault_mint" "../programs/vault-mint/src/lib.rs")
   VAULT_STAKE_PROGRAM_ID=$(resolve_program_id "vault_stake" "../programs/vault-stake/src/lib.rs")

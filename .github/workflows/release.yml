@@ -68,28 +68,10 @@ jobs:
         cp -v target/deploy/vault_mint.so artifacts/verified/
         cp -v target/deploy/vault_stake.so artifacts/verified/
 
-    - name: Export verify PDA transactions
+    - name: Export verify PDA transactions (devnet + mainnet)
       run: |
-        mkdir -p artifacts
-        REPO_URL="https://github.com/${GITHUB_REPOSITORY}"
-
-        solana-verify export-pda-tx "${REPO_URL}" \
-          --program-id "${DEVNET_VAULT_MINT_PROGRAM_ID}" \
-          --uploader "${DEVNET_SQUADS_VAULT}" \
-          --commit-hash "${GITHUB_SHA}" \
-          --encoding base58 \
-          --url "${DEVNET_RPC_URL}" \
-          --compute-unit-price 0 \
-          > artifacts/pda-tx-vault_mint.txt
-
-        solana-verify export-pda-tx "${REPO_URL}" \
-          --program-id "${DEVNET_VAULT_STAKE_PROGRAM_ID}" \
-          --uploader "${DEVNET_SQUADS_VAULT}" \
-          --commit-hash "${GITHUB_SHA}" \
-          --encoding base58 \
-          --url "${DEVNET_RPC_URL}" \
-          --compute-unit-price 0 \
-          > artifacts/pda-tx-vault_stake.txt
+        chmod +x .github/scripts/export_verify_pda_txs_ci.sh
+        .github/scripts/export_verify_pda_txs_ci.sh artifacts
 
     - name: Generate Anchor IDL and types
       run: anchor build
@@ -125,6 +107,8 @@ jobs:
           target/deploy/vault_stake.so
           artifacts/pda-tx-vault_mint.txt
           artifacts/pda-tx-vault_stake.txt
+          artifacts/pda-tx-mainnet-vault_mint.txt
+          artifacts/pda-tx-mainnet-vault_stake.txt
           target/idl/vault_mint.json
           target/idl/vault_stake.json
           target/types/vault_mint.ts
@@ -144,9 +128,13 @@ jobs:
 
           ### Squads verify PDA
 
-          Import `pda-tx-vault_mint.txt` and `pda-tx-vault_stake.txt` in Squads v4 Transaction Builder **after** the program upgrade executes. See [verified builds — multisig](https://solana.com/docs/programs/verified-builds#how-to-verify-your-program-when-its-controlled-by-a-multisig-like-squads).
+          **Devnet** (after upgrade on devnet): import `pda-tx-vault_mint.txt` and `pda-tx-vault_stake.txt`.
 
-          Then run `solana-verify remote submit-job` for each program id with `--uploader` set to the Squads vault PDA.
+          **Mainnet** (after upgrade on mainnet): import `pda-tx-mainnet-vault_mint.txt` and `pda-tx-mainnet-vault_stake.txt`.
+
+          Use the cluster-matching Squads app (`devnet.squads.so` or `app.squads.so`). See [verified builds — multisig](https://solana.com/docs/programs/verified-builds#how-to-verify-your-program-when-its-controlled-by-a-multisig-like-squads).
+
+          Then run `solana-verify remote submit-job` per program with `--uploader` set to that cluster's Squads **vault** PDA (on-chain upgrade authority).
 
           ### Interface (IDL + TypeScript types)
 
@@ -163,5 +151,5 @@ jobs:
 
           1. Confirm buffer SHA-256 matches `checksums.txt` before approving.
           2. Execute program upgrade in Squads.
-          3. Import and execute verify PDA transactions from the `pda-tx-*.txt` files.
+          3. Import and execute verify PDA transactions from the cluster-specific `pda-tx-*.txt` files.
           4. Submit remote verify job per program.
