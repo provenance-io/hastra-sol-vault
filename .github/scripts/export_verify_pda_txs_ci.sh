@@ -20,8 +20,8 @@ export_cluster_pda_txs() {
       squads_vault="${DEVNET_SQUADS_VAULT}"
       mint_id="${DEVNET_VAULT_MINT_PROGRAM_ID}"
       stake_id="${DEVNET_VAULT_STAKE_PROGRAM_ID}"
-      mint_out="${ARTIFACTS_DIR}/pda-tx-vault_mint.txt"
-      stake_out="${ARTIFACTS_DIR}/pda-tx-vault_stake.txt"
+      mint_out="${ARTIFACTS_DIR}/pda-tx-devnet-vault_mint.txt"
+      stake_out="${ARTIFACTS_DIR}/pda-tx-devnet-vault_stake.txt"
       ;;
     mainnet)
       rpc_url="${MAINNET_RPC_URL}"

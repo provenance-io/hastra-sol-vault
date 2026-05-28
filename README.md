@@ -891,8 +891,8 @@ The release will contain:
 | ---- | ----------- |
 | `vault_mint.so` | Verifiable vault-mint program binary |
 | `vault_stake.so` | Verifiable vault-stake (PRIME) program binary |
-| `pda-tx-vault_mint.txt` | Devnet: verify PDA tx for vault-mint |
-| `pda-tx-vault_stake.txt` | Devnet: verify PDA tx for vault-stake |
+| `pda-tx-devnet-vault_mint.txt` | Devnet: verify PDA tx for vault-mint |
+| `pda-tx-devnet-vault_stake.txt` | Devnet: verify PDA tx for vault-stake |
 | `pda-tx-mainnet-vault_mint.txt` | Mainnet: verify PDA tx for vault-mint |
 | `pda-tx-mainnet-vault_stake.txt` | Mainnet: verify PDA tx for vault-stake |
 | `vault_mint.json` | Anchor IDL for vault-mint |

@@ -32,6 +32,21 @@ jobs:
         solana_version: ${{ steps.versions.outputs.solana_version }}
         anchor_version: ${{ steps.versions.outputs.anchor_version }}
 
+    - name: Cache Cargo registry and git sources
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: cargo-${{ runner.os }}-
+
+    - name: Cache yarn dependencies
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: yarn
+
     - name: Install yarn dependencies
       run: yarn install --frozen-lockfile
 
@@ -64,8 +79,22 @@ jobs:
       if: always()
       run: kill ${VALIDATOR_PID} 2>/dev/null || true
 
+    # vault_stake has `idl-build = ["testing"]` so the IDL generated during the
+    # testing build includes set_price_for_testing. Rebuild without the feature
+    # to produce the production IDL and binary.
     - name: Anchor build vault_stake (production)
       run: anchor build --program-name vault_stake
+
+    - name: Generate checksums
+      run: |
+        mkdir -p artifacts
+        sha256sum target/deploy/vault_mint.so   > artifacts/checksums.txt
+        sha256sum target/deploy/vault_stake.so >> artifacts/checksums.txt
+        sha256sum target/idl/vault_mint.json   >> artifacts/checksums.txt
+        sha256sum target/idl/vault_stake.json  >> artifacts/checksums.txt
+        sha256sum target/types/vault_mint.ts   >> artifacts/checksums.txt
+        sha256sum target/types/vault_stake.ts  >> artifacts/checksums.txt
+        cat artifacts/checksums.txt
 
     - name: Upload production program artifacts
       uses: actions/upload-artifact@v4
@@ -79,3 +108,4 @@ jobs:
           target/idl/vault_stake.json
           target/types/vault_mint.ts
           target/types/vault_stake.ts
+          artifacts/checksums.txt

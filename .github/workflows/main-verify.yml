@@ -1,6 +1,6 @@
 name: Main Verify
 
-# Reproducible program builds (solana-verify) and Squads verify PDA export txs (devnet + mainnet).
+# Reproducible program builds and Squads verify PDA export txs (devnet + mainnet).
 # No deployer secrets — download artifacts to write buffers and import PDA txs in Squads v4.
 
 permissions:
@@ -9,9 +9,6 @@ permissions:
 on:
   push:
     branches: [ main ]
-
-env:
-  SOLANA_VERIFY_VERSION: "0.4.15"
 
 jobs:
   verified-build:
@@ -46,24 +43,54 @@ jobs:
         anchor_version: ${{ steps.versions.outputs.anchor_version }}
         verify_version: ${{ env.SOLANA_VERIFY_VERSION }}
 
+    - name: Cache Cargo registry and git sources
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: cargo-${{ runner.os }}-
+
+    - name: Cache yarn dependencies
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: yarn
+
     - name: Install yarn dependencies
       run: yarn install --frozen-lockfile
 
+    # Run anchor build first so IDL and types are generated before solana-verify
+    # takes over target/deploy/*.so. solana-verify build runs Docker as root and
+    # makes those .so files root-owned, but we never write to target/ again after
+    # this point, so no chown is needed.
+    - name: Anchor build (production IDL + types + .so)
+      run: anchor build
+
     - name: Verifiable build vault_mint
-      run: solana-verify build --library-name vault_mint
+      uses: solana-developers/github-actions/build-verified@v0.2.10
+      with:
+        program: vault_mint
 
     - name: Verifiable build vault_stake
-      run: solana-verify build --library-name vault_stake
+      uses: solana-developers/github-actions/build-verified@v0.2.10
+      with:
+        program: vault_stake
 
     - name: Export verify PDA transactions (devnet + mainnet)
       run: |
         chmod +x .github/scripts/export_verify_pda_txs_ci.sh
         .github/scripts/export_verify_pda_txs_ci.sh artifacts
 
-    - name: Generate SHA-256 checksums
+    - name: Generate checksums
       run: |
-        sha256sum target/deploy/vault_mint.so  > artifacts/checksums.txt
+        sha256sum target/deploy/vault_mint.so   > artifacts/checksums.txt
         sha256sum target/deploy/vault_stake.so >> artifacts/checksums.txt
+        sha256sum target/idl/vault_mint.json   >> artifacts/checksums.txt
+        sha256sum target/idl/vault_stake.json  >> artifacts/checksums.txt
+        sha256sum target/types/vault_mint.ts   >> artifacts/checksums.txt
+        sha256sum target/types/vault_stake.ts  >> artifacts/checksums.txt
         cat artifacts/checksums.txt
 
     - name: Upload verified program artifacts
@@ -74,8 +101,12 @@ jobs:
         path: |
           target/deploy/vault_mint.so
           target/deploy/vault_stake.so
-          artifacts/pda-tx-vault_mint.txt
-          artifacts/pda-tx-vault_stake.txt
+          target/idl/vault_mint.json
+          target/idl/vault_stake.json
+          target/types/vault_mint.ts
+          target/types/vault_stake.ts
+          artifacts/pda-tx-devnet-vault_mint.txt
+          artifacts/pda-tx-devnet-vault_stake.txt
           artifacts/pda-tx-mainnet-vault_mint.txt
           artifacts/pda-tx-mainnet-vault_stake.txt
           artifacts/checksums.txt
