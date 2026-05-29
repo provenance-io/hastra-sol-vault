@@ -3,16 +3,11 @@ name: Release
 # Triggered by pushing a version tag, e.g.: git tag v1.0.0 && git push origin v1.0.0
 #
 # Produces a GitHub Release containing:
-#   - vault_mint.so               (deployable program binary)
-#   - vault_stake.so              (deployable program binary — PRIME pool)
-#   - vault_mint.json             (Anchor IDL — program interface definition)
-#   - vault_stake.json            (Anchor IDL — program interface definition)
-#   - vault_mint.ts               (TypeScript types generated from the IDL)
-#   - vault_stake.ts              (TypeScript types generated from the IDL)
-#   - checksums.txt               (SHA-256 of all release artifacts)
-#
-# Use checksums.txt to verify that the buffer uploaded to Squads matches the
-# artifact compiled at this exact commit before approving the upgrade proposal.
+#   - vault_mint.so / vault_stake.so                    (solana-verify reproducible builds)
+#   - pda-tx-devnet-vault_*.txt / pda-tx-mainnet-vault_*.txt  (Squads v4 verify PDA import)
+#   - vault_mint.json / vault_stake.json                (Anchor IDL)
+#   - vault_mint.ts / vault_stake.ts                    (TypeScript types)
+#   - checksums.txt
 
 on:
   push:
@@ -20,15 +15,19 @@ on:
       - 'v*'
 
 permissions:
-  contents: write  # required to create GitHub releases and upload assets
+  contents: write
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - name: Load verify config
+      run: cat .github/verify-config.env >> $GITHUB_ENV
 
     - name: Install system dependencies
       run: |
@@ -42,107 +41,126 @@ jobs:
           protobuf-compiler \
           libssl-dev
 
-    - uses: dtolnay/rust-toolchain@stable
+    - uses: solana-developers/github-actions/extract-versions@v0.2.10
+      id: versions
 
-    - uses: Swatinem/rust-cache@v2
+    - uses: solana-developers/github-actions/setup-all@v0.2.10
+      with:
+        solana_version: ${{ steps.versions.outputs.solana_version }}
+        anchor_version: ${{ steps.versions.outputs.anchor_version }}
+        verify_version: ${{ env.SOLANA_VERIFY_VERSION }}
 
-    - name: Install Solana CLI
-      run: |
-        sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
-        echo "$HOME/.local/share/solana/install/active_release/bin" >> $GITHUB_PATH
+    - name: Cache Cargo registry and git sources
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: cargo-${{ runner.os }}-
 
-    - name: Install avm
-      run: cargo install --git https://github.com/coral-xyz/anchor avm --force
-
-    - name: Install Anchor
-      run: |
-        anchor_version=$(cat Anchor.toml | grep anchor_version | awk '{print $NF}' | tr -d '"')
-        avm install ${anchor_version}
-        avm use ${anchor_version}
-
-    - name: Set up Node.js and Yarn
+    - name: Cache yarn dependencies
       uses: actions/setup-node@v4
       with:
-        node-version: '20.x'
-        cache: 'yarn'
+        node-version: 20
+        cache: yarn
 
     - name: Install yarn dependencies
-      run: |
-        corepack enable
-        yarn install --frozen-lockfile
+      run: yarn install --frozen-lockfile
 
-    - name: Build programs
+    # Run anchor build first so IDL and types are generated before solana-verify
+    # takes over target/deploy/*.so. solana-verify build runs Docker as root and
+    # makes those .so files root-owned, but we never write to target/ again after
+    # this point, so no chown is needed.
+    - name: Anchor build (production IDL + types + .so)
       run: anchor build
 
-    - name: Generate SHA-256 checksums
+    - name: Verifiable build vault_mint
+      uses: solana-developers/github-actions/build-verified@v0.2.10
+      with:
+        program: vault_mint
+
+    - name: Verifiable build vault_stake
+      uses: solana-developers/github-actions/build-verified@v0.2.10
+      with:
+        program: vault_stake
+
+    - name: Export verify PDA transactions (devnet + mainnet)
+      run: |
+        chmod +x .github/scripts/export_verify_pda_txs_ci.sh
+        .github/scripts/export_verify_pda_txs_ci.sh artifacts
+
+    - name: Generate checksums
       id: checksums
       run: |
-        # Programs (.so)
-        sha256sum target/deploy/vault_mint.so        > target/deploy/checksums.txt
-        sha256sum target/deploy/vault_stake.so      >> target/deploy/checksums.txt
-        # IDL JSON files
-        sha256sum target/idl/vault_mint.json        >> target/deploy/checksums.txt
-        sha256sum target/idl/vault_stake.json       >> target/deploy/checksums.txt
-        # TypeScript type files
-        sha256sum target/types/vault_mint.ts        >> target/deploy/checksums.txt
-        sha256sum target/types/vault_stake.ts       >> target/deploy/checksums.txt
-        echo "Checksums:"
-        cat target/deploy/checksums.txt
+        sha256sum target/deploy/vault_mint.so   > artifacts/checksums.txt
+        sha256sum target/deploy/vault_stake.so >> artifacts/checksums.txt
+        sha256sum target/idl/vault_mint.json   >> artifacts/checksums.txt
+        sha256sum target/idl/vault_stake.json  >> artifacts/checksums.txt
+        sha256sum target/types/vault_mint.ts   >> artifacts/checksums.txt
+        sha256sum target/types/vault_stake.ts  >> artifacts/checksums.txt
+        cat artifacts/checksums.txt
 
-        # Expose individual hashes as outputs for the release body
         MINT_HASH=$(sha256sum target/deploy/vault_mint.so | awk '{print $1}')
         STAKE_HASH=$(sha256sum target/deploy/vault_stake.so | awk '{print $1}')
-        echo "mint_hash=$MINT_HASH"             >> $GITHUB_OUTPUT
-        echo "stake_hash=$STAKE_HASH"           >> $GITHUB_OUTPUT
+        echo "mint_hash=$MINT_HASH" >> $GITHUB_OUTPUT
+        echo "stake_hash=$STAKE_HASH" >> $GITHUB_OUTPUT
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
         name: ${{ github.ref_name }}
         tag_name: ${{ github.ref_name }}
+        draft: true
         files: |
           target/deploy/vault_mint.so
           target/deploy/vault_stake.so
+          artifacts/pda-tx-devnet-vault_mint.txt
+          artifacts/pda-tx-devnet-vault_stake.txt
+          artifacts/pda-tx-mainnet-vault_mint.txt
+          artifacts/pda-tx-mainnet-vault_stake.txt
           target/idl/vault_mint.json
           target/idl/vault_stake.json
           target/types/vault_mint.ts
           target/types/vault_stake.ts
-          target/deploy/checksums.txt
+          artifacts/checksums.txt
         body: |
           ## Program Artifacts — ${{ github.ref_name }}
 
-          Compiled from commit `${{ github.sha }}`.
+          Built with [solana-verify](https://solana.com/docs/programs/verified-builds) from commit `${{ github.sha }}`.
 
-          ### Programs
+          ### Programs (verified)
 
           | File | SHA-256 |
           |------|---------|
           | `vault_mint.so` | `${{ steps.checksums.outputs.mint_hash }}` |
           | `vault_stake.so` | `${{ steps.checksums.outputs.stake_hash }}` |
 
+          ### Squads verify PDA
+
+          After the program upgrade executes, import the cluster-matching PDA file in Squads v4 Transaction Builder. See [verified builds — multisig](https://solana.com/docs/programs/verified-builds#how-to-verify-your-program-when-its-controlled-by-a-multisig-like-squads).
+
+          | Cluster | vault-mint | vault-stake |
+          |---------|------------|-------------|
+          | Devnet | `pda-tx-devnet-vault_mint.txt` | `pda-tx-devnet-vault_stake.txt` |
+          | Mainnet | `pda-tx-mainnet-vault_mint.txt` | `pda-tx-mainnet-vault_stake.txt` |
+
+          Then run `solana-verify remote submit-job` per program with `--uploader` set to that cluster's Squads vault PDA (on-chain upgrade authority).
+
           ### Interface (IDL + TypeScript types)
 
           | File | Description |
           |------|-------------|
-          | `vault_mint.json` | Anchor IDL for the vault-mint program |
-          | `vault_stake.json` | Anchor IDL for the vault-stake (PRIME pool) program |
-          | `vault_mint.ts` | TypeScript types generated from the vault-mint IDL |
-          | `vault_stake.ts` | TypeScript types generated from the vault-stake IDL |
+          | `vault_mint.json` | Anchor IDL for vault-mint |
+          | `vault_stake.json` | Anchor IDL for vault-stake (PRIME) |
+          | `vault_mint.ts` | TypeScript types from vault-mint IDL |
+          | `vault_stake.ts` | TypeScript types from vault-stake IDL |
 
-          SHA-256 hashes for all artifacts (including IDLs and types) are in `checksums.txt`.
+          All artifact hashes are in `checksums.txt`.
 
-          ### Verifying a Squads upgrade
+          ### Squads upgrade checklist
 
-          Before approving a program upgrade proposal in Squads, confirm that the
-          buffer written on-chain was built from this release:
-
-          ```bash
-          # Download the release artifact and verify its hash locally
-          sha256sum vault_mint.so
-          sha256sum vault_stake.so
-
-          # Compare against checksums.txt attached to this release
-          ```
-
-          The hash of the buffer written to the cluster must match the hash above.
-          Any discrepancy means the buffer was NOT built from this tagged release.
+          1. Confirm buffer SHA-256 matches `checksums.txt` before approving.
+          2. Execute program upgrade in Squads.
+          3. Import and execute the cluster-matching `pda-tx-*` files in Squads v4 Transaction Builder.
+          4. Run `solana-verify remote submit-job` per program.

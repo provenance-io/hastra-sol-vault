@@ -1,28 +1,38 @@
-name: PR Validation
+name: Main Verify
+
+# Reproducible program builds and Squads verify PDA export txs (devnet + mainnet).
+# No deployer secrets — download artifacts to write buffers and import PDA txs in Squads v4.
 
 permissions:
   contents: read
 
 on:
-  workflow_dispatch:
-  pull_request:
-    types: [ opened, reopened, synchronize ]
+  push:
+    branches: [ main ]
 
 jobs:
-  test:
+  verified-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - run: |
+    - name: Load verify config
+      run: cat .github/verify-config.env >> $GITHUB_ENV
+
+    - name: Install system dependencies
+      run: |
         sudo apt-get update
         sudo apt-get install -y \
           build-essential \
           pkg-config \
-          libudev-dev llvm libclang-dev \
-          protobuf-compiler libssl-dev
+          libudev-dev \
+          llvm \
+          libclang-dev \
+          protobuf-compiler \
+          libssl-dev
 
     - uses: solana-developers/github-actions/extract-versions@v0.2.10
       id: versions
@@ -31,6 +41,7 @@ jobs:
       with:
         solana_version: ${{ steps.versions.outputs.solana_version }}
         anchor_version: ${{ steps.versions.outputs.anchor_version }}
+        verify_version: ${{ env.SOLANA_VERIFY_VERSION }}
 
     - name: Cache Cargo registry and git sources
       uses: actions/cache@v4
@@ -50,44 +61,30 @@ jobs:
     - name: Install yarn dependencies
       run: yarn install --frozen-lockfile
 
-    - name: Sync Anchor program IDs to deploy keypairs
-      run: anchor keys sync
+    # Run anchor build first so IDL and types are generated before solana-verify
+    # takes over target/deploy/*.so. solana-verify build runs Docker as root and
+    # makes those .so files root-owned, but we never write to target/ again after
+    # this point, so no chown is needed.
+    - name: Anchor build (production IDL + types + .so)
+      run: anchor build
 
-    # Ensure SBF platform-tools exist (avoids anchor "os error 2" from missing SDK).
-    - name: Install SBF platform tools
-      run: cargo build-sbf --force-tools-install --manifest-path programs/vault-mint/Cargo.toml
+    - name: Verifiable build vault_mint
+      uses: solana-developers/github-actions/build-verified@v0.2.10
+      with:
+        program: vault_mint
 
-    - name: Anchor build (testing)
-      run: anchor build -- --features testing
+    - name: Verifiable build vault_stake
+      uses: solana-developers/github-actions/build-verified@v0.2.10
+      with:
+        program: vault_stake
 
-    - name: Setup solana node
+    - name: Export verify PDA transactions (devnet + mainnet)
       run: |
-        solana-test-validator --reset &
-        echo "VALIDATOR_PID=$!" >> $GITHUB_ENV
-        sleep 5
-
-        mkdir -p ~/.config/solana/
-        solana-keygen new --no-passphrase --outfile ~/.config/solana/hastra-localnet-id.json
-        solana config set --url l
-        solana config set --keypair ~/.config/solana/hastra-localnet-id.json
-        solana airdrop 1000
-
-    - name: Anchor test
-      run: anchor test --skip-local-validator --skip-build
-
-    - name: Stop local validator
-      if: always()
-      run: kill ${VALIDATOR_PID} 2>/dev/null || true
-
-    # vault_stake has `idl-build = ["testing"]` so the IDL generated during the
-    # testing build includes set_price_for_testing. Rebuild without the feature
-    # to produce the production IDL and binary.
-    - name: Anchor build vault_stake (production)
-      run: anchor build --program-name vault_stake
+        chmod +x .github/scripts/export_verify_pda_txs_ci.sh
+        .github/scripts/export_verify_pda_txs_ci.sh artifacts
 
     - name: Generate checksums
       run: |
-        mkdir -p artifacts
         sha256sum target/deploy/vault_mint.so   > artifacts/checksums.txt
         sha256sum target/deploy/vault_stake.so >> artifacts/checksums.txt
         sha256sum target/idl/vault_mint.json   >> artifacts/checksums.txt
@@ -96,11 +93,11 @@ jobs:
         sha256sum target/types/vault_stake.ts  >> artifacts/checksums.txt
         cat artifacts/checksums.txt
 
-    - name: Upload production program artifacts
+    - name: Upload verified program artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: program-builds-pr-${{ github.event.pull_request.number || github.run_id }}
-        retention-days: 14
+        name: verified-program-builds-${{ github.sha }}
+        retention-days: 30
         path: |
           target/deploy/vault_mint.so
           target/deploy/vault_stake.so
@@ -108,4 +105,8 @@ jobs:
           target/idl/vault_stake.json
           target/types/vault_mint.ts
           target/types/vault_stake.ts
+          artifacts/pda-tx-devnet-vault_mint.txt
+          artifacts/pda-tx-devnet-vault_stake.txt
+          artifacts/pda-tx-mainnet-vault_mint.txt
+          artifacts/pda-tx-mainnet-vault_stake.txt
           artifacts/checksums.txt

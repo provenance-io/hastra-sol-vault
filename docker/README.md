@@ -1,6 +1,6 @@
 # Docker Setup for Sol Vault Mint
 
-This directory contains Docker configuration for building and developing the Sol Vault Mint Anchor project.
+This directory contains Docker configuration for optional **local** development. It is **not** used by GitHub Actions CI (see `.github/workflows/pr-validation.yml`, `main-verify.yml`, and `release.yml`).
 
 ## Prerequisites
 
