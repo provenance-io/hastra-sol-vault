@@ -111,6 +111,7 @@ jobs:
       with:
         name: ${{ github.ref_name }}
         tag_name: ${{ github.ref_name }}
+        draft: true
         files: |
           target/deploy/vault_mint.so
           target/deploy/vault_stake.so
