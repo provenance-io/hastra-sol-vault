@@ -48,8 +48,13 @@ load_verify_defaults_from_config() {
 
 resolve_program_so() {
   local name="$1"
-  if [ -n "$VERIFIED_SO_DIR" ] && [ -f "${VERIFIED_SO_DIR}/${name}" ]; then
-    echo "${VERIFIED_SO_DIR}/${name}"
+  if [ -n "$VERIFIED_SO_DIR" ]; then
+    if [ -f "${VERIFIED_SO_DIR}/${name}" ]; then
+      echo "${VERIFIED_SO_DIR}/${name}"
+    else
+      echo "ERROR: VERIFIED_SO_DIR is set to '${VERIFIED_SO_DIR}', but '${VERIFIED_SO_DIR}/${name}' does not exist." >&2
+      exit 1
+    fi
   else
     echo "../target/deploy/${name}"
   fi
@@ -58,7 +63,7 @@ resolve_program_so() {
 print_verify_pda_reminder() {
   echo ""
   echo "  After the upgrade executes:"
-  echo "    • Import pda-tx-vault_mint.txt / pda-tx-vault_stake.txt in Squads v4 (from release or CI)."
+  echo "    • Import pda-tx-<network>-vault_mint.txt / pda-tx-<network>-vault_stake.txt in Squads v4 (from release or CI)."
   echo "    • Or run: ./scripts/export_verify_pda_tx.sh both [devnet|mainnet]"
   echo "    • Then: solana-verify remote submit-job --program-id <ID> --uploader \$SQUADS_VAULT_ADDRESS"
   echo ""
@@ -134,12 +139,21 @@ configure_verified_so_dir() {
 }
 
 export_verify_pda_transactions() {
-  local cluster=devnet
+  # Only devnet and mainnet are supported by export_verify_pda_tx.sh; reject
+  # anything else explicitly rather than silently exporting devnet transactions
+  # for an unrelated network (e.g. localnet or testnet).
+  local network
   case "$SOLANA_NETWORK" in
-    mainnet-beta|mainnet) cluster=mainnet ;;
+    devnet)              network=devnet ;;
+    mainnet-beta|mainnet) network=mainnet ;;
+    *)
+      echo "ERROR: export_verify_pda_transactions is only supported for devnet and mainnet."
+      echo "       Current SOLANA_NETWORK='${SOLANA_NETWORK}'. Aborting."
+      return 1
+      ;;
   esac
   chmod +x ./export_verify_pda_tx.sh 2>/dev/null || true
-  ./export_verify_pda_tx.sh both "$cluster"
+  ./export_verify_pda_tx.sh both "$network"
 }
 
 show_verify_pda_from_directory() {

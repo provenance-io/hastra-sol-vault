@@ -14,7 +14,7 @@ anchor-debug = []
 no-idl = []
 no-log-ix-name = []
 custom-heap = []
-idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "testing"]
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 custom-panic = []
 testing = []
 
