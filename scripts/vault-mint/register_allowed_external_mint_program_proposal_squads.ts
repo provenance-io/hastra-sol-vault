@@ -5,9 +5,6 @@
  * registerAllowedExternalMintProgram on vault-mint. Uses vaultTransactionCreate + proposalCreate
  * in a single outer transaction (see initialize_price_config_proposal.ts on vault-stake).
  *
- * If the multisig is Squads v3 (program SMPLecH...), use
- * register_allowed_external_mint_program_proposal_squads_v3.ts instead.
- *
  * On first registration, init_if_needed allocates the AllowedExternalMintPrograms PDA;
  * the vault PDA pays rent — ensure the Squads vault has enough SOL before executing.
  *
@@ -20,7 +17,7 @@
  *
  * Optional overrides (same semantics as initialize_price_config_proposal):
  *   --vault_pda <PUBKEY>        when upgrade authority differs from SDK-derived vault index 0
- *   --transaction_index <N>     when offset-78 read is wrong for non-v4 multisigs
+ *   --transaction_index <N>     override next proposal index (otherwise u64 LE @ offset 78 + 1)
  */
 
 import * as multisig from "@squads-protocol/multisig";
@@ -59,13 +56,13 @@ const args = yargs(process.argv.slice(2))
     .option("vault_pda", {
         type: "string",
         description:
-            "Override the Squads-derived vault PDA (needed when the multisig is Squads v3 or when the upgrade authority differs from the SDK-derived vault)",
+            "Override the Squads-derived vault PDA when the upgrade authority differs from the SDK-derived vault",
         required: false,
     })
     .option("transaction_index", {
         type: "string",
         description:
-            "Override the next transaction index read from the multisig account (needed when offset-78 gives garbage, e.g. for Squads v3 accounts)",
+            "Override the next transaction index (otherwise u64 LE @ offset 78 of the multisig account + 1)",
         required: false,
     })
     .parseSync();

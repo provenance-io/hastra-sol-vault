@@ -23,7 +23,7 @@ const BPF_LOADER_UPGRADEABLE_ID = new PublicKey(
 const args = yargs(process.argv.slice(2))
     .option("multisig_pda", {
         type: "string",
-        description: "Squads multisig account address",
+        description: "Squads v4 multisig account address",
         required: true,
     })
     .option("chainlink_program", {
@@ -53,12 +53,12 @@ const args = yargs(process.argv.slice(2))
     })
     .option("vault_pda", {
         type: "string",
-        description: "Override the Squads-derived vault PDA (needed when the multisig is Squads v3 or when the upgrade authority differs from the SDK-derived vault)",
+        description: "Override the Squads-derived vault PDA when the upgrade authority differs from the SDK-derived vault",
         required: false,
     })
     .option("transaction_index", {
         type: "string",
-        description: "Override the next transaction index read from the multisig account (needed when offset-78 gives garbage, e.g. for Squads v3 accounts)",
+        description: "Override the next transaction index (otherwise u64 LE @ offset 78 of the multisig account + 1)",
         required: false,
     })
     .parseSync();
@@ -85,8 +85,6 @@ async function main() {
     );
 
     // Vault PDA — honour explicit override, fall back to SDK derivation.
-    // Use --vault_pda when the multisig is Squads v3 (SMPLec...) or when the
-    // program upgrade authority differs from the SDK-derived vault.
     const [vaultPdaDerived] = multisig.getVaultPda({ multisigPda: msPDA, index: 0 });
     const vaultPda = args.vault_pda ? new PublicKey(args.vault_pda) : vaultPdaDerived;
 
@@ -105,10 +103,7 @@ async function main() {
 
     const feedIdBytes: number[] = Array.from(Buffer.from(feedIdHex, "hex"));
 
-    // Transaction index — honour explicit override, fall back to reading the
-    // Squads v4 multisig account data (u64 at byte offset 78).
-    // Use --transaction_index when the multisig is Squads v3 or the auto-read
-    // value appears wrong (offset 78 holds different data in v3 accounts).
+    // Transaction index — honour explicit override, fall back to u64 LE @ offset 78.
     let transactionIndex: bigint;
     if (args.transaction_index !== undefined) {
         transactionIndex = BigInt(args.transaction_index);

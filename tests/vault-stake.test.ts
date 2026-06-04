@@ -197,6 +197,24 @@ describe("vault-stake", () => {
         programData: programDataPda,
     });
 
+    /** Creates StakeRewardConfig when missing (required before publish_rewards). */
+    const ensureStakeRewardConfigInitialized = async () => {
+        const info = await provider.connection.getAccountInfo(stakeRewardConfigPda);
+        if (info) {
+            return;
+        }
+        await program.methods
+            .initializeStakeRewardConfig()
+            .accountsStrict({
+                stakeConfig: stakeConfigPda,
+                stakeRewardConfig: stakeRewardConfigPda,
+                signer: provider.wallet.publicKey,
+                programData: programDataPda,
+                systemProgram: SystemProgram.programId,
+            })
+            .rpc();
+    };
+
     /**
      * Shorten reward cooldown to 1s so tests can chain publish_rewards without waiting for the
      * default ~59m period. Waits so on-chain unix time advances past last_reward + period.
@@ -633,7 +651,53 @@ describe("vault-stake", () => {
             assert.equal(priceConfig.priceTimestamp.toString(), "0", "price not set until verify_price is called");
         });
 
-        // stake_reward_config is created lazily on first publish_rewards (init_if_needed).
+        it("initializes stake reward config", async () => {
+            await program.methods
+                .initializeStakeRewardConfig()
+                .accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    stakeRewardConfig: stakeRewardConfigPda,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
+
+            const rewardConfig = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
+            assert.equal(rewardConfig.maxRewardBps.toNumber(), 75, "maxRewardBps must be 75 (0.75%)");
+            assert.equal(
+                rewardConfig.maxPeriodRewards.toString(),
+                STAKE_REWARD_CONFIG_DEFAULTS.maxPeriodRewards.toString()
+            );
+            assert.equal(
+                rewardConfig.rewardPeriodSeconds.toNumber(),
+                STAKE_REWARD_CONFIG_DEFAULTS.rewardPeriodSeconds.toNumber()
+            );
+            assert.equal(
+                rewardConfig.maxTotalRewards.toString(),
+                STAKE_REWARD_CONFIG_DEFAULTS.maxTotalRewards.toString()
+            );
+            assert.equal(rewardConfig.totalRewardsDistributed.toString(), "0");
+            assert.equal(rewardConfig.lastRewardDistributedAt.toString(), "0");
+        });
+
+        it("fails to initialize stake reward config twice", async () => {
+            try {
+                await program.methods
+                    .initializeStakeRewardConfig()
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        stakeRewardConfig: stakeRewardConfigPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programDataPda,
+                        systemProgram: SystemProgram.programId,
+                    })
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+            }
+        });
 
         it("set initial price for testing via set_price_for_testing", async () => {
             // Sets a 1:1 price with a fresh timestamp so deposit/redeem tests can proceed.
@@ -1293,6 +1357,7 @@ describe("vault-stake", () => {
         // Keeps parity with vault-stake-auto: if another suite ever publishes on this pool first,
         // publish_rewards here still observes a cleared cooldown.
         beforeEach(async () => {
+            await ensureStakeRewardConfigInitialized();
             await ensureShortRewardCooldownForTests();
         });
 
@@ -1473,8 +1538,8 @@ describe("vault-stake", () => {
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
                         stakeRewardConfig: stakeRewardConfigPda,
-                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     })
                     .signers([rewardsAdmin])
                     .rpc();
@@ -1642,6 +1707,7 @@ describe("vault-stake", () => {
     //write test cases against the rewards merkle tree functionality
     describe("rewards", () => {
         beforeEach(async () => {
+            await ensureStakeRewardConfigInitialized();
             await ensureShortRewardCooldownForTests();
         });
 
@@ -1689,8 +1755,8 @@ describe("vault-stake", () => {
                     mint: mintedToken,
                     rewardRecord: rewardsRecordPda,
                     stakeRewardConfig: stakeRewardConfigPda,
-                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                 })
                 .signers([rewardsAdmin])
                 .rpc({ commitment: "confirmed", skipPreflight: true });
@@ -1747,8 +1813,8 @@ describe("vault-stake", () => {
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
                         stakeRewardConfig: stakeRewardConfigPda,
-                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     })
                     .signers([rewardsAdmin])
                     .rpc();
@@ -1788,8 +1854,8 @@ describe("vault-stake", () => {
                     mint: mintedToken,
                     rewardRecord: rewardsRecordPda1,
                     stakeRewardConfig: stakeRewardConfigPda,
-                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                 })
                 .signers([rewardsAdmin])
                 .rpc();
@@ -1823,8 +1889,8 @@ describe("vault-stake", () => {
                     mint: mintedToken,
                     rewardRecord: rewardsRecordPda2,
                     stakeRewardConfig: stakeRewardConfigPda,
-                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                 })
                 .signers([rewardsAdmin])
                 .rpc();
@@ -1866,8 +1932,8 @@ describe("vault-stake", () => {
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
                         stakeRewardConfig: stakeRewardConfigPda,
-                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     })
                     .signers([user])
                     .rpc();
@@ -1880,6 +1946,7 @@ describe("vault-stake", () => {
 
     describe("StakeRewardConfig", () => {
         beforeEach(async () => {
+            await ensureStakeRewardConfigInitialized();
             await ensureShortRewardCooldownForTests();
         });
 
@@ -1900,8 +1967,8 @@ describe("vault-stake", () => {
             mint: mintedToken,
             rewardRecord: rewardsRecordPda,
             stakeRewardConfig: stakeRewardConfigPda,
-            tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
             systemProgram: anchor.web3.SystemProgram.programId,
+            tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
         });
 
         const makeRewardsRecordPda = (id: number, amount: bigint | number) => {
@@ -1923,25 +1990,16 @@ describe("vault-stake", () => {
             programData: programDataPda,
         });
 
-        const migrateRewardConfigAccounts = (signer: PublicKey) => ({
-            stakeConfig: stakeConfigPda,
-            stakeRewardConfig: stakeRewardConfigPda,
-            signer,
-            programData: programDataPda,
-            systemProgram: SystemProgram.programId,
-        });
-
         // ── Account state verification ──────────────────────────────────────
 
         describe("account state verification", () => {
-            it("lazy-init config has correct default state", async () => {
+            it("initialized config has correct default state", async () => {
                 // Parent beforeEach shortens cooldown to 1s; restore protocol default before
-                // asserting full lazy-init defaults.
+                // asserting initialize_stake_reward_config defaults.
                 await program.methods
                     .updateRewardPeriodSeconds(STAKE_REWARD_CONFIG_DEFAULTS.rewardPeriodSeconds)
                     .accountsStrict(stakeRewardConfigUpgradeAuthorityAccounts())
                     .rpc();
-                // Created on first publish_rewards with default 75 BPS when max_reward_bps was 0.
                 const config = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
                 assert.equal(config.maxRewardBps.toNumber(), 75, "maxRewardBps must be 75 (0.75%)");
                 assert.equal(
@@ -1961,9 +2019,8 @@ describe("vault-stake", () => {
                 );
             });
 
-            it("publish_rewards does not mutate config state (init_if_needed is idempotent)", async () => {
-                // Verify that calling publish_rewards (which uses init_if_needed) on an
-                // already-initialized account does not change the stored bump or maxRewardBps.
+            it("publish_rewards does not mutate config state", async () => {
+                // Verify that publish_rewards does not change stored bump or maxRewardBps.
                 const configBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
                 const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
                 const safeAmount = (totalAssets * BigInt(50)) / BigInt(10_000); // 0.5% — within 0.75% cap
@@ -1982,40 +2039,11 @@ describe("vault-stake", () => {
                 );
             });
 
-            it("migrate_reward_config can be invoked more than once", async () => {
-                const d = STAKE_REWARD_CONFIG_DEFAULTS;
-                await program.methods
-                    .migrateRewardConfig(new BN(1_000), d.maxPeriodRewards, d.rewardPeriodSeconds, d.maxTotalRewards)
-                    .accountsStrict(migrateRewardConfigAccounts(provider.wallet.publicKey))
-                    .rpc();
-                const mid = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
-                assert.equal(mid.maxRewardBps.toNumber(), 1_000);
-                await program.methods
-                    .migrateRewardConfig(new BN(75), d.maxPeriodRewards, d.rewardPeriodSeconds, d.maxTotalRewards)
-                    .accountsStrict(migrateRewardConfigAccounts(provider.wallet.publicKey))
-                    .rpc();
-                const after = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
-                assert.equal(after.maxRewardBps.toNumber(), 75);
-            });
-
-            it("non-upgrade-authority cannot call migrate_reward_config", async () => {
-                const d = STAKE_REWARD_CONFIG_DEFAULTS;
-                try {
-                    await program.methods
-                        .migrateRewardConfig(new BN(100), d.maxPeriodRewards, d.rewardPeriodSeconds, d.maxTotalRewards)
-                        .accountsStrict(migrateRewardConfigAccounts(rewardsAdmin.publicKey))
-                        .signers([rewardsAdmin])
-                        .rpc();
-                    assert.fail("Should have thrown — only the program upgrade authority may update reward config");
-                } catch (err) {
-                    expect(err).to.exist;
-                }
-            });
         });
 
         // ── Default 0.75% cap enforcement ─────────────────────────────────────
         // These tests verify the default maxRewardBps=75 (0.75%) cap behavior.
-        // The same behavior applies when the account is auto-created via init_if_needed
+        // The same behavior applies when the account was created via initialize_stake_reward_config
         // (maxRewardBps=0), because the processor treats 0 as DEFAULT_BPS=75.
 
         describe("default 0.75% cap enforcement", () => {
@@ -2594,8 +2622,8 @@ describe("vault-stake", () => {
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
                         stakeRewardConfig: stakeRewardConfigPda,
-                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                         systemProgram: anchor.web3.SystemProgram.programId,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     })
                     .signers([addRewardsAdmin])
                     .rpc();
