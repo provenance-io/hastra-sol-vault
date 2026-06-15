@@ -51,7 +51,8 @@ export function createRewardsEpochV2Accounts(
  * are passed separately by the caller.
  */
 export function claimRewardsV2Accounts(programId: PublicKey, index: number) {
-    return deriveRewardsEpochV2Accounts(programId, index);
+    const { epoch: _epoch, ...v2 } = deriveRewardsEpochV2Accounts(programId, index);
+    return v2;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
