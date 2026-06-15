@@ -36,7 +36,7 @@ export function createRewardsEpochV2Accounts(
     mint: PublicKey,
     mintAuthority: PublicKey
 ) {
-    const v2 = deriveRewardsEpochV2Accounts(programId, index);
+    const { epoch: _epoch, ...v2 } = deriveRewardsEpochV2Accounts(programId, index);
     return {
         ...v2,
         mint,
