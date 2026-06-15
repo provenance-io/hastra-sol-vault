@@ -64,4 +64,6 @@ pub enum CustomErrorCode {
     TooManyAllowedExternalMintPrograms = 29,
     #[msg("Invalid allowed external mint programs limit.")]
     InvalidAllowedExternalMintProgramsLimit = 35,
+    #[msg("Claim would exceed the epoch's aggregate reward cap")]
+    EpochCapExceeded = 36,
 }

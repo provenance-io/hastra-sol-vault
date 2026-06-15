@@ -403,37 +403,6 @@ pub fn thaw_token_account(ctx: Context<ThawTokenAccount>) -> Result<()> {
     Ok(())
 }
 
-pub fn create_rewards_epoch(
-    ctx: Context<CreateRewardsEpoch>,
-    index: u64,
-    merkle_root: [u8; 32],
-    total: u64,
-) -> Result<()> {
-    require!(!ctx.accounts.config.paused, CustomErrorCode::ProtocolPaused);
-    require!(
-        ctx.accounts
-            .config
-            .rewards_administrators
-            .contains(&ctx.accounts.admin.key()),
-        CustomErrorCode::InvalidRewardsAdministrator
-    );
-    let e = &mut ctx.accounts.epoch;
-    e.index = index;
-    e.merkle_root = merkle_root;
-    e.total = total;
-    e.created_ts = Clock::get()?.unix_timestamp;
-
-    emit!(RewardsEpochCreated {
-        admin: ctx.accounts.admin.key(),
-        index,
-        merkle_root,
-        total,
-        created_ts: e.created_ts,
-    });
-
-    Ok(())
-}
-
 pub fn claim_rewards(ctx: Context<ClaimRewards>, amount: u64, proof: Vec<ProofNode>) -> Result<()> {
     require!(!ctx.accounts.config.paused, CustomErrorCode::ProtocolPaused);
     require!(amount > 0, CustomErrorCode::InvalidAmount);
@@ -501,6 +470,156 @@ pub fn claim_rewards(ctx: Context<ClaimRewards>, amount: u64, proof: Vec<ProofNo
         epoch: ctx.accounts.epoch.index,
         amount,
         mint: ctx.accounts.mint.key(),
+        vault: ctx.accounts.config.vault,
+    });
+    msg!("Emitted RewardsClaimed");
+
+    Ok(())
+}
+
+/// Creates a V2 rewards epoch: initializes the `RewardsEpoch` PDA, the `EpochCapTracker` PDA,
+/// and the `epoch_rewards_pool` token account, then mints `total` wYLDS into the pool.
+/// All claims against this epoch must use `claim_rewards_v2`.
+pub fn create_rewards_epoch_v2(
+    ctx: Context<CreateRewardsEpochV2>,
+    index: u64,
+    merkle_root: [u8; 32],
+    total: u64,
+) -> Result<()> {
+    require!(!ctx.accounts.config.paused, CustomErrorCode::ProtocolPaused);
+    require!(
+        ctx.accounts
+            .config
+            .rewards_administrators
+            .contains(&ctx.accounts.admin.key()),
+        CustomErrorCode::InvalidRewardsAdministrator
+    );
+    require!(total > 0, CustomErrorCode::InvalidAmount);
+
+    let e = &mut ctx.accounts.epoch;
+    e.index = index;
+    e.merkle_root = merkle_root;
+    e.total = total;
+    e.created_ts = Clock::get()?.unix_timestamp;
+
+    let cap = &mut ctx.accounts.epoch_cap;
+    cap.index = index;
+    cap.total = total;
+    cap.claimed_total = 0;
+
+    // Pre-fund the pool so `pool.amount == cap.total - cap.claimed_total` holds from creation.
+    let seeds: &[&[u8]] = &[b"mint_authority", &[ctx.bumps.mint_authority]];
+    let signer = &[&seeds[..]];
+    let cpi_accounts = MintTo {
+        mint: ctx.accounts.mint.to_account_info(),
+        to: ctx.accounts.epoch_rewards_pool.to_account_info(),
+        authority: ctx.accounts.mint_authority.to_account_info(),
+    };
+    token::mint_to(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            cpi_accounts,
+            signer,
+        ),
+        total,
+    )?;
+
+    emit!(RewardsEpochCreated {
+        admin: ctx.accounts.admin.key(),
+        index,
+        merkle_root,
+        total,
+        created_ts: e.created_ts,
+    });
+
+    Ok(())
+}
+
+/// Claims rewards from a V2 epoch. Verifies the Merkle proof, enforces the aggregate cap, then
+/// transfers `amount` from `epoch_rewards_pool` to the user (no minting).
+pub fn claim_rewards_v2(ctx: Context<ClaimRewardsV2>, amount: u64, proof: Vec<ProofNode>) -> Result<()> {
+    require!(!ctx.accounts.config.paused, CustomErrorCode::ProtocolPaused);
+    require!(amount > 0, CustomErrorCode::InvalidAmount);
+
+    // Verify the Merkle proof first so invalid claims fail with a clear error before cap state
+    // is checked. leaf = sha256(user || amount_le || epoch_index_le)
+    let mut data = Vec::with_capacity(32 + 8 + 8);
+    data.extend_from_slice(ctx.accounts.user.key.as_ref());
+    data.extend_from_slice(&amount.to_le_bytes());
+    data.extend_from_slice(&ctx.accounts.epoch.index.to_le_bytes());
+    let mut node = hashv(&[&data]).to_bytes();
+
+    msg!("User Leaf node: {}", hex::encode(node));
+
+    for (i, step) in proof.iter().enumerate() {
+        let sib = &step.sibling;
+        if sib.iter().all(|&b| b == 0) {
+            msg!("[{}] right: sibling is zero - hashing just the node", i);
+            node = hashv(&[&node]).to_bytes();
+            continue;
+        }
+        if step.is_left {
+            node = hashv(&[sib, &node]).to_bytes();
+            msg!("[{}] left: hash(sib,node) = {}", i, hex::encode(node));
+        } else {
+            node = hashv(&[&node, sib]).to_bytes();
+            msg!("[{}] right: hash(node,sib) = {}", i, hex::encode(node));
+        }
+    }
+
+    msg!("Computed root: {}", hex::encode(node));
+    msg!("Expected root: {}", hex::encode(ctx.accounts.epoch.merkle_root));
+
+    require!(
+        node == ctx.accounts.epoch.merkle_root,
+        CustomErrorCode::InvalidMerkleProof
+    );
+
+    // Enforce the aggregate cap. checked_add guards against overflow on a crafted amount.
+    require!(
+        ctx.accounts
+            .epoch_cap
+            .claimed_total
+            .checked_add(amount)
+            .ok_or(CustomErrorCode::InvalidAmount)?
+            <= ctx.accounts.epoch_cap.total,
+        CustomErrorCode::EpochCapExceeded
+    );
+
+    let index_bytes = ctx.accounts.epoch.index.to_le_bytes();
+    let seeds: &[&[u8]] = &[
+        b"epoch_rewards_pool_authority",
+        index_bytes.as_ref(),
+        &[ctx.bumps.epoch_rewards_pool_authority],
+    ];
+    let signer = &[&seeds[..]];
+    let cpi_accounts = Transfer {
+        from: ctx.accounts.epoch_rewards_pool.to_account_info(),
+        to: ctx.accounts.user_mint_token_account.to_account_info(),
+        authority: ctx.accounts.epoch_rewards_pool_authority.to_account_info(),
+    };
+    token::transfer(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            cpi_accounts,
+            signer,
+        ),
+        amount,
+    )?;
+
+    ctx.accounts.epoch_cap.claimed_total = ctx
+        .accounts
+        .epoch_cap
+        .claimed_total
+        .checked_add(amount)
+        .ok_or(CustomErrorCode::InvalidAmount)?;
+
+    msg!("Emitting RewardsClaimed");
+    emit!(RewardsClaimed {
+        user: ctx.accounts.user.key(),
+        epoch: ctx.accounts.epoch.index,
+        amount,
+        mint: ctx.accounts.config.mint,
         vault: ctx.accounts.config.vault,
     });
     msg!("Emitted RewardsClaimed");

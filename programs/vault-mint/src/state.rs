@@ -36,6 +36,22 @@ impl ClaimRecord {
     pub const LEN: usize = 8;
 }
 
+/// Tracks the aggregate cap and cumulative claims for a V2 rewards epoch.
+/// Invariant: `epoch_rewards_pool.amount == total - claimed_total`.
+#[account]
+pub struct EpochCapTracker {
+    /// Mirrors `RewardsEpoch.index` for cross-account consistency checks.
+    pub index: u64,
+    /// Total tokens pre-funded into `epoch_rewards_pool` at epoch creation.
+    pub total: u64,
+    /// Running sum of all tokens transferred out of the pool via `claim_rewards_v2`.
+    pub claimed_total: u64,
+}
+
+impl EpochCapTracker {
+    pub const LEN: usize = 8 + 8 + 8 + 8; // discriminator + index + total + claimed_total
+}
+
 #[account]
 pub struct RedemptionRequest {
     pub user: Pubkey,

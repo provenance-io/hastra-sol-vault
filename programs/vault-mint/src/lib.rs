@@ -36,7 +36,7 @@ use account_structs::*;
 use anchor_lang::prelude::*;
 use state::ProofNode;
 
-declare_id!("9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV");
+declare_id!("2wfCk4RiCy2i9z1qiWNYpSKimH7KJssqUU6tHN9mBjW7");
 
 #[program]
 pub mod vault_mint {
@@ -100,34 +100,37 @@ pub mod vault_mint {
         processor::update_rewards_administrators(ctx, new_administrators)
     }
 
-    pub fn create_rewards_epoch(
-        ctx: Context<CreateRewardsEpoch>,
-        index: u64,
-        merkle_root: [u8; 32],
-        total: u64,
-    ) -> Result<()> {
-        processor::create_rewards_epoch(ctx, index, merkle_root, total)
-    }
-
-    /// This is the classic “airdrop/claim per epoch” design
-    /// High-level idea:
-    /// 	1.	Off-chain (admin does this each epoch):
-    /// 	•	Calculate each user’s reward for this epoch.
-    /// 	•	Build a Merkle tree of (user, amount, epoch_index).
-    /// 	•	Publish the Merkle root on-chain with the create_rewards_epoch function above.
-    ///
-    /// 	2.	On-chain:
-    /// 	•	Store each epoch’s Merkle root in a PDA.
-    /// 	•	When a user claims, they present (amount, proof) for their pubkey.
-    /// 	•	The program verifies the Merkle proof against the root.
-    /// 	•	If valid, transfer reward tokens (wYLDS) from the rewards vault to the user's mint token account.
-    /// 	•	Mark the claim as redeemed so they can’t double-claim.
+    /// Claims rewards from a V1 (legacy) epoch via Merkle proof; mints wYLDS on demand.
+    /// V1 epochs use seeds `["epoch", index_le]` and have no on-chain cap enforcement.
+    /// New epochs must be created with `create_rewards_epoch_v2`.
     pub fn claim_rewards(
         ctx: Context<ClaimRewards>,
         amount: u64,
         proof: Vec<ProofNode>,
     ) -> Result<()> {
         processor::claim_rewards(ctx, amount, proof)
+    }
+
+    /// Creates a V2 rewards epoch with an on-chain aggregate cap.
+    /// Initializes `RewardsEpoch`, `EpochCapTracker`, and `epoch_rewards_pool`, then mints
+    /// `total` wYLDS into the pool. Claims must use `claim_rewards_v2`.
+    pub fn create_rewards_epoch_v2(
+        ctx: Context<CreateRewardsEpochV2>,
+        index: u64,
+        merkle_root: [u8; 32],
+        total: u64,
+    ) -> Result<()> {
+        processor::create_rewards_epoch_v2(ctx, index, merkle_root, total)
+    }
+
+    /// Claims rewards from a V2 epoch via Merkle proof.
+    /// Enforces `epoch_cap.claimed_total + amount <= epoch_cap.total` and transfers from the pool.
+    pub fn claim_rewards_v2(
+        ctx: Context<ClaimRewardsV2>,
+        amount: u64,
+        proof: Vec<ProofNode>,
+    ) -> Result<()> {
+        processor::claim_rewards_v2(ctx, amount, proof)
     }
 
     /// Allows an external authorized program to mint tokens to a specified account.
