@@ -45,7 +45,15 @@ Rewards are distributed on-chain using a merkle tree-based claim system to ensur
 - Epochs are immutable once created to ensure integrity
 - Administrators can create epochs with a merkle root summarizing user rewards
 - Users claim rewards by providing a merkle proof against the stored root
-- Rewards are minted as additional mint tokens (e.g. wYLDS)
+
+Two epoch variants exist with separate on-chain namespaces:
+
+| Variant | Create instruction | Claim instruction | Epoch PDA seed | Token flow |
+| ------- | ------------------ | ----------------- | -------------- | ---------- |
+| V1 (legacy) | — (creation disabled) | `claim_rewards` | `["epoch", index_le]` | Mints wYLDS on demand; no aggregate cap |
+| V2 (current) | `create_rewards_epoch_v2` | `claim_rewards_v2` | `["epoch_v2", index_le]` | Transfers from pre-funded `epoch_rewards_pool`; cap enforced via `EpochCapTracker` |
+
+V1 epochs were created by previous program versions and remain claimable. All new epochs must use V2.
 
 **Merkle Tree Structure:**
 
@@ -53,20 +61,27 @@ Rewards are distributed on-chain using a merkle tree-based claim system to ensur
 - **Tree Construction**: All user rewards for an epoch are hashed and organized into a sorted binary merkle tree
 - **Root**: Final merkle root represents the entire reward distribution for that epoch
 
-**Administrative Posting Process:**
+**Administrative Posting Process (V2):**
 
 1. Authorized reward admin computes user rewards off-chain
-2. Constructs merkle tree and computes root
-3. Calls `create_rewards_epoch()` with epoch index, merkle root, and total rewards:
+2. Constructs merkle tree and computes root; `total` = sum of all leaf amounts
+3. Calls `create_rewards_epoch_v2()` with epoch index, merkle root, and total:
 
 ```rust
-pub fn create_rewards_epoch(
-    ctx: Context<CreateRewardsEpoch>,
-    index: u64,           // Epoch identifier
+pub fn create_rewards_epoch_v2(
+    ctx: Context<CreateRewardsEpochV2>,
+    index: u64,            // Epoch identifier
     merkle_root: [u8; 32], // Computed merkle root
-    total: u64,           // Total rewards for verification
+    total: u64,            // Aggregate cap; must be > 0
 ) -> Result<()>
 ```
+
+This atomically creates three accounts:
+- `RewardsEpoch` PDA at seeds `["epoch_v2", index_le]` — stores root and total
+- `EpochCapTracker` PDA at seeds `["epoch_cap", index_le]` — tracks `claimed_total`; initialized to 0
+- `epoch_rewards_pool` token account at seeds `["epoch_rewards_pool", index_le]` — pre-funded with `total` wYLDS via mint
+
+After creation the invariant holds: `pool.amount == total - claimed_total`.
 
 ## User Claim Process
 
@@ -75,16 +90,18 @@ Users claim their rewards by providing their allocated amount and a merkle proof
 **Merkle Proof Verification:**
 
 1. User provides their allocated `amount` and merkle `proof` (array of sibling hashes)
-2. Program reconstructs leaf: `sha256(user || amount || epoch_index)`
-3. Program walks up the tree using proof siblings with sorted pair hashing
+2. Program reconstructs leaf: `sha256(user || amount_le || epoch_index_le)`
+3. Program walks up the tree using proof siblings
 4. Final computed root must match the stored epoch merkle root
 
+For **V2 epochs** (`claim_rewards_v2`), after proof verification the program additionally checks that `epoch_cap.claimed_total + amount <= epoch_cap.total` before transferring `amount` from the pre-funded `epoch_rewards_pool`. No new tokens are minted.
+
 ```rust
-pub fn claim_rewards(
-    ctx: Context<ClaimRewards>,
-    amount: u64,
-    proof: Vec<[u8; 32]>
-) -> Result<()>
+// V1 legacy epochs only — mints wYLDS on demand
+pub fn claim_rewards(ctx: Context<ClaimRewards>, amount: u64, proof: Vec<ProofNode>) -> Result<()>
+
+// V2 epochs — transfers from pre-funded pool; enforces aggregate cap
+pub fn claim_rewards_v2(ctx: Context<ClaimRewardsV2>, amount: u64, proof: Vec<ProofNode>) -> Result<()>
 ```
 
 ## Double-Claim Prevention
@@ -304,8 +321,9 @@ sequenceDiagram
 
 - Merkle tree-based reward claims for mint token holder incentives
 - Epoch-based system with configurable reward periods
-- Prevents double-claiming with permanent claim records
-- Rewards minted as additional mint tokens (e.g. wYLDS)
+- Prevents double-claiming with permanent `ClaimRecord` PDAs
+- V2 epochs enforce an on-chain aggregate cap; rewards transfer from a pre-funded pool (no minting)
+- V1 legacy epochs remain claimable via `claim_rewards`; new epochs use `create_rewards_epoch_v2` + `claim_rewards_v2`
 
 ## Security Model
 
@@ -324,14 +342,16 @@ sequenceDiagram
 **Account Structure:**
 
 - `Config`: Program settings and administrator lists
-- `RewardsEpoch`: Manages reward distribution with merkle proofs
-- `ClaimRecord`: Prevents reward double-spending
+- `RewardsEpoch`: Stores epoch merkle root and total (V1: seed `["epoch", index_le]`; V2: seed `["epoch_v2", index_le]`)
+- `EpochCapTracker`: V2 only — tracks `claimed_total` against `total`; PDA seed `["epoch_cap", index_le]`
+- `epoch_rewards_pool`: V2 only — SPL token account holding pre-funded wYLDS; PDA seed `["epoch_rewards_pool", index_le]`
+- `ClaimRecord`: Prevents reward double-spending; PDA seed `["claim", epoch.key(), user.key()]`
 
 **Protocol pause (vault-mint and each stake program)**  
 
 - **vault-mint** `pause` stops user-facing mint instructions (including CPIs such as `external_program_mint` used by `publish_rewards`).  
 - **vault-stake** / **vault-stake-auto** `pause` stops deposit, redeem, and other guarded instructions for that pool.  
-- Merkle **claim_rewards** in vault-mint respects the mint program pause flag.
+- Merkle **claim_rewards** and **claim_rewards_v2** in vault-mint both respect the mint program pause flag.
 
 This creates a secure, flexible vault protocol suitable for DeFi protocols requiring both liquidity and governance controls.
 

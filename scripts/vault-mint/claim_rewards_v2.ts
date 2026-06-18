@@ -3,15 +3,14 @@ import {Program} from "@coral-xyz/anchor";
 import {VaultMint} from "../../target/types/vault_mint";
 import {PublicKey} from "@solana/web3.js";
 import yargs from "yargs";
+import {getAssociatedTokenAddressSync} from "@solana/spl-token";
 import {
     allocationsToMerkleTree,
-    MINT_IDL,
+    makeLeaf, MINT_IDL
 } from "../cryptolib";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
-
-const program: Program<VaultMint> = new anchor.Program(MINT_IDL as anchor.Idl, provider) as Program<VaultMint>;
 
 const args = yargs(process.argv.slice(2))
     .option("epoch", {
@@ -20,53 +19,57 @@ const args = yargs(process.argv.slice(2))
         required: true,
     })
     .option("reward_allocations", {
-        type: "json",
+        type: "string",
         description: "Allocations object: {allocations: [{\"account\": \"3m7...sKf\", \"amount\": 1000}, ...]}",
         required: true,
     })
-    .option("just_print", {
-        type: "boolean",
-        description: "If true, just print the leaves and root without creating the epoch on-chain",
+    .option("mint", {
+        type: "string",
+        description: "Token that will be transferred (e.g. wYLDS) upon validation of the claim proof",
+        required: true,
+    })
+    .option("amount", {
+        type: "number",
+        description: "Amount to claim from this epoch index",
         required: false,
-        default: false,
     })
     .parseSync();
 
+const program: Program<VaultMint> = new anchor.Program(MINT_IDL as anchor.Idl, provider) as Program<VaultMint>;
+
 const main = async () => {
     const epochIndex = args.epoch;
-    const { tree, leaves, allocations } = allocationsToMerkleTree(args.reward_allocations, epochIndex);
-    const root = tree.getRoot();
+    const { tree } = allocationsToMerkleTree(args.reward_allocations, epochIndex);
 
-    if (args.just_print) {
-        const leaf = leaves[0];
-        const treeProof = tree.getProof(leaf);
-        console.log("Proof length:", treeProof.length);
-        console.log("Proof:", treeProof);
-        console.log("Proof (hex):", treeProof.map(p => p.data.toString("hex")));
+    const leaf = makeLeaf(provider.wallet.publicKey, args.amount ?? 0, epochIndex);
 
-        const verified = tree.verify(treeProof, leaf, tree.getRoot());
-        console.log("Verified:", verified);
+    console.log("Leaf:", leaf.toString("hex"));
 
-        return;
+    const treeProof = tree.getProof(leaf);
+    console.log("Proof length:", treeProof.length);
+    console.log("Proof (hex):", treeProof.map(p => p.data.toString("hex")));
+
+    const proof = treeProof.map(p => ({
+        sibling: Array.from(p.data),
+        isLeft: p.position === "left",
+    }));
+
+    console.log("Root:", tree.getRoot().toString("hex"));
+    const verified = tree.verify(treeProof, leaf, tree.getRoot());
+    console.log("Verified:", verified);
+
+    if (!verified) {
+        console.warn("\n!!Proof is not valid!!\n");
     }
-    const total = allocations.reduce((acc, a) => acc.add(a.amount), new anchor.BN(0));
 
     const [configPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("config")],
         program.programId
     );
 
-    // Fetch the wYLDS mint from config so callers don't need to supply it manually.
-    const config = await program.account.config.fetch(configPda);
-    const mint = config.mint;
-
-    const [mintAuthorityPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("mint_authority")],
-        program.programId
-    );
-
     const indexLe = new anchor.BN(epochIndex).toArrayLike(Buffer, "le", 8);
 
+    // V2 epoch PDA uses "epoch_v2" seed; "epoch" is the legacy V1 namespace.
     const [epochPda] = PublicKey.findProgramAddressSync(
         [Buffer.from("epoch_v2"), indexLe],
         program.programId
@@ -83,18 +86,28 @@ const main = async () => {
         [Buffer.from("epoch_rewards_pool_authority"), indexLe],
         program.programId
     );
+    const [claimPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("claim"), epochPda.toBuffer(), provider.wallet.publicKey.toBuffer()],
+        program.programId
+    );
+
+    const mint = new anchor.web3.PublicKey(args.mint);
+    const tokenAccount = getAssociatedTokenAddressSync(
+        mint,
+        provider.wallet.publicKey,
+    );
 
     const tx = await program.methods
-        .createRewardsEpochV2(new anchor.BN(epochIndex), Array.from(root), total)
+        .claimRewardsV2(new anchor.BN(args.amount), proof)
         .accountsStrict({
             config: configPda,
-            admin: provider.wallet.publicKey,
+            user: provider.wallet.publicKey,
             epoch: epochPda,
             epochCap: epochCapPda,
+            claimRecord: claimPda,
             epochRewardsPool: epochRewardsPoolPda,
             epochRewardsPoolAuthority: epochRewardsPoolAuthorityPda,
-            mint,
-            mintAuthority: mintAuthorityPda,
+            userMintTokenAccount: tokenAccount,
             tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
             systemProgram: anchor.web3.SystemProgram.programId,
         })

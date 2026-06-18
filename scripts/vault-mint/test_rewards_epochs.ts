@@ -60,7 +60,6 @@ const main = async () => {
         }
     }
 
-    //write testAllocations to a file
     fs.writeFileSync("test_allocations.json", JSON.stringify({ allocations: testAllocations}, null, 2));
 
     const { tree, leaves, allocations } = allocationsToMerkleTree(JSON.stringify({ allocations: testAllocations}), epochIndex);
@@ -73,7 +72,6 @@ const main = async () => {
         console.log("Proof:", treeProof);
         console.log("Proof (hex):", treeProof.map(p => p.data.toString("hex")));
 
-        // Verify
         const verified = tree.verify(treeProof, leaf, tree.getRoot());
         console.log("Verified:", verified);
 
@@ -85,17 +83,47 @@ const main = async () => {
         [Buffer.from("config")],
         program.programId
     );
+
+    // Fetch the wYLDS mint from config so callers don't need to supply it manually.
+    const config = await program.account.config.fetch(configPda);
+    const mint = config.mint;
+
+    const [mintAuthorityPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("mint_authority")],
+        program.programId
+    );
+
+    const indexLe = new anchor.BN(epochIndex).toArrayLike(Buffer, "le", 8);
+
     const [epochPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("epoch"), new anchor.BN(epochIndex).toArrayLike(Buffer, "le", 8)],
+        [Buffer.from("epoch_v2"), indexLe],
+        program.programId
+    );
+    const [epochCapPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch_cap"), indexLe],
+        program.programId
+    );
+    const [epochRewardsPoolPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch_rewards_pool"), indexLe],
+        program.programId
+    );
+    const [epochRewardsPoolAuthorityPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch_rewards_pool_authority"), indexLe],
         program.programId
     );
 
     const tx = await program.methods
-        .createRewardsEpoch(new anchor.BN(epochIndex), Array.from(root), total)
+        .createRewardsEpochV2(new anchor.BN(epochIndex), Array.from(root), total)
         .accountsStrict({
             config: configPda,
             admin: provider.wallet.publicKey,
             epoch: epochPda,
+            epochCap: epochCapPda,
+            epochRewardsPool: epochRewardsPoolPda,
+            epochRewardsPoolAuthority: epochRewardsPoolAuthorityPda,
+            mint,
+            mintAuthority: mintAuthorityPda,
+            tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
             systemProgram: anchor.web3.SystemProgram.programId,
         })
         .rpc();
