@@ -504,6 +504,7 @@ pub struct CompleteRedeem<'info> {
     #[account(
         mut,
         constraint = user_vault_token_account.mint == config.vault @ CustomErrorCode::InvalidVaultMint,
+        constraint = user_vault_token_account.owner == user.key() @ CustomErrorCode::InvalidTokenOwner
     )]
     pub user_vault_token_account: Account<'info, TokenAccount>, // USDC dest
 

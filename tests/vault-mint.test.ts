@@ -684,6 +684,76 @@ describe("vault-mint", () => {
             }
         });
 
+        it("complete fails when destination token account is not owned by the user", async () => {
+            const redeemAmount = new BN(10_000_000);
+
+            await program.methods
+                .requestRedeem(redeemAmount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            // A vault-mint (USDC) account owned by a third party, not by `user`.
+            const thirdParty = Keypair.generate();
+            const thirdPartyVaultTokenAccount = await createAccount(
+                provider.connection,
+                provider.wallet.payer,
+                vaultedToken,
+                thirdParty.publicKey
+            );
+
+            try {
+                await program.methods
+                    .completeRedeem()
+                    .accountsStrict({
+                        admin: rewardsAdmin.publicKey,
+                        user: user.publicKey,
+                        userMintTokenAccount: userMintTokenAccount,
+                        userVaultTokenAccount: thirdPartyVaultTokenAccount,
+                        redemptionRequest: redemptionRequestPda,
+                        redeemVaultTokenAccount: redeemVaultTokenAccount,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        mint: mintedToken,
+                        config: configPda,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.include("InvalidTokenOwner");
+            }
+
+            // Clean up: complete with the correct user-owned destination account.
+            await program.methods
+                .completeRedeem()
+                .accountsStrict({
+                    admin: rewardsAdmin.publicKey,
+                    user: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    userVaultTokenAccount: userVaultTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultTokenAccount: redeemVaultTokenAccount,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .signers([rewardsAdmin])
+                .rpc();
+        });
+
         it("handles multiple redeems correctly", async () => {
             const firstRedeem = new BN(25_000_000);
             const secondRedeem = new BN(10_000_000);
