@@ -8,6 +8,14 @@ edition = "2021"
 crate-type = ["cdylib", "lib"]
 
 [features]
+# Pool selection — exactly one pool-* feature must be active per build.
+# Default is pool-prime so anchor build / anchor test work without extra flags.
+default = ["pool-prime"]
+pool-prime = []
+pool-auto = []
+pool-auto-devnet = []
+pool-smb = []
+
 cpi = ["no-entrypoint"]
 no-entrypoint = []
 anchor-debug = []

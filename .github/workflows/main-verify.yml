@@ -73,10 +73,26 @@ jobs:
       with:
         program: vault_mint
 
-    - name: Verifiable build vault_stake
-      uses: solana-developers/github-actions/build-verified@v0.2.10
-      with:
-        program: vault_stake
+    - name: Prepare artifacts directory
+      run: mkdir -p artifacts
+
+    - name: Verifiable build vault_stake (PRIME)
+      run: solana-verify build --library-name vault_stake
+
+    - name: Copy vault_stake_prime.so
+      run: cp target/deploy/vault_stake.so artifacts/vault_stake_prime.so
+
+    - name: Verifiable build vault_stake (AUTO)
+      run: solana-verify build --library-name vault_stake -- --no-default-features --features pool-auto
+
+    - name: Copy vault_stake_auto.so
+      run: cp target/deploy/vault_stake.so artifacts/vault_stake_auto.so
+
+    - name: Verifiable build vault_stake (SMB)
+      run: solana-verify build --library-name vault_stake -- --no-default-features --features pool-smb
+
+    - name: Copy vault_stake_smb.so
+      run: cp target/deploy/vault_stake.so artifacts/vault_stake_smb.so
 
     - name: Export verify PDA transactions (devnet + mainnet)
       run: |
@@ -85,12 +101,14 @@ jobs:
 
     - name: Generate checksums
       run: |
-        sha256sum target/deploy/vault_mint.so   > artifacts/checksums.txt
-        sha256sum target/deploy/vault_stake.so >> artifacts/checksums.txt
-        sha256sum target/idl/vault_mint.json   >> artifacts/checksums.txt
-        sha256sum target/idl/vault_stake.json  >> artifacts/checksums.txt
-        sha256sum target/types/vault_mint.ts   >> artifacts/checksums.txt
-        sha256sum target/types/vault_stake.ts  >> artifacts/checksums.txt
+        sha256sum target/deploy/vault_mint.so        > artifacts/checksums.txt
+        sha256sum artifacts/vault_stake_prime.so   >> artifacts/checksums.txt
+        sha256sum artifacts/vault_stake_auto.so    >> artifacts/checksums.txt
+        sha256sum artifacts/vault_stake_smb.so     >> artifacts/checksums.txt
+        sha256sum target/idl/vault_mint.json       >> artifacts/checksums.txt
+        sha256sum target/idl/vault_stake.json      >> artifacts/checksums.txt
+        sha256sum target/types/vault_mint.ts       >> artifacts/checksums.txt
+        sha256sum target/types/vault_stake.ts      >> artifacts/checksums.txt
         cat artifacts/checksums.txt
 
     - name: Upload verified program artifacts
@@ -100,13 +118,19 @@ jobs:
         retention-days: 30
         path: |
           target/deploy/vault_mint.so
-          target/deploy/vault_stake.so
+          artifacts/vault_stake_prime.so
+          artifacts/vault_stake_auto.so
+          artifacts/vault_stake_smb.so
           target/idl/vault_mint.json
           target/idl/vault_stake.json
           target/types/vault_mint.ts
           target/types/vault_stake.ts
           artifacts/pda-tx-devnet-vault_mint.txt
-          artifacts/pda-tx-devnet-vault_stake.txt
+          artifacts/pda-tx-devnet-vault_stake_prime.txt
+          artifacts/pda-tx-devnet-vault_stake_auto.txt
+          artifacts/pda-tx-devnet-vault_stake_smb.txt
           artifacts/pda-tx-mainnet-vault_mint.txt
-          artifacts/pda-tx-mainnet-vault_stake.txt
+          artifacts/pda-tx-mainnet-vault_stake_prime.txt
+          artifacts/pda-tx-mainnet-vault_stake_auto.txt
+          artifacts/pda-tx-mainnet-vault_stake_smb.txt
           artifacts/checksums.txt

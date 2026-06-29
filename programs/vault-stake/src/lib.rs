@@ -38,7 +38,31 @@ pub mod state;
 use account_structs::*;
 use anchor_lang::prelude::*;
 
+// Each pool is a separate on-chain deployment of this same crate.
+// Specify exactly one pool-* feature at build time to embed the correct program ID.
+// Enabling multiple features produces a duplicate-ID compile error; enabling none
+// produces the compile_error! below.
+#[cfg(feature = "pool-prime")]
 declare_id!("97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY");
+
+#[cfg(feature = "pool-auto")]
+declare_id!("5uJgCDrQHfA58fPqLsuU14Srg9quxXNHz91cZ54cq4pK");
+
+#[cfg(feature = "pool-auto-devnet")]
+declare_id!("B8FDo5EGA2hZ7YMugcw8wPHUYDBQJfNkEYpduXFLHfdZ");
+
+#[cfg(feature = "pool-smb")]
+declare_id!("FtpEAgur3VALsDw91PfNre82eXVrtgiDNf9EG3JeBd2r");
+
+#[cfg(not(any(
+    feature = "pool-prime",
+    feature = "pool-auto",
+    feature = "pool-auto-devnet",
+    feature = "pool-smb",
+)))]
+compile_error!(
+    "no pool selected: enable exactly one of pool-prime, pool-auto, pool-auto-devnet, or pool-smb"
+);
 
 #[program]
 pub mod vault_stake {
