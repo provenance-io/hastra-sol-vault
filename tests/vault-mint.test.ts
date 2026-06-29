@@ -704,8 +704,6 @@ describe("vault-mint", () => {
 
             // A vault-mint (USDC) account owned by a third party, not by `user`.
             const thirdParty = Keypair.generate();
-            await provider.connection.requestAirdrop(thirdParty.publicKey, LAMPORTS_PER_SOL);
-            await new Promise(resolve => setTimeout(resolve, 500));
             const thirdPartyVaultTokenAccount = await createAccount(
                 provider.connection,
                 provider.wallet.payer,
