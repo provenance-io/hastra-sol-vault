@@ -3,10 +3,10 @@ name: Release
 # Triggered by pushing a version tag, e.g.: git tag v1.0.0 && git push origin v1.0.0
 #
 # Produces a GitHub Release containing:
-#   - vault_mint.so / vault_stake.so                    (solana-verify reproducible builds)
-#   - pda-tx-devnet-vault_*.txt / pda-tx-mainnet-vault_*.txt  (Squads v4 verify PDA import)
-#   - vault_mint.json / vault_stake.json                (Anchor IDL)
-#   - vault_mint.ts / vault_stake.ts                    (TypeScript types)
+#   - vault_mint.so / vault_stake_{prime,auto,smb}.so     (solana-verify reproducible builds)
+#   - pda-tx-{cluster}-vault_*.txt                        (Squads v4 verify PDA import)
+#   - vault_mint.json / vault_stake.json                    (Anchor IDL)
+#   - vault_mint.ts / vault_stake.ts                        (TypeScript types)
 #   - checksums.txt
 
 on:
@@ -80,10 +80,26 @@ jobs:
       with:
         program: vault_mint
 
-    - name: Verifiable build vault_stake
-      uses: solana-developers/github-actions/build-verified@v0.2.10
-      with:
-        program: vault_stake
+    - name: Prepare artifacts directory
+      run: mkdir -p artifacts
+
+    - name: Verifiable build vault_stake (PRIME)
+      run: solana-verify build --library-name vault_stake
+
+    - name: Copy vault_stake_prime.so
+      run: cp target/deploy/vault_stake.so artifacts/vault_stake_prime.so
+
+    - name: Verifiable build vault_stake (AUTO)
+      run: solana-verify build --library-name vault_stake -- --no-default-features --features pool-auto
+
+    - name: Copy vault_stake_auto.so
+      run: cp target/deploy/vault_stake.so artifacts/vault_stake_auto.so
+
+    - name: Verifiable build vault_stake (SMB)
+      run: solana-verify build --library-name vault_stake -- --no-default-features --features pool-smb
+
+    - name: Copy vault_stake_smb.so
+      run: cp target/deploy/vault_stake.so artifacts/vault_stake_smb.so
 
     - name: Export verify PDA transactions (devnet + mainnet)
       run: |
@@ -93,18 +109,24 @@ jobs:
     - name: Generate checksums
       id: checksums
       run: |
-        sha256sum target/deploy/vault_mint.so   > artifacts/checksums.txt
-        sha256sum target/deploy/vault_stake.so >> artifacts/checksums.txt
-        sha256sum target/idl/vault_mint.json   >> artifacts/checksums.txt
-        sha256sum target/idl/vault_stake.json  >> artifacts/checksums.txt
-        sha256sum target/types/vault_mint.ts   >> artifacts/checksums.txt
-        sha256sum target/types/vault_stake.ts  >> artifacts/checksums.txt
+        sha256sum target/deploy/vault_mint.so        > artifacts/checksums.txt
+        sha256sum artifacts/vault_stake_prime.so   >> artifacts/checksums.txt
+        sha256sum artifacts/vault_stake_auto.so    >> artifacts/checksums.txt
+        sha256sum artifacts/vault_stake_smb.so     >> artifacts/checksums.txt
+        sha256sum target/idl/vault_mint.json       >> artifacts/checksums.txt
+        sha256sum target/idl/vault_stake.json      >> artifacts/checksums.txt
+        sha256sum target/types/vault_mint.ts       >> artifacts/checksums.txt
+        sha256sum target/types/vault_stake.ts      >> artifacts/checksums.txt
         cat artifacts/checksums.txt
 
         MINT_HASH=$(sha256sum target/deploy/vault_mint.so | awk '{print $1}')
-        STAKE_HASH=$(sha256sum target/deploy/vault_stake.so | awk '{print $1}')
+        STAKE_PRIME_HASH=$(sha256sum artifacts/vault_stake_prime.so | awk '{print $1}')
+        STAKE_AUTO_HASH=$(sha256sum artifacts/vault_stake_auto.so | awk '{print $1}')
+        STAKE_SMB_HASH=$(sha256sum artifacts/vault_stake_smb.so | awk '{print $1}')
         echo "mint_hash=$MINT_HASH" >> $GITHUB_OUTPUT
-        echo "stake_hash=$STAKE_HASH" >> $GITHUB_OUTPUT
+        echo "stake_prime_hash=$STAKE_PRIME_HASH" >> $GITHUB_OUTPUT
+        echo "stake_auto_hash=$STAKE_AUTO_HASH" >> $GITHUB_OUTPUT
+        echo "stake_smb_hash=$STAKE_SMB_HASH" >> $GITHUB_OUTPUT
 
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
@@ -114,11 +136,17 @@ jobs:
         draft: true
         files: |
           target/deploy/vault_mint.so
-          target/deploy/vault_stake.so
+          artifacts/vault_stake_prime.so
+          artifacts/vault_stake_auto.so
+          artifacts/vault_stake_smb.so
           artifacts/pda-tx-devnet-vault_mint.txt
-          artifacts/pda-tx-devnet-vault_stake.txt
+          artifacts/pda-tx-devnet-vault_stake_prime.txt
+          artifacts/pda-tx-devnet-vault_stake_auto.txt
+          artifacts/pda-tx-devnet-vault_stake_smb.txt
           artifacts/pda-tx-mainnet-vault_mint.txt
-          artifacts/pda-tx-mainnet-vault_stake.txt
+          artifacts/pda-tx-mainnet-vault_stake_prime.txt
+          artifacts/pda-tx-mainnet-vault_stake_auto.txt
+          artifacts/pda-tx-mainnet-vault_stake_smb.txt
           target/idl/vault_mint.json
           target/idl/vault_stake.json
           target/types/vault_mint.ts
@@ -134,16 +162,18 @@ jobs:
           | File | SHA-256 |
           |------|---------|
           | `vault_mint.so` | `${{ steps.checksums.outputs.mint_hash }}` |
-          | `vault_stake.so` | `${{ steps.checksums.outputs.stake_hash }}` |
+          | `vault_stake_prime.so` | `${{ steps.checksums.outputs.stake_prime_hash }}` |
+          | `vault_stake_auto.so` | `${{ steps.checksums.outputs.stake_auto_hash }}` |
+          | `vault_stake_smb.so` | `${{ steps.checksums.outputs.stake_smb_hash }}` |
 
           ### Squads verify PDA
 
           After the program upgrade executes, import the cluster-matching PDA file in Squads v4 Transaction Builder. See [verified builds — multisig](https://solana.com/docs/programs/verified-builds#how-to-verify-your-program-when-its-controlled-by-a-multisig-like-squads).
 
-          | Cluster | vault-mint | vault-stake |
-          |---------|------------|-------------|
-          | Devnet | `pda-tx-devnet-vault_mint.txt` | `pda-tx-devnet-vault_stake.txt` |
-          | Mainnet | `pda-tx-mainnet-vault_mint.txt` | `pda-tx-mainnet-vault_stake.txt` |
+          | Cluster | vault-mint | vault-stake PRIME | vault-stake AUTO | vault-stake SMB |
+          |---------|------------|-------------------|------------------|-----------------|
+          | Devnet | `pda-tx-devnet-vault_mint.txt` | `pda-tx-devnet-vault_stake_prime.txt` | `pda-tx-devnet-vault_stake_auto.txt` | `pda-tx-devnet-vault_stake_smb.txt` |
+          | Mainnet | `pda-tx-mainnet-vault_mint.txt` | `pda-tx-mainnet-vault_stake_prime.txt` | `pda-tx-mainnet-vault_stake_auto.txt` | `pda-tx-mainnet-vault_stake_smb.txt` |
 
           Then run `solana-verify remote submit-job` per program with `--uploader` set to that cluster's Squads vault PDA (on-chain upgrade authority).
 
@@ -152,7 +182,7 @@ jobs:
           | File | Description |
           |------|-------------|
           | `vault_mint.json` | Anchor IDL for vault-mint |
-          | `vault_stake.json` | Anchor IDL for vault-stake (PRIME) |
+          | `vault_stake.json` | Anchor IDL for vault-stake (shared by all pools) |
           | `vault_mint.ts` | TypeScript types from vault-mint IDL |
           | `vault_stake.ts` | TypeScript types from vault-stake IDL |
 
@@ -160,7 +190,7 @@ jobs:
 
           ### Squads upgrade checklist
 
-          1. Confirm buffer SHA-256 matches `checksums.txt` before approving.
+          1. Confirm buffer SHA-256 matches `checksums.txt` before approving (use the pool-specific `.so` for that program ID).
           2. Execute program upgrade in Squads.
           3. Import and execute the cluster-matching `pda-tx-*` files in Squads v4 Transaction Builder.
           4. Run `solana-verify remote submit-job` per program.

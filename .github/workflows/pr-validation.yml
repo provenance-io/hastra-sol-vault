@@ -81,19 +81,29 @@ jobs:
 
     # vault_stake has `idl-build = ["testing"]` so the IDL generated during the
     # testing build includes set_price_for_testing. Rebuild without the feature
-    # to produce the production IDL and binary.
-    - name: Anchor build vault_stake (production)
+    # to produce the production IDL and binary (default pool-prime).
+    - name: Anchor build vault_stake (production, PRIME)
       run: anchor build --program-name vault_stake
+
+    - name: Copy pool production binaries
+      run: |
+        mkdir -p artifacts
+        cp target/deploy/vault_stake.so artifacts/vault_stake_prime.so
+        anchor build --program-name vault_stake -- --no-default-features --features pool-auto
+        cp target/deploy/vault_stake.so artifacts/vault_stake_auto.so
+        anchor build --program-name vault_stake -- --no-default-features --features pool-smb
+        cp target/deploy/vault_stake.so artifacts/vault_stake_smb.so
 
     - name: Generate checksums
       run: |
-        mkdir -p artifacts
-        sha256sum target/deploy/vault_mint.so   > artifacts/checksums.txt
-        sha256sum target/deploy/vault_stake.so >> artifacts/checksums.txt
-        sha256sum target/idl/vault_mint.json   >> artifacts/checksums.txt
-        sha256sum target/idl/vault_stake.json  >> artifacts/checksums.txt
-        sha256sum target/types/vault_mint.ts   >> artifacts/checksums.txt
-        sha256sum target/types/vault_stake.ts  >> artifacts/checksums.txt
+        sha256sum target/deploy/vault_mint.so      > artifacts/checksums.txt
+        sha256sum artifacts/vault_stake_prime.so >> artifacts/checksums.txt
+        sha256sum artifacts/vault_stake_auto.so  >> artifacts/checksums.txt
+        sha256sum artifacts/vault_stake_smb.so   >> artifacts/checksums.txt
+        sha256sum target/idl/vault_mint.json     >> artifacts/checksums.txt
+        sha256sum target/idl/vault_stake.json    >> artifacts/checksums.txt
+        sha256sum target/types/vault_mint.ts     >> artifacts/checksums.txt
+        sha256sum target/types/vault_stake.ts    >> artifacts/checksums.txt
         cat artifacts/checksums.txt
 
     - name: Upload production program artifacts
@@ -103,7 +113,9 @@ jobs:
         retention-days: 14
         path: |
           target/deploy/vault_mint.so
-          target/deploy/vault_stake.so
+          artifacts/vault_stake_prime.so
+          artifacts/vault_stake_auto.so
+          artifacts/vault_stake_smb.so
           target/idl/vault_mint.json
           target/idl/vault_stake.json
           target/types/vault_mint.ts
