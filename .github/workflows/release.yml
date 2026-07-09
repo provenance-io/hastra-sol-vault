@@ -81,7 +81,13 @@ jobs:
         program: vault_mint
 
     - name: Prepare artifacts directory
-      run: mkdir -p artifacts
+      run: |
+        mkdir -p artifacts
+        cp target/deploy/vault_mint.so artifacts/vault_mint.so
+        cp target/idl/vault_mint.json artifacts/vault_mint.json
+        cp target/idl/vault_stake.json artifacts/vault_stake.json
+        cp target/types/vault_mint.ts artifacts/vault_mint.ts
+        cp target/types/vault_stake.ts artifacts/vault_stake.ts
 
     - name: Verifiable build vault_stake (PRIME)
       run: solana-verify build --library-name vault_stake
@@ -109,17 +115,17 @@ jobs:
     - name: Generate checksums
       id: checksums
       run: |
-        sha256sum target/deploy/vault_mint.so        > artifacts/checksums.txt
+        sha256sum artifacts/vault_mint.so            > artifacts/checksums.txt
         sha256sum artifacts/vault_stake_prime.so   >> artifacts/checksums.txt
         sha256sum artifacts/vault_stake_auto.so    >> artifacts/checksums.txt
         sha256sum artifacts/vault_stake_smb.so     >> artifacts/checksums.txt
-        sha256sum target/idl/vault_mint.json       >> artifacts/checksums.txt
-        sha256sum target/idl/vault_stake.json      >> artifacts/checksums.txt
-        sha256sum target/types/vault_mint.ts       >> artifacts/checksums.txt
-        sha256sum target/types/vault_stake.ts      >> artifacts/checksums.txt
+        sha256sum artifacts/vault_mint.json        >> artifacts/checksums.txt
+        sha256sum artifacts/vault_stake.json       >> artifacts/checksums.txt
+        sha256sum artifacts/vault_mint.ts          >> artifacts/checksums.txt
+        sha256sum artifacts/vault_stake.ts         >> artifacts/checksums.txt
         cat artifacts/checksums.txt
 
-        MINT_HASH=$(sha256sum target/deploy/vault_mint.so | awk '{print $1}')
+        MINT_HASH=$(sha256sum artifacts/vault_mint.so | awk '{print $1}')
         STAKE_PRIME_HASH=$(sha256sum artifacts/vault_stake_prime.so | awk '{print $1}')
         STAKE_AUTO_HASH=$(sha256sum artifacts/vault_stake_auto.so | awk '{print $1}')
         STAKE_SMB_HASH=$(sha256sum artifacts/vault_stake_smb.so | awk '{print $1}')
@@ -135,7 +141,7 @@ jobs:
         tag_name: ${{ github.ref_name }}
         draft: true
         files: |
-          target/deploy/vault_mint.so
+          artifacts/vault_mint.so
           artifacts/vault_stake_prime.so
           artifacts/vault_stake_auto.so
           artifacts/vault_stake_smb.so
@@ -147,10 +153,10 @@ jobs:
           artifacts/pda-tx-mainnet-vault_stake_prime.txt
           artifacts/pda-tx-mainnet-vault_stake_auto.txt
           artifacts/pda-tx-mainnet-vault_stake_smb.txt
-          target/idl/vault_mint.json
-          target/idl/vault_stake.json
-          target/types/vault_mint.ts
-          target/types/vault_stake.ts
+          artifacts/vault_mint.json
+          artifacts/vault_stake.json
+          artifacts/vault_mint.ts
+          artifacts/vault_stake.ts
           artifacts/checksums.txt
         body: |
           ## Program Artifacts — ${{ github.ref_name }}
