@@ -1,33 +1,30 @@
-name: Release
+name: Program CI
 
-# Triggered by pushing a version tag, e.g.: git tag v1.0.0 && git push origin v1.0.0
-#
-# Produces a GitHub Release containing:
-#   - vault_mint.so / vault_stake_{prime,auto,smb}.so     (solana-verify reproducible builds)
-#   - pda-tx-{cluster}-vault_*.txt                        (Squads v4 verify PDA import)
-#   - vault_mint.json / vault_stake.json                    (Anchor IDL)
-#   - vault_mint.ts / vault_stake.ts                        (TypeScript types)
-#   - checksums.txt
-
+# Tests and reproducible builds use the same pipeline for every supported event.
+# Version tags additionally publish the exact uploaded build artifact as a draft release.
 on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened, reopened, synchronize]
   push:
+    branches: [main]
     tags:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  NO_DNA: 1
 
 jobs:
-  build-and-release:
+  test:
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-
-    - name: Load verify config
-      run: cat .github/verify-config.env >> $GITHUB_ENV
 
     - name: Install system dependencies
       run: |
@@ -41,10 +38,95 @@ jobs:
           protobuf-compiler \
           libssl-dev
 
-    - uses: solana-developers/github-actions/extract-versions@v0.2.10
+    - uses: solana-foundation/github-actions/extract-versions@v0.2.11
       id: versions
 
-    - uses: solana-developers/github-actions/setup-all@v0.2.10
+    - uses: solana-foundation/github-actions/setup-all@v0.2.11
+      with:
+        solana_version: ${{ steps.versions.outputs.solana_version }}
+        anchor_version: ${{ steps.versions.outputs.anchor_version }}
+
+    - name: Cache Cargo registry and git sources
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: cargo-${{ runner.os }}-
+
+    - name: Cache yarn dependencies
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: yarn
+
+    - name: Install yarn dependencies
+      run: yarn install --frozen-lockfile
+
+    # Tests intentionally use ephemeral deploy keypairs. This checkout is isolated
+    # from the verified-build job, so synchronization cannot affect release binaries.
+    - name: Sync Anchor program IDs to deploy keypairs
+      run: anchor keys sync
+
+    # Ensure SBF platform tools exist before Anchor invokes cargo-build-sbf.
+    - name: Install SBF platform tools
+      run: cargo build-sbf --force-tools-install --manifest-path programs/vault-mint/Cargo.toml
+
+    - name: Anchor build (testing)
+      run: anchor build -- --features testing
+
+    - name: Start local validator
+      run: |
+        solana-test-validator --reset &
+        echo "VALIDATOR_PID=$!" >> "$GITHUB_ENV"
+        sleep 5
+
+        mkdir -p ~/.config/solana/
+        solana-keygen new --no-passphrase --outfile ~/.config/solana/hastra-localnet-id.json
+        solana config set --url localhost
+        solana config set --keypair ~/.config/solana/hastra-localnet-id.json
+        solana airdrop 1000
+
+    - name: Run Anchor tests
+      run: anchor test --skip-local-validator --skip-build
+
+    - name: Stop local validator
+      if: always()
+      run: kill "${VALIDATOR_PID}" 2>/dev/null || true
+
+  verified-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      mint_hash: ${{ steps.checksums.outputs.mint_hash }}
+      stake_prime_hash: ${{ steps.checksums.outputs.stake_prime_hash }}
+      stake_auto_hash: ${{ steps.checksums.outputs.stake_auto_hash }}
+      stake_smb_hash: ${{ steps.checksums.outputs.stake_smb_hash }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Load verify config
+      run: cat .github/verify-config.env >> "$GITHUB_ENV"
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          pkg-config \
+          libudev-dev \
+          llvm \
+          libclang-dev \
+          protobuf-compiler \
+          libssl-dev
+
+    - uses: solana-foundation/github-actions/extract-versions@v0.2.11
+      id: versions
+
+    - uses: solana-foundation/github-actions/setup-all@v0.2.11
       with:
         solana_version: ${{ steps.versions.outputs.solana_version }}
         anchor_version: ${{ steps.versions.outputs.anchor_version }}
@@ -68,15 +150,22 @@ jobs:
     - name: Install yarn dependencies
       run: yarn install --frozen-lockfile
 
-    # Run anchor build first so IDL and types are generated before solana-verify
-    # takes over target/deploy/*.so. solana-verify build runs Docker as root and
-    # makes those .so files root-owned, but we never write to target/ again after
-    # this point, so no chown is needed.
-    - name: Anchor build (production IDL + types + .so)
-      run: anchor build
+    # Anchor 0.31.1 synchronizes IDs on the first build when target/deploy is
+    # absent. Create it first so the production checkout remains immutable.
+    - name: Build production IDLs and types
+      run: |
+        mkdir -p target/deploy
+        anchor build
+
+    - name: Confirm production build preserved checked-in IDs
+      run: |
+        git diff --exit-code -- \
+          Anchor.toml \
+          programs/vault-mint/src/lib.rs \
+          programs/vault-stake/src/lib.rs
 
     - name: Verifiable build vault_mint
-      uses: solana-developers/github-actions/build-verified@v0.2.10
+      uses: solana-foundation/github-actions/build-verified@v0.2.11
       with:
         program: vault_mint
 
@@ -107,7 +196,10 @@ jobs:
     - name: Copy vault_stake_smb.so
       run: cp target/deploy/vault_stake.so artifacts/vault_stake_smb.so
 
+    # Pull-request commits can be synthetic merge refs, so only persistent refs
+    # export remote verification transactions.
     - name: Export verify PDA transactions (devnet + mainnet)
+      if: github.event_name != 'pull_request'
       run: |
         chmod +x .github/scripts/export_verify_pda_txs_ci.sh
         .github/scripts/export_verify_pda_txs_ci.sh artifacts
@@ -125,16 +217,44 @@ jobs:
         sha256sum artifacts/vault_stake.ts         >> artifacts/checksums.txt
         cat artifacts/checksums.txt
 
-        MINT_HASH=$(sha256sum artifacts/vault_mint.so | awk '{print $1}')
-        STAKE_PRIME_HASH=$(sha256sum artifacts/vault_stake_prime.so | awk '{print $1}')
-        STAKE_AUTO_HASH=$(sha256sum artifacts/vault_stake_auto.so | awk '{print $1}')
-        STAKE_SMB_HASH=$(sha256sum artifacts/vault_stake_smb.so | awk '{print $1}')
-        echo "mint_hash=$MINT_HASH" >> $GITHUB_OUTPUT
-        echo "stake_prime_hash=$STAKE_PRIME_HASH" >> $GITHUB_OUTPUT
-        echo "stake_auto_hash=$STAKE_AUTO_HASH" >> $GITHUB_OUTPUT
-        echo "stake_smb_hash=$STAKE_SMB_HASH" >> $GITHUB_OUTPUT
+        echo "mint_hash=$(sha256sum artifacts/vault_mint.so | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+        echo "stake_prime_hash=$(sha256sum artifacts/vault_stake_prime.so | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+        echo "stake_auto_hash=$(sha256sum artifacts/vault_stake_auto.so | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+        echo "stake_smb_hash=$(sha256sum artifacts/vault_stake_smb.so | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
-    - name: Create GitHub Release
+    - name: Upload verified program artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: verified-program-builds-${{ github.sha }}
+        retention-days: 30
+        path: |
+          artifacts/vault_mint.so
+          artifacts/vault_stake_prime.so
+          artifacts/vault_stake_auto.so
+          artifacts/vault_stake_smb.so
+          artifacts/vault_mint.json
+          artifacts/vault_stake.json
+          artifacts/vault_mint.ts
+          artifacts/vault_stake.ts
+          artifacts/pda-tx-*.txt
+          artifacts/checksums.txt
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [test, verified-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+    - name: Download verified program artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: verified-program-builds-${{ github.sha }}
+        path: artifacts
+
+    - name: Create draft GitHub Release
       uses: softprops/action-gh-release@v2
       with:
         name: ${{ github.ref_name }}
@@ -167,10 +287,10 @@ jobs:
 
           | File | SHA-256 |
           |------|---------|
-          | `vault_mint.so` | `${{ steps.checksums.outputs.mint_hash }}` |
-          | `vault_stake_prime.so` | `${{ steps.checksums.outputs.stake_prime_hash }}` |
-          | `vault_stake_auto.so` | `${{ steps.checksums.outputs.stake_auto_hash }}` |
-          | `vault_stake_smb.so` | `${{ steps.checksums.outputs.stake_smb_hash }}` |
+          | `vault_mint.so` | `${{ needs.verified-build.outputs.mint_hash }}` |
+          | `vault_stake_prime.so` | `${{ needs.verified-build.outputs.stake_prime_hash }}` |
+          | `vault_stake_auto.so` | `${{ needs.verified-build.outputs.stake_auto_hash }}` |
+          | `vault_stake_smb.so` | `${{ needs.verified-build.outputs.stake_smb_hash }}` |
 
           ### Squads verify PDA
 
@@ -190,7 +310,7 @@ jobs:
           | `vault_mint.json` | Anchor IDL for vault-mint |
           | `vault_stake.json` | Anchor IDL for vault-stake (shared by all pools) |
           | `vault_mint.ts` | TypeScript types from vault-mint IDL |
-          | `vault_stake.ts` | TypeScript types from vault-stake IDL |
+          | `vault_stake.ts` | TypeScript types from vault-stake IDL (shared by all pools) |
 
           All artifact hashes are in `checksums.txt`.
 
