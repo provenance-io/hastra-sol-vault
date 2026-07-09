@@ -851,11 +851,10 @@ These have all the values needed for the FE and BE services.
 
 | Workflow | When | Output |
 | -------- | ---- | ------ |
-| `pr-validation.yml` | Pull requests | Production `.so` (no `testing` feature on stake), IDL, types — **unverified**; for devnet integration and middleware |
-| `main-verify.yml` | Push to `main` | [solana-verify](https://solana.com/docs/programs/verified-builds) `.so`, `pda-tx-*.txt`, `checksums.txt` |
-| `release.yml` | Tag `v*` | Same as main, attached to a GitHub Release (+ IDL/types) |
+| `program-ci.yml` | Pull requests, pushes to `main`, version tags, and manual runs | Tests plus identical [solana-verify](https://solana.com/docs/programs/verified-builds) binaries, shared IDLs/types, and `checksums.txt` |
+| `program-ci.yml` release job | Version tags matching `v*` | Draft GitHub Release created from the verified-build artifact without rebuilding |
 
-PR builds use `anchor build -- --features testing` for local validator tests, then rebuild `vault_stake` without `testing` before uploading artifacts.
+Each trigger builds verified `vault_mint.so`, `vault_stake_prime.so`, `vault_stake_auto.so`, and `vault_stake_smb.so` files. Non-PR runs also export the devnet and mainnet Squads verification PDA transactions. The test and verified-build jobs use separate checkouts so ephemeral test key synchronization cannot alter reproducible builds.
 
 Squads v4 settings are in `.github/verify-config.env`:
 
@@ -864,13 +863,11 @@ Squads v4 settings are in `.github/verify-config.env`:
 | Devnet | `FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv` | — | — |
 | Mainnet | `8fDTne6mBYfQXYHtsFWrBvrxUFqqXrFcJ83ZQwUBfmSD` | `FCdUkkK7YcsyW24H1Sjba1jgK53nuMMqqjqaHYAoSgJm` | `SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf` |
 
-Program IDs are the same on both clusters (`9WUyNREi…` / `97V7JsEx…`).
-
 ---
 
 ## GitHub Release
 
-The `.github/workflows/release.yml` workflow runs on version tags. It builds both programs with **solana-verify**, exports Squads verify PDA transactions, and publishes a GitHub Release.
+The release job in `.github/workflows/program-ci.yml` runs on version tags. It downloads the exact artifact produced by the verified-build job and publishes a draft GitHub Release without rebuilding.
 
 > This section assumes you have set up a Squads vault and have configured the `vault_mint` and `vault_stake` programs to use it. See [Post-Upgrade Initialization](#post-upgrade-initialization) above.
 
@@ -887,11 +884,17 @@ The release will contain:
 | File | Description |
 | ---- | ----------- |
 | `vault_mint.so` | Verifiable vault-mint program binary |
-| `vault_stake.so` | Verifiable vault-stake (PRIME) program binary |
+| `vault_stake_prime.so` | Verifiable vault-stake PRIME program binary |
+| `vault_stake_auto.so` | Verifiable vault-stake AUTO program binary |
+| `vault_stake_smb.so` | Verifiable vault-stake SMB program binary |
 | `pda-tx-devnet-vault_mint.txt` | Devnet: verify PDA tx for vault-mint |
-| `pda-tx-devnet-vault_stake.txt` | Devnet: verify PDA tx for vault-stake |
+| `pda-tx-devnet-vault_stake_prime.txt` | Devnet: verify PDA tx for vault-stake PRIME |
+| `pda-tx-devnet-vault_stake_auto.txt` | Devnet: verify PDA tx for vault-stake AUTO |
+| `pda-tx-devnet-vault_stake_smb.txt` | Devnet: verify PDA tx for vault-stake SMB |
 | `pda-tx-mainnet-vault_mint.txt` | Mainnet: verify PDA tx for vault-mint |
-| `pda-tx-mainnet-vault_stake.txt` | Mainnet: verify PDA tx for vault-stake |
+| `pda-tx-mainnet-vault_stake_prime.txt` | Mainnet: verify PDA tx for vault-stake PRIME |
+| `pda-tx-mainnet-vault_stake_auto.txt` | Mainnet: verify PDA tx for vault-stake AUTO |
+| `pda-tx-mainnet-vault_stake_smb.txt` | Mainnet: verify PDA tx for vault-stake SMB |
 | `vault_mint.json` | Anchor IDL for vault-mint |
 | `vault_stake.json` | Anchor IDL for vault-stake |
 | `vault_mint.ts` | TypeScript types from vault-mint IDL |
@@ -902,7 +905,7 @@ The release will contain:
 ### Deploy from release artifacts
 
 1. Download the release assets (or main-branch CI artifact for a pre-release soak).
-2. In `scripts/deploy.sh`, choose **Set verified .so directory** and point at the folder with `vault_mint.so` / `vault_stake.so`.
+2. In `scripts/deploy.sh`, choose **Set verified .so directory** and point at the folder containing `vault_mint.so` and the pool-specific `vault_stake_*.so` files.
 3. **Write buffers** → create Squads program upgrade proposals.
 4. After upgrade executes, import the **cluster-matching** PDA files in Squads v4 Transaction Builder ([docs](https://solana.com/docs/programs/verified-builds#how-to-verify-your-program-when-its-controlled-by-a-multisig-like-squads)).
 5. Run `solana-verify remote submit-job` per program with `--uploader` set to that cluster's Squads **vault** PDA.
@@ -915,7 +918,9 @@ Before approving a program upgrade proposal, confirm the buffer SHA-256 matches 
 
 ```bash
 shasum -a 256 vault_mint.so
-shasum -a 256 vault_stake.so
+shasum -a 256 vault_stake_prime.so
+shasum -a 256 vault_stake_auto.so
+shasum -a 256 vault_stake_smb.so
 # Compare against checksums.txt and deploy.sh output
 ```
 

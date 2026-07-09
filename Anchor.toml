@@ -38,4 +38,13 @@ address = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
 [programs.devnet]
 vault-mint = "9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV"
 vault-stake = "97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY"
-vault-stake-auto = "Dz8K7J1UrCPv8ywqxe1FKkuHa8Vm8MQtP68ohf7wPjHB"
+vault-stake-prime = "97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY"
+vault-stake-auto = "B8FDo5EGA2hZ7YMugcw8wPHUYDBQJfNkEYpduXFLHfdZ"
+vault-stake-smb = "FtpEAgur3VALsDw91PfNre82eXVrtgiDNf9EG3JeBd2r"
+
+[program.mainnet-beta]
+vault-mint = "9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV"
+vault-stake = "97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY"
+vault-stake-prime = "97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY"
+vault-stake-auto = "5uJgCDrQHfA58fPqLsuU14Srg9quxXNHz91cZ54cq4pK"
+vault-stake-smb = "FtpEAgur3VALsDw91PfNre82eXVrtgiDNf9EG3JeBd2r"

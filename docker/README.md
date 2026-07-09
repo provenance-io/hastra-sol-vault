@@ -1,6 +1,6 @@
 # Docker Setup for Sol Vault Mint
 
-This directory contains Docker configuration for optional **local** development. It is **not** used by GitHub Actions CI (see `.github/workflows/pr-validation.yml`, `main-verify.yml`, and `release.yml`).
+This directory contains Docker configuration for optional **local** development. It is **not** used directly by GitHub Actions CI; `.github/workflows/program-ci.yml` uses `solana-verify` containers to produce reproducible program binaries.
 
 ## Prerequisites
 
