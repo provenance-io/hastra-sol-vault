@@ -45,7 +45,7 @@ security_txt! {
     name: "Hastra Vault Mint",
     project_url: "https://hastra.io",
     contacts: "email:security@provenance.io",
-    policy: "https://github.com/provenance-io/provenance/blob/main/SECURITY.md",
+    policy: "https://vdp.figure.com/",
     preferred_languages: "en",
     source_code: "https://github.com/provenance-io/hastra-sol-vault"
 }
