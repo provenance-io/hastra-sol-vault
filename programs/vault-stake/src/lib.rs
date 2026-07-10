@@ -38,6 +38,20 @@ pub mod state;
 use account_structs::*;
 use anchor_lang::prelude::*;
 
+#[cfg(not(feature = "no-entrypoint"))]
+use solana_security_txt::security_txt;
+
+// Embeds stable security-reporting metadata in each deployed pool binary.
+#[cfg(not(feature = "no-entrypoint"))]
+security_txt! {
+    name: "Hastra Vault Stake",
+    project_url: "https://hastra.io",
+    contacts: "email:security@provenance.io",
+    policy: "https://vdp.figure.com/",
+    preferred_languages: "en",
+    source_code: "https://github.com/provenance-io/hastra-sol-vault"
+}
+
 // Each pool is a separate on-chain deployment of this same crate.
 // Specify exactly one pool-* feature at build time to embed the correct program ID.
 // Enabling multiple features produces a duplicate-ID compile error; enabling none

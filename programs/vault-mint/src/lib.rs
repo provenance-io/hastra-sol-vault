@@ -36,6 +36,20 @@ use account_structs::*;
 use anchor_lang::prelude::*;
 use state::ProofNode;
 
+#[cfg(not(feature = "no-entrypoint"))]
+use solana_security_txt::security_txt;
+
+// Embeds stable security-reporting metadata in the deployed program binary.
+#[cfg(not(feature = "no-entrypoint"))]
+security_txt! {
+    name: "Hastra Vault Mint",
+    project_url: "https://hastra.io",
+    contacts: "email:security@provenance.io",
+    policy: "https://vdp.figure.com/",
+    preferred_languages: "en",
+    source_code: "https://github.com/provenance-io/hastra-sol-vault"
+}
+
 declare_id!("9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV");
 
 #[program]
