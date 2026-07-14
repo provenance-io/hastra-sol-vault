@@ -57,14 +57,15 @@ V1 epochs were created by previous program versions and remain claimable. All ne
 
 **Merkle Tree Structure:**
 
-- **Leaf Node**: `sha256(user_pubkey || reward_amount_le_bytes || epoch_index_le_bytes)`
+- **V2 leaf (current):** `sha256("v2" || user_pubkey || reward_amount_le_bytes || epoch_index_le_bytes)` — the ASCII `v2` prefix domain-separates V2 trees from legacy V1
+- **V1 leaf (legacy):** `sha256(user_pubkey || reward_amount_le_bytes || epoch_index_le_bytes)` — still used only for historical `claim_rewards` epochs
 - **Tree Construction**: All user rewards for an epoch are hashed and organized into a sorted binary merkle tree
 - **Root**: Final merkle root represents the entire reward distribution for that epoch
 
 **Administrative Posting Process (V2):**
 
 1. Authorized reward admin computes user rewards off-chain
-2. Constructs merkle tree and computes root; `total` = sum of all leaf amounts
+2. Constructs a **V2** merkle tree and computes root; `total` = sum of all leaf amounts
 3. Calls `create_rewards_epoch_v2()` with epoch index, merkle root, and total:
 
 ```rust
@@ -90,7 +91,9 @@ Users claim their rewards by providing their allocated amount and a merkle proof
 **Merkle Proof Verification:**
 
 1. User provides their allocated `amount` and merkle `proof` (array of sibling hashes)
-2. Program reconstructs leaf: `sha256(user || amount_le || epoch_index_le)`
+2. Program reconstructs the leaf for the claim path in use:
+   - V2 (`claim_rewards_v2`): `sha256("v2" || user || amount_le || epoch_index_le)`
+   - V1 (`claim_rewards`): `sha256(user || amount_le || epoch_index_le)`
 3. Program walks up the tree using proof siblings
 4. Final computed root must match the stored epoch merkle root
 
@@ -336,7 +339,9 @@ sequenceDiagram
 **Administrative Controls:**
 
 - Program upgrade authority can modify configurations
-- Separate administrator lists for freeze and rewards functions
+- Separate administrator lists for freeze and rewards functions (each must be 1–5 unique pubkeys; empty or duplicate lists are rejected)
+- `deposit` requires the user vault token account to differ from the configured deposit vault token account (blocks self-transfer minting)
+- `external_program_mint` requires a rewards administrator who signed the outer transaction (in addition to the calling program's `external_mint_authority` PDA)
 - All sensitive operations require proper authority validation
 
 **Account Structure:**
