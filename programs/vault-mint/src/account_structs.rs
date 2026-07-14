@@ -133,7 +133,9 @@ pub struct Deposit<'info> {
         mut,
         token::mint = config.vault,
         constraint = user_vault_token_account.mint == config.vault @ CustomErrorCode::InvalidVaultMint,
-        constraint = user_vault_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner
+        constraint = user_vault_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner,
+        // Reject self-transfer deposits that would mint wYLDS without increasing vault balance.
+        constraint = user_vault_token_account.key() != vault_token_account.key() @ CustomErrorCode::DepositSelfTransfer
     )]
     pub user_vault_token_account: Account<'info, TokenAccount>,
 
@@ -582,10 +584,10 @@ pub struct ExternalProgramMint<'info> {
     pub mint_authority: UncheckedAccount<'info>,
 
     /// The rewards administrator who authorized this mint operation.
-    /// This is NOT a Signer in the CPI context — the PDA signs, not the admin.
-    /// The admin's pubkey is passed through for rewards_administrators list verification.
-    /// CHECK: Verified against config.rewards_administrators list in processor
-    pub admin: AccountInfo<'info>,
+    /// Must sign the outer transaction; that signer status is preserved across CPI so
+    /// vault-mint can independently verify authorization (not just list membership).
+    /// The calling program's `external_mint_authority` PDA remains the CPI program signer.
+    pub admin: Signer<'info>,
     #[account(
         mut,
         constraint = destination.mint == mint.key() @ CustomErrorCode::InvalidMint

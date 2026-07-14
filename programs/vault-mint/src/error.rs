@@ -66,4 +66,10 @@ pub enum CustomErrorCode {
     InvalidAllowedExternalMintProgramsLimit = 35,
     #[msg("Claim would exceed the epoch's aggregate reward cap")]
     EpochCapExceeded = 36,
+    #[msg("Administrator list must not be empty")]
+    EmptyAdministrators = 37,
+    #[msg("Administrator list contains duplicate keys")]
+    DuplicateAdministrators = 38,
+    #[msg("Deposit source and vault token accounts must differ")]
+    DepositSelfTransfer = 39,
 }

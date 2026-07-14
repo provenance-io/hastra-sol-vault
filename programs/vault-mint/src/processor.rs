@@ -1,7 +1,7 @@
 use crate::account_structs::*;
 use crate::error::*;
 use crate::events::*;
-use crate::guard::validate_program_update_authority;
+use crate::guard::{validate_administrators, validate_program_update_authority};
 use crate::state::{AllowedExternalMintPrograms, ProofNode};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::hash::hashv;
@@ -25,16 +25,8 @@ pub fn initialize(
     );
 
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
-
-    require!(
-        freeze_administrators.len() <= 5,
-        CustomErrorCode::TooManyAdministrators
-    );
-
-    require!(
-        rewards_administrators.len() <= 5,
-        CustomErrorCode::TooManyAdministrators
-    );
+    validate_administrators(&freeze_administrators)?;
+    validate_administrators(&rewards_administrators)?;
 
     require!(
         ctx.accounts.vault_token_mint.key() != ctx.accounts.mint.key(),
@@ -289,14 +281,9 @@ pub fn update_freeze_administrators(
 ) -> Result<()> {
     // Validate that the signer is the program's update authority
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    validate_administrators(&new_administrators)?;
 
     let config = &mut ctx.accounts.config;
-
-    require!(
-        new_administrators.len() <= 5,
-        CustomErrorCode::TooManyAdministrators
-    );
-
     config.freeze_administrators = new_administrators;
 
     msg!(
@@ -314,14 +301,9 @@ pub fn update_rewards_administrators(
 ) -> Result<()> {
     // Validate that the signer is the program's update authority
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    validate_administrators(&new_administrators)?;
 
     let config = &mut ctx.accounts.config;
-
-    require!(
-        new_administrators.len() <= 5,
-        CustomErrorCode::TooManyAdministrators
-    );
-
     config.rewards_administrators = new_administrators;
 
     msg!(
@@ -537,13 +519,18 @@ pub fn create_rewards_epoch_v2(
 
 /// Claims rewards from a V2 epoch. Verifies the Merkle proof, enforces the aggregate cap, then
 /// transfers `amount` from `epoch_rewards_pool` to the user (no minting).
-pub fn claim_rewards_v2(ctx: Context<ClaimRewardsV2>, amount: u64, proof: Vec<ProofNode>) -> Result<()> {
+pub fn claim_rewards_v2(
+    ctx: Context<ClaimRewardsV2>,
+    amount: u64,
+    proof: Vec<ProofNode>,
+) -> Result<()> {
     require!(!ctx.accounts.config.paused, CustomErrorCode::ProtocolPaused);
     require!(amount > 0, CustomErrorCode::InvalidAmount);
 
     // Verify the Merkle proof first so invalid claims fail with a clear error before cap state
-    // is checked. leaf = sha256(user || amount_le || epoch_index_le)
-    let mut data = Vec::with_capacity(32 + 8 + 8);
+    // is checked. Domain-separated from V1: leaf = sha256(b"v2" || user || amount_le || epoch_index_le)
+    let mut data = Vec::with_capacity(2 + 32 + 8 + 8);
+    data.extend_from_slice(b"v2");
     data.extend_from_slice(ctx.accounts.user.key.as_ref());
     data.extend_from_slice(&amount.to_le_bytes());
     data.extend_from_slice(&ctx.accounts.epoch.index.to_le_bytes());
@@ -568,7 +555,10 @@ pub fn claim_rewards_v2(ctx: Context<ClaimRewardsV2>, amount: u64, proof: Vec<Pr
     }
 
     msg!("Computed root: {}", hex::encode(node));
-    msg!("Expected root: {}", hex::encode(ctx.accounts.epoch.merkle_root));
+    msg!(
+        "Expected root: {}",
+        hex::encode(ctx.accounts.epoch.merkle_root)
+    );
 
     require!(
         node == ctx.accounts.epoch.merkle_root,
@@ -650,9 +640,9 @@ pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> 
 
     let config = &ctx.accounts.config;
 
-    // Verify admin is a rewards administrator.
-    // Note: admin is not a Signer here — the PDA (external_mint_authority) is the actual
-    // CPI signer. The admin pubkey is just passed through for authorization checking.
+    // Verify admin is a rewards administrator. `admin` is a Signer on the outer
+    // transaction (preserved across CPI); external_mint_authority remains the PDA
+    // that proves the calling program's identity.
     require!(
         config
             .rewards_administrators

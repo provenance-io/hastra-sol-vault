@@ -320,6 +320,112 @@ describe("vault-mint", () => {
             }
         });
 
+        it("fails with empty freeze administrators", async () => {
+            try {
+                await program.methods
+                    .initialize([], [rewardsAdmin.publicKey])
+                    .accountsStrict({
+                        config: configPda,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
+                        vaultTokenAccount: vaultTokenAccount,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        redeemVaultTokenAccount: redeemVaultTokenAccount,
+                        vaultTokenMint: vaultedToken,
+                        mint: mintedToken,
+                        signer: provider.wallet.publicKey,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                        systemProgram: anchor.web3.SystemProgram.programId,
+                        programData: programDataPda,
+                        allowedExternalMintProgram: stakeProgram.programId,
+                    })
+                    .rpc();
+                assert.fail("Should have thrown EmptyAdministrators");
+            } catch (err) {
+                expect(err.toString()).to.match(/EmptyAdministrators|must not be empty/i);
+            }
+        });
+
+        it("fails with empty rewards administrators", async () => {
+            try {
+                await program.methods
+                    .initialize([freezeAdmin.publicKey], [])
+                    .accountsStrict({
+                        config: configPda,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
+                        vaultTokenAccount: vaultTokenAccount,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        redeemVaultTokenAccount: redeemVaultTokenAccount,
+                        vaultTokenMint: vaultedToken,
+                        mint: mintedToken,
+                        signer: provider.wallet.publicKey,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                        systemProgram: anchor.web3.SystemProgram.programId,
+                        programData: programDataPda,
+                        allowedExternalMintProgram: stakeProgram.programId,
+                    })
+                    .rpc();
+                assert.fail("Should have thrown EmptyAdministrators");
+            } catch (err) {
+                expect(err.toString()).to.match(/EmptyAdministrators|must not be empty/i);
+            }
+        });
+
+        it("fails with duplicate freeze administrators", async () => {
+            try {
+                await program.methods
+                    .initialize(
+                        [freezeAdmin.publicKey, freezeAdmin.publicKey],
+                        [rewardsAdmin.publicKey]
+                    )
+                    .accountsStrict({
+                        config: configPda,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
+                        vaultTokenAccount: vaultTokenAccount,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        redeemVaultTokenAccount: redeemVaultTokenAccount,
+                        vaultTokenMint: vaultedToken,
+                        mint: mintedToken,
+                        signer: provider.wallet.publicKey,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                        systemProgram: anchor.web3.SystemProgram.programId,
+                        programData: programDataPda,
+                        allowedExternalMintProgram: stakeProgram.programId,
+                    })
+                    .rpc();
+                assert.fail("Should have thrown DuplicateAdministrators");
+            } catch (err) {
+                expect(err.toString()).to.match(/DuplicateAdministrators|duplicate/i);
+            }
+        });
+
+        it("fails with duplicate rewards administrators", async () => {
+            try {
+                await program.methods
+                    .initialize(
+                        [freezeAdmin.publicKey],
+                        [rewardsAdmin.publicKey, rewardsAdmin.publicKey]
+                    )
+                    .accountsStrict({
+                        config: configPda,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
+                        vaultTokenAccount: vaultTokenAccount,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        redeemVaultTokenAccount: redeemVaultTokenAccount,
+                        vaultTokenMint: vaultedToken,
+                        mint: mintedToken,
+                        signer: provider.wallet.publicKey,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                        systemProgram: anchor.web3.SystemProgram.programId,
+                        programData: programDataPda,
+                        allowedExternalMintProgram: stakeProgram.programId,
+                    })
+                    .rpc();
+                assert.fail("Should have thrown DuplicateAdministrators");
+            } catch (err) {
+                expect(err.toString()).to.match(/DuplicateAdministrators|duplicate/i);
+            }
+        });
+
         it("initializes the vault config", async () => {
             await program.methods
                 .initialize([freezeAdmin.publicKey], [rewardsAdmin.publicKey])
@@ -526,6 +632,38 @@ describe("vault-mint", () => {
                 assert.fail("Should have thrown error");
             } catch (err) {
                 expect(err).to.exist;
+            }
+        });
+
+        it("rejects self-transfer deposit when source equals vault token account", async () => {
+            // Vault authority owns the deposit vault; passing it as both source and dest
+            // would be a no-op transfer that still mints wYLDS without the guard.
+            const vaultOwnerMintAta = await createAccount(
+                provider.connection,
+                provider.wallet.payer,
+                mintedToken,
+                vaultTokenAccountOwnerPublicKey
+            );
+
+            try {
+                await program.methods
+                    .deposit(new BN(1))
+                    .accountsStrict({
+                        config: configPda,
+                        vaultTokenAccount: vaultTokenAccount,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
+                        mint: mintedToken,
+                        mintAuthority: mintAuthorityPda,
+                        signer: vaultTokenAccountOwner.publicKey,
+                        userVaultTokenAccount: vaultTokenAccount,
+                        userMintTokenAccount: vaultOwnerMintAta,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    })
+                    .signers([vaultTokenAccountOwner])
+                    .rpc();
+                assert.fail("Should have thrown DepositSelfTransfer");
+            } catch (err) {
+                expect(err.toString()).to.match(/DepositSelfTransfer|must differ/i);
             }
         });
 
@@ -1337,6 +1475,55 @@ describe("vault-mint", () => {
             }
         });
 
+        it("requires rewards admin signature on external_program_mint", async () => {
+            const [externalMintAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [Buffer.from("external_mint_authority")],
+                stakeProgram.programId
+            );
+            const [allowedExternalMintProgramsPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("allowed_external_mint_programs"),
+                    configPda.toBuffer(),
+                ],
+                program.programId
+            );
+            const accounts = {
+                config: configPda,
+                callingProgram: stakeProgram.programId,
+                externalMintAuthority: externalMintAuthorityPda,
+                mint: mintedToken,
+                mintAuthority: mintAuthorityPda,
+                admin: rewardsAdmin.publicKey,
+                destination: userMintTokenAccount,
+                allowedExternalMintPrograms: allowedExternalMintProgramsPda,
+                tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+            };
+
+            // IDL/account metas must mark the listed rewards admin as a required signer.
+            const ix = await program.methods
+                .externalProgramMint(new BN(1_000_000))
+                .accountsStrict(accounts)
+                .instruction();
+            const adminMeta = ix.keys.find((key) => key.pubkey.equals(rewardsAdmin.publicKey));
+            expect(adminMeta, "admin account meta").to.exist;
+            expect(adminMeta!.isSigner).to.equal(true);
+
+            // Passing a listed admin pubkey without that key signing must fail.
+            // Provider fee-payer signs the tx; rewardsAdmin is intentionally omitted.
+            try {
+                await program.methods
+                    .externalProgramMint(new BN(1_000_000))
+                    .accountsStrict(accounts)
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.match(
+                    /Signature verification failed|missing required signature|Transaction simulation failed/i
+                );
+            }
+        });
+
     });
 
     // external_program_mint: legacy caller is config.allowed_external_mint_program (vault-stake);
@@ -2024,6 +2211,51 @@ describe("vault-mint", () => {
             }
         });
 
+        it("rejects legacy V1 leaf proofs against a V2 epoch", async () => {
+            const legacyIndex = 54;
+            const allocations = {
+                allocations: [{ account: user.publicKey.toBase58(), amount: 500 }],
+            };
+            // On-chain V2 root uses domain-separated leaves; a V1 tree/proof must not verify.
+            const v2Merkle = allocationsToMerkleTree(JSON.stringify(allocations), legacyIndex, "v2");
+            const v1Merkle = allocationsToMerkleTree(JSON.stringify(allocations), legacyIndex, "v1");
+            const totalAmount = new anchor.BN(500);
+
+            const { epoch: legacyEpochPda } = deriveRewardsEpochV2Accounts(program.programId, legacyIndex);
+            const [legacyClaimPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from("claim"), legacyEpochPda.toBuffer(), user.publicKey.toBuffer()],
+                program.programId
+            );
+
+            await program.methods
+                .createRewardsEpochV2(
+                    new anchor.BN(legacyIndex),
+                    Array.from(v2Merkle.tree.getRoot()),
+                    totalAmount
+                )
+                .accountsStrict(createV2Accounts(legacyEpochPda, legacyIndex))
+                .signers([rewardsAdmin])
+                .rpc();
+
+            const userAlloc = v1Merkle.allocations[0];
+            const v1Leaf = makeLeaf(user.publicKey, userAlloc.amount, legacyIndex, "v1");
+            const proof = v1Merkle.tree.getProof(v1Leaf).map(p => ({
+                sibling: Array.from(p.data),
+                isLeft: p.position === "left",
+            }));
+
+            try {
+                await program.methods
+                    .claimRewardsV2(userAlloc.amount, proof)
+                    .accountsStrict(claimV2Accounts(legacyEpochPda, legacyClaimPda, legacyIndex))
+                    .signers([user])
+                    .rpc();
+                assert.fail("Should have thrown InvalidMerkleProof");
+            } catch (err) {
+                expect(err.toString()).to.match(/InvalidMerkleProof|invalid merkle proof/i);
+            }
+        });
+
         it("rejects claim that exceeds epoch cap (EpochCapExceeded)", async () => {
             // Epoch 53: declared total is 500 but the Merkle tree allocates 1000.
             // The proof is valid for this epoch; the cap check is what must fire.
@@ -2139,6 +2371,39 @@ describe("vault-mint", () => {
                 expect(err).to.exist;
             }
         });
+
+        it("rejects empty freeze administrators update", async () => {
+            try {
+                await program.methods
+                    .updateFreezeAdministrators([])
+                    .accountsStrict({
+                        config: configPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programData,
+                    })
+                    .rpc();
+                assert.fail("Should have thrown EmptyAdministrators");
+            } catch (err) {
+                expect(err.toString()).to.match(/EmptyAdministrators|must not be empty/i);
+            }
+        });
+
+        it("rejects duplicate freeze administrators update", async () => {
+            try {
+                await program.methods
+                    .updateFreezeAdministrators([freezeAdmin.publicKey, freezeAdmin.publicKey])
+                    .accountsStrict({
+                        config: configPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programData,
+                    })
+                    .rpc();
+                assert.fail("Should have thrown DuplicateAdministrators");
+            } catch (err) {
+                expect(err.toString()).to.match(/DuplicateAdministrators|duplicate/i);
+            }
+        });
+
         it("new freeze admin can freeze user mint token account", async () => {
             await program.methods
                 .freezeTokenAccount()
@@ -2206,6 +2471,39 @@ describe("vault-mint", () => {
                 expect(err).to.exist;
             }
         });
+
+        it("rejects empty rewards administrators update", async () => {
+            try {
+                await program.methods
+                    .updateRewardsAdministrators([])
+                    .accountsStrict({
+                        config: configPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programData,
+                    })
+                    .rpc();
+                assert.fail("Should have thrown EmptyAdministrators");
+            } catch (err) {
+                expect(err.toString()).to.match(/EmptyAdministrators|must not be empty/i);
+            }
+        });
+
+        it("rejects duplicate rewards administrators update", async () => {
+            try {
+                await program.methods
+                    .updateRewardsAdministrators([rewardsAdmin.publicKey, rewardsAdmin.publicKey])
+                    .accountsStrict({
+                        config: configPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programData,
+                    })
+                    .rpc();
+                assert.fail("Should have thrown DuplicateAdministrators");
+            } catch (err) {
+                expect(err.toString()).to.match(/DuplicateAdministrators|duplicate/i);
+            }
+        });
+
         it("new rewards admin can complete redeem", async () => {
             const [redemptionRequestPda] = anchor.web3.PublicKey.findProgramAddressSync(
                 [Buffer.from("redemption_request"), user.publicKey.toBuffer()],

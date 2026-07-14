@@ -39,9 +39,9 @@ const program: Program<VaultMint> = new anchor.Program(MINT_IDL as anchor.Idl, p
 
 const main = async () => {
     const epochIndex = args.epoch;
-    const { tree } = allocationsToMerkleTree(args.reward_allocations, epochIndex);
+    const { tree } = allocationsToMerkleTree(args.reward_allocations, epochIndex, "v1");
 
-    const leaf = makeLeaf(provider.wallet.publicKey, args.amount ?? 0, epochIndex);
+    const leaf = makeLeaf(provider.wallet.publicKey, args.amount ?? 0, epochIndex, "v1");
 
     console.log("Leaf:", leaf.toString("hex"));
 
