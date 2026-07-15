@@ -136,12 +136,32 @@ pub mod vault_mint {
     /// 	•	The program verifies the Merkle proof against the root.
     /// 	•	If valid, transfer reward tokens (wYLDS) from the rewards vault to the user's mint token account.
     /// 	•	Mark the claim as redeemed so they can’t double-claim.
+    ///     •   Epochs with `index >= first_capped_epoch` also enforce the aggregate claim cap.
     pub fn claim_rewards(
         ctx: Context<ClaimRewards>,
         amount: u64,
         proof: Vec<ProofNode>,
     ) -> Result<()> {
         processor::claim_rewards(ctx, amount, proof)
+    }
+
+    /// One-shot: enables epoch caps (upgrade authority).
+    /// Must be executed after program upgrade before create/claim rewards.
+    /// Sets `first_capped_epoch` and `max_epoch_cap`. Epochs below that index stay uncapped.
+    pub fn initialize_epoch_caps(
+        ctx: Context<InitializeEpochCaps>,
+        first_capped_epoch: u64,
+        max_epoch_cap: u64,
+    ) -> Result<()> {
+        processor::initialize_epoch_caps(ctx, first_capped_epoch, max_epoch_cap)
+    }
+
+    /// Updates the global max epoch cap (upgrade authority). Affects future creates only.
+    pub fn update_max_epoch_cap(
+        ctx: Context<UpdateMaxEpochCap>,
+        new_cap: u64,
+    ) -> Result<()> {
+        processor::update_max_epoch_cap(ctx, new_cap)
     }
 
     /// Allows an external authorized program to mint tokens to a specified account.

@@ -35,16 +35,18 @@ address = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 [[test.validator.clone]]
 address = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
 
+# Cluster address book for Anchor CLI / clients (does not select declare_id! at build time).
+# Workspace builds: vault-mint + vault-stake only.
+# vault-stake-auto / vault-stake-smb are the same vault-stake crate built with
+# --features pool-auto (or pool-auto-devnet) / pool-smb — separate deployed program ids.
 [programs.devnet]
 vault-mint = "9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV"
 vault-stake = "97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY"
-vault-stake-prime = "97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY"
 vault-stake-auto = "B8FDo5EGA2hZ7YMugcw8wPHUYDBQJfNkEYpduXFLHfdZ"
 vault-stake-smb = "FtpEAgur3VALsDw91PfNre82eXVrtgiDNf9EG3JeBd2r"
 
-[program.mainnet-beta]
+[programs.mainnet]
 vault-mint = "9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV"
 vault-stake = "97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY"
-vault-stake-prime = "97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY"
 vault-stake-auto = "5uJgCDrQHfA58fPqLsuU14Srg9quxXNHz91cZ54cq4pK"
 vault-stake-smb = "FtpEAgur3VALsDw91PfNre82eXVrtgiDNf9EG3JeBd2r"

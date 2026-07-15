@@ -2,6 +2,24 @@ import BN from "bn.js";
 import { PublicKey, Connection } from "@solana/web3.js";
 import { getAccount } from "@solana/spl-token";
 
+/** Derives rewards epoch PDAs for a given epoch index. */
+export function deriveRewardsEpochAccounts(programId: PublicKey, index: number) {
+    const indexLe = new BN(index).toArrayLike(Buffer, "le", 8);
+    const [epoch] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch"), indexLe],
+        programId
+    );
+    const [epochClaimed] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch_claimed"), indexLe],
+        programId
+    );
+    const [epochCapsConfig] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch_caps_config")],
+        programId
+    );
+    return { epoch, epochClaimed, epochCapsConfig };
+}
+
 /** Default `StakeRewardConfig` numeric fields (matches on-chain `state::StakeRewardConfig`). */
 export const STAKE_REWARD_CONFIG_DEFAULTS = {
     maxPeriodRewards: new BN("1000000000000"),

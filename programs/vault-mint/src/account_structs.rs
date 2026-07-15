@@ -253,44 +253,82 @@ pub struct ThawTokenAccount<'info> {
     pub token_program: Program<'info, Token>,
 }
 
-// admin posts an epoch root
+// Admin posts an epoch Merkle root. Requires epoch caps initialized; enforces the global
+// max epoch cap and creates the per-epoch claimed counter. Claims mint wYLDS on demand.
 #[derive(Accounts)]
 #[instruction(index: u64)]
 pub struct CreateRewardsEpoch<'info> {
     #[account(
-        seeds = [b"config"], 
+        seeds = [b"config"],
         bump = config.bump
     )]
     pub config: Account<'info, Config>,
+
+    #[account(
+        seeds = [b"epoch_caps_config"],
+        bump = epoch_caps_config.bump
+    )]
+    pub epoch_caps_config: Account<'info, EpochCapsConfig>,
 
     #[account(mut)]
     pub admin: Signer<'info>,
+
     #[account(
         init,
-        payer=admin,
-        space=RewardsEpoch::LEN,
-        seeds=[b"epoch", index.to_le_bytes().as_ref()],
+        payer = admin,
+        space = RewardsEpoch::LEN,
+        seeds = [b"epoch", index.to_le_bytes().as_ref()],
         bump
     )]
     pub epoch: Account<'info, RewardsEpoch>,
+
+    /// Cumulative claim counter for this epoch.
+    #[account(
+        init,
+        payer = admin,
+        space = EpochClaimedAmount::LEN,
+        seeds = [b"epoch_claimed", index.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub epoch_claimed: Account<'info, EpochClaimedAmount>,
+
     pub system_program: Program<'info, System>,
 }
 
-// user claims this epoch’s amount
+// User claims via Merkle proof; wYLDS are minted on demand.
+// Requires `epoch_caps_config` to be initialized. Cap enforcement runs when
+// `index >= first_capped_epoch`; `epoch_claimed` may still be empty for lower indices.
 #[derive(Accounts)]
 pub struct ClaimRewards<'info> {
     #[account(
-        seeds = [b"config"], 
+        seeds = [b"config"],
         bump = config.bump
     )]
     pub config: Account<'info, Config>,
+
     #[account(mut)]
     pub user: Signer<'info>,
+
     #[account(
         seeds = [b"epoch", epoch.index.to_le_bytes().as_ref()],
         bump
     )]
     pub epoch: Account<'info, RewardsEpoch>,
+
+    #[account(
+        seeds = [b"epoch_caps_config"],
+        bump = epoch_caps_config.bump
+    )]
+    pub epoch_caps_config: Account<'info, EpochCapsConfig>,
+
+    /// CHECK: Per-epoch claimed counter PDA; empty for epochs below `first_capped_epoch`.
+    #[account(
+        mut,
+        seeds = [b"epoch_claimed", epoch.index.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub epoch_claimed: UncheckedAccount<'info>,
+
     #[account(
         init,
         payer = user,
@@ -322,6 +360,62 @@ pub struct ClaimRewards<'info> {
     pub user_mint_token_account: Account<'info, TokenAccount>,
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
+}
+
+/// One-shot initializer for epoch caps (upgrade authority only).
+#[derive(Accounts)]
+pub struct InitializeEpochCaps<'info> {
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Account<'info, Config>,
+
+    #[account(
+        init,
+        payer = signer,
+        space = EpochCapsConfig::LEN,
+        seeds = [b"epoch_caps_config"],
+        bump
+    )]
+    pub epoch_caps_config: Account<'info, EpochCapsConfig>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: Program data account that contains the upgrade authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Updates the global max epoch cap (upgrade authority only). Affects future creates only.
+#[derive(Accounts)]
+pub struct UpdateMaxEpochCap<'info> {
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Account<'info, Config>,
+
+    #[account(
+        mut,
+        seeds = [b"epoch_caps_config"],
+        bump = epoch_caps_config.bump
+    )]
+    pub epoch_caps_config: Account<'info, EpochCapsConfig>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: Program data account that contains the upgrade authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]

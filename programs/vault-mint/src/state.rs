@@ -23,7 +23,8 @@ impl Config {
 pub struct RewardsEpoch {
     pub index: u64,            // epoch id
     pub merkle_root: [u8; 32], // sha256 root (sortPairs)
-    pub total: u64,            // optional: sum of all allocations
+    /// Declared epoch reward budget. Binding for epochs at or after `first_capped_epoch`.
+    pub total: u64,
     pub created_ts: i64,
 }
 impl RewardsEpoch {
@@ -34,6 +35,31 @@ impl RewardsEpoch {
 pub struct ClaimRecord {} // empty marker account, existence = already claimed
 impl ClaimRecord {
     pub const LEN: usize = 8;
+}
+
+/// Global configuration for rewards epoch caps.
+#[account]
+pub struct EpochCapsConfig {
+    /// Ceiling on `create_rewards_epoch.total` for future epochs.
+    pub max_epoch_cap: u64,
+    /// Epochs with `index >= first_capped_epoch` enforce aggregate claim caps.
+    /// Lower indices only require a valid Merkle proof and `ClaimRecord`.
+    pub first_capped_epoch: u64,
+    pub bump: u8,
+}
+
+impl EpochCapsConfig {
+    pub const LEN: usize = 8 + 8 + 8 + 1;
+}
+
+/// Tracks cumulative wYLDS minted via `claim_rewards` for one epoch.
+#[account]
+pub struct EpochClaimedAmount {
+    pub claimed_total: u64,
+}
+
+impl EpochClaimedAmount {
+    pub const LEN: usize = 8 + 8;
 }
 
 #[account]

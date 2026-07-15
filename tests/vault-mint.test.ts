@@ -19,6 +19,7 @@ import BN from "bn.js";
 import {createBigInt} from "@metaplex-foundation/umi";
 import {allocationsToMerkleTree, makeLeaf} from "../scripts/cryptolib";
 import {MerkleTree} from "merkletreejs";
+import {deriveRewardsEpochAccounts} from "./helpers";
 
 function resolveProgramIdFromAnchorToml(programName: string): PublicKey | null {
     const anchorTomlPath = path.resolve(__dirname, "..", "Anchor.toml");
@@ -448,6 +449,23 @@ describe("vault-mint", () => {
             assert.equal(config.rewardsAdministrators.length, 1);
             assert.ok(config.rewardsAdministrators[0].equals(rewardsAdmin.publicKey));
             assert.ok(!config.paused);
+
+            // Initialize epoch caps for subsequent create/claim tests.
+            // first_capped_epoch = 1: all epochs in this suite (starting at 1) are capped.
+            const { epochCapsConfig } = deriveRewardsEpochAccounts(program.programId, 0);
+            await program.methods
+                .initializeEpochCaps(new BN(1), new BN("1000000000000"))
+                .accountsStrict({
+                    config: configPda,
+                    epochCapsConfig,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
+            const caps = await program.account.epochCapsConfig.fetch(epochCapsConfig);
+            assert.equal(caps.firstCappedEpoch.toNumber(), 1);
+            assert.equal(caps.maxEpochCap.toString(), "1000000000000");
         });
 
         it("fails when called twice", async () => {
@@ -1185,8 +1203,10 @@ describe("vault-mint", () => {
                     .createRewardsEpoch(new anchor.BN(pausedEpochIndex), dummyRoot, new BN(0))
                     .accountsStrict({
                         config: configPda,
+                        epochCapsConfig: deriveRewardsEpochAccounts(program.programId, pausedEpochIndex).epochCapsConfig,
                         admin: rewardsAdmin.publicKey,
                         epoch: pausedEpochPda,
+                        epochClaimed: deriveRewardsEpochAccounts(program.programId, pausedEpochIndex).epochClaimed,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
                     .signers([rewardsAdmin])
@@ -2069,8 +2089,10 @@ describe("vault-mint", () => {
                 .createRewardsEpoch(new anchor.BN(epochIndex), Array.from(root), total)
                 .accountsStrict({
                     config: configPda,
+                    epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epochIndex).epochCapsConfig,
                     admin: rewardsAdmin.publicKey,
                     epoch: epochPda,
+                    epochClaimed: deriveRewardsEpochAccounts(program.programId, epochIndex).epochClaimed,
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
                 .signers([rewardsAdmin])
@@ -2086,8 +2108,10 @@ describe("vault-mint", () => {
                     .createRewardsEpoch(new anchor.BN(epochIndex), Array.from(root), total)
                     .accountsStrict({
                         config: configPda,
+                        epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epochIndex).epochCapsConfig,
                         admin: rewardsAdmin.publicKey,
                         epoch: epochPda,
+                        epochClaimed: deriveRewardsEpochAccounts(program.programId, epochIndex).epochClaimed,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
                     .signers([rewardsAdmin])
@@ -2104,8 +2128,10 @@ describe("vault-mint", () => {
                     .createRewardsEpoch(new anchor.BN(epochIndex), Array.from(root), total)
                     .accountsStrict({
                         config: configPda,
+                        epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epochIndex).epochCapsConfig,
                         admin: provider.wallet.publicKey,
                         epoch: epochPda,
+                        epochClaimed: deriveRewardsEpochAccounts(program.programId, epochIndex).epochClaimed,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
                     .rpc();
@@ -2135,6 +2161,8 @@ describe("vault-mint", () => {
                     config: configPda,
                     user: user.publicKey,
                     epoch: epochPda,
+                    epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epochIndex).epochCapsConfig,
+                    epochClaimed: deriveRewardsEpochAccounts(program.programId, epochIndex).epochClaimed,
                     claimRecord: claimPda,
                     mintAuthority: mintAuthorityPda,
                     mint: mintedToken,
@@ -2168,6 +2196,8 @@ describe("vault-mint", () => {
                         config: configPda,
                         user: user.publicKey,
                         epoch: epochPda,
+                        epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epochIndex).epochCapsConfig,
+                        epochClaimed: deriveRewardsEpochAccounts(program.programId, epochIndex).epochClaimed,
                         claimRecord: claimPda,
                         mintAuthority: mintAuthorityPda,
                         mint: mintedToken,
@@ -2202,6 +2232,8 @@ describe("vault-mint", () => {
                         config: configPda,
                         user: user.publicKey,
                         epoch: epochPda,
+                        epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epochIndex).epochCapsConfig,
+                        epochClaimed: deriveRewardsEpochAccounts(program.programId, epochIndex).epochClaimed,
                         claimRecord: claimPda,
                         mintAuthority: mintAuthorityPda,
                         mint: mintedToken,
@@ -2242,8 +2274,10 @@ describe("vault-mint", () => {
                 .createRewardsEpoch(new anchor.BN(epoch2Index), Array.from(epoch2Root), epoch2Total)
                 .accountsStrict({
                     config: configPda,
+                    epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epoch2Index).epochCapsConfig,
                     admin: rewardsAdmin.publicKey,
                     epoch: epoch2Pda,
+                    epochClaimed: deriveRewardsEpochAccounts(program.programId, epoch2Index).epochClaimed,
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
                 .signers([rewardsAdmin])
@@ -2271,6 +2305,8 @@ describe("vault-mint", () => {
                         config: configPda,
                         user: user.publicKey,
                         epoch: epoch2Pda,          // ← wrong epoch PDA
+                        epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epoch2Index).epochCapsConfig,
+                        epochClaimed: deriveRewardsEpochAccounts(program.programId, epoch2Index).epochClaimed,
                         claimRecord: claimPdaEpoch2,
                         mintAuthority: mintAuthorityPda,
                         mint: mintedToken,
@@ -2283,6 +2319,107 @@ describe("vault-mint", () => {
                 assert.fail("Should have thrown error");
             } catch (err) {
                 expect(err.toString()).to.include("InvalidMerkleProof");
+            }
+        });
+
+        it("rejects create when total exceeds max_epoch_cap", async () => {
+            const overIndex = 10;
+            const { epoch, epochClaimed, epochCapsConfig } = deriveRewardsEpochAccounts(
+                program.programId,
+                overIndex
+            );
+            const caps = await program.account.epochCapsConfig.fetch(epochCapsConfig);
+            const overTotal = caps.maxEpochCap.add(new BN(1));
+            const overAlloc = {
+                allocations: [{ account: user.publicKey.toBase58(), amount: 1 }],
+            };
+            const overMerkle = allocationsToMerkleTree(JSON.stringify(overAlloc), overIndex);
+
+            try {
+                await program.methods
+                    .createRewardsEpoch(
+                        new BN(overIndex),
+                        Array.from(overMerkle.tree.getRoot()),
+                        overTotal
+                    )
+                    .accountsStrict({
+                        config: configPda,
+                        epochCapsConfig,
+                        admin: rewardsAdmin.publicKey,
+                        epoch,
+                        epochClaimed,
+                        systemProgram: SystemProgram.programId,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown EpochCapAboveGlobal");
+            } catch (err) {
+                expect(err.toString()).to.match(/EpochCapAboveGlobal|custom program error: 0x28/i);
+            }
+        });
+
+        it("rejects claim that exceeds epoch cap (EpochCapExceeded)", async () => {
+            // Declared total is 500 but the Merkle tree allocates 1000.
+            const capEpochIndex = 11;
+            const capAllocations = {
+                allocations: [{ account: user.publicKey.toBase58(), amount: 1000 }],
+            };
+            const capMerkle = allocationsToMerkleTree(JSON.stringify(capAllocations), capEpochIndex);
+            const declaredTotal = new BN(500);
+            const { epoch, epochClaimed, epochCapsConfig } = deriveRewardsEpochAccounts(
+                program.programId,
+                capEpochIndex
+            );
+            const [capClaimPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from("claim"), epoch.toBuffer(), user.publicKey.toBuffer()],
+                program.programId
+            );
+
+            await program.methods
+                .createRewardsEpoch(
+                    new BN(capEpochIndex),
+                    Array.from(capMerkle.tree.getRoot()),
+                    declaredTotal
+                )
+                .accountsStrict({
+                    config: configPda,
+                    epochCapsConfig,
+                    admin: rewardsAdmin.publicKey,
+                    epoch,
+                    epochClaimed,
+                    systemProgram: SystemProgram.programId,
+                })
+                .signers([rewardsAdmin])
+                .rpc();
+
+            const userAlloc = capMerkle.allocations[0];
+            const leaf = makeLeaf(user.publicKey, userAlloc.amount, capEpochIndex);
+            const proof = capMerkle.tree.getProof(leaf).map(p => ({
+                sibling: Array.from(p.data),
+                isLeft: p.position === "left",
+            }));
+
+            try {
+                await program.methods
+                    .claimRewards(userAlloc.amount, proof)
+                    .accountsStrict({
+                        config: configPda,
+                        user: user.publicKey,
+                        epoch,
+                        epochCapsConfig,
+                        epochClaimed,
+                        claimRecord: capClaimPda,
+                        mintAuthority: mintAuthorityPda,
+                        mint: mintedToken,
+                        userMintTokenAccount: userMintTokenAccount,
+                        systemProgram: SystemProgram.programId,
+                        tokenProgram: TOKEN_PROGRAM_ID,
+                    })
+                    .signers([user])
+                    .rpc();
+                assert.fail("Should have thrown EpochCapExceeded");
+            } catch (err) {
+                expect(err.toString()).to.match(/EpochCapExceeded|custom program error: 0x24/i);
             }
         });
     }); // end describe("rewards")

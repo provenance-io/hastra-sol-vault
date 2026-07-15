@@ -2,7 +2,7 @@ use crate::account_structs::*;
 use crate::error::*;
 use crate::events::*;
 use crate::guard::{validate_administrators, validate_program_update_authority};
-use crate::state::{AllowedExternalMintPrograms, ProofNode};
+use crate::state::{AllowedExternalMintPrograms, EpochClaimedAmount, ProofNode};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::hash::hashv;
 use anchor_lang::solana_program::program::invoke;
@@ -399,11 +399,21 @@ pub fn create_rewards_epoch(
             .contains(&ctx.accounts.admin.key()),
         CustomErrorCode::InvalidRewardsAdministrator
     );
+    require!(total > 0, CustomErrorCode::InvalidAmount);
+
+    let caps = &ctx.accounts.epoch_caps_config;
+    require!(
+        total <= caps.max_epoch_cap,
+        CustomErrorCode::EpochCapAboveGlobal
+    );
+
     let e = &mut ctx.accounts.epoch;
     e.index = index;
     e.merkle_root = merkle_root;
     e.total = total;
     e.created_ts = Clock::get()?.unix_timestamp;
+
+    ctx.accounts.epoch_claimed.claimed_total = 0;
 
     emit!(RewardsEpochCreated {
         admin: ctx.accounts.admin.key(),
@@ -460,6 +470,35 @@ pub fn claim_rewards(ctx: Context<ClaimRewards>, amount: u64, proof: Vec<ProofNo
         CustomErrorCode::InvalidMerkleProof
     );
 
+    // Cap enforcement for epochs at or after `first_capped_epoch`.
+    // Epochs below that index skip the aggregate counter; ClaimRecord still prevents double-claim.
+    // `epoch_caps_config` must already be initialized (typed Account constraint).
+    let epoch_index = ctx.accounts.epoch.index;
+    let enforce_cap = epoch_index >= ctx.accounts.epoch_caps_config.first_capped_epoch;
+
+    if enforce_cap {
+        let claimed_info = ctx.accounts.epoch_claimed.to_account_info();
+        require!(
+            !claimed_info.data_is_empty(),
+            CustomErrorCode::EpochClaimedRequired
+        );
+        let mut data = claimed_info.try_borrow_mut_data()?;
+        let mut claimed = EpochClaimedAmount::try_deserialize(&mut &data[..])?;
+        let new_claimed = claimed
+            .claimed_total
+            .checked_add(amount)
+            .ok_or(CustomErrorCode::InvalidAmount)?;
+        require!(
+            new_claimed <= ctx.accounts.epoch.total,
+            CustomErrorCode::EpochCapExceeded
+        );
+        // Increment claimed_total before minting so a failed mint cannot leave
+        // the counter behind the actual minted supply.
+        claimed.claimed_total = new_claimed;
+        let mut cursor = std::io::Cursor::new(&mut data[..]);
+        claimed.try_serialize(&mut cursor)?;
+    }
+
     // mint tokens (wYLDS) to user
     let seeds: &[&[u8]] = &[b"mint_authority", &[ctx.bumps.mint_authority]];
     let signer = &[&seeds[..]];
@@ -486,6 +525,47 @@ pub fn claim_rewards(ctx: Context<ClaimRewards>, amount: u64, proof: Vec<ProofNo
         vault: ctx.accounts.config.vault,
     });
     msg!("Emitted RewardsClaimed");
+
+    Ok(())
+}
+
+/// One-shot initializer for epoch caps after program upgrade.
+pub fn initialize_epoch_caps(
+    ctx: Context<InitializeEpochCaps>,
+    first_capped_epoch: u64,
+    max_epoch_cap: u64,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    require!(max_epoch_cap > 0, CustomErrorCode::InvalidGlobalCap);
+
+    let caps = &mut ctx.accounts.epoch_caps_config;
+    caps.max_epoch_cap = max_epoch_cap;
+    caps.first_capped_epoch = first_capped_epoch;
+    caps.bump = ctx.bumps.epoch_caps_config;
+
+    emit!(FirstCappedEpochSet {
+        epoch_index: first_capped_epoch,
+    });
+    emit!(MaxEpochCapUpdated {
+        old_cap: 0,
+        new_cap: max_epoch_cap,
+    });
+
+    Ok(())
+}
+
+/// Updates the global max epoch cap. Affects future `create_rewards_epoch` calls only.
+pub fn update_max_epoch_cap(ctx: Context<UpdateMaxEpochCap>, new_cap: u64) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    require!(new_cap > 0, CustomErrorCode::InvalidGlobalCap);
+
+    let caps = &mut ctx.accounts.epoch_caps_config;
+    require!(caps.max_epoch_cap > 0, CustomErrorCode::CapsNotInitialized);
+
+    let old_cap = caps.max_epoch_cap;
+    caps.max_epoch_cap = new_cap;
+
+    emit!(MaxEpochCapUpdated { old_cap, new_cap });
 
     Ok(())
 }

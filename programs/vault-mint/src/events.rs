@@ -59,3 +59,14 @@ pub struct RewardsEpochCreated {
     pub total: u64,
     pub created_ts: i64,
 }
+
+#[event]
+pub struct MaxEpochCapUpdated {
+    pub old_cap: u64,
+    pub new_cap: u64,
+}
+
+#[event]
+pub struct FirstCappedEpochSet {
+    pub epoch_index: u64,
+}

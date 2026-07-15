@@ -7,6 +7,7 @@ import {
     allocationsToMerkleTree,
     MINT_IDL,
 } from "../cryptolib";
+
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
 
@@ -43,7 +44,6 @@ const main = async () => {
         console.log("Proof:", treeProof);
         console.log("Proof (hex):", treeProof.map(p => p.data.toString("hex")));
 
-        // Verify
         const verified = tree.verify(treeProof, leaf, tree.getRoot());
         console.log("Verified:", verified);
 
@@ -55,8 +55,17 @@ const main = async () => {
         [Buffer.from("config")],
         program.programId
     );
+    const [epochCapsConfigPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch_caps_config")],
+        program.programId
+    );
+    const indexLe = new anchor.BN(epochIndex).toArrayLike(Buffer, "le", 8);
     const [epochPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("epoch"), new anchor.BN(epochIndex).toArrayLike(Buffer, "le", 8)],
+        [Buffer.from("epoch"), indexLe],
+        program.programId
+    );
+    const [epochClaimedPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch_claimed"), indexLe],
         program.programId
     );
 
@@ -64,8 +73,10 @@ const main = async () => {
         .createRewardsEpoch(new anchor.BN(epochIndex), Array.from(root), total)
         .accountsStrict({
             config: configPda,
+            epochCapsConfig: epochCapsConfigPda,
             admin: provider.wallet.publicKey,
             epoch: epochPda,
+            epochClaimed: epochClaimedPda,
             systemProgram: anchor.web3.SystemProgram.programId,
         })
         .rpc();
