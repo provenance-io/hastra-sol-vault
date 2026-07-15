@@ -64,8 +64,6 @@ pub enum CustomErrorCode {
     TooManyAllowedExternalMintPrograms = 29,
     #[msg("Invalid allowed external mint programs limit.")]
     InvalidAllowedExternalMintProgramsLimit = 35,
-    #[msg("Claim would exceed the epoch's aggregate reward cap")]
-    EpochCapExceeded = 36,
     #[msg("Administrator list must not be empty")]
     EmptyAdministrators = 37,
     #[msg("Administrator list contains duplicate keys")]
