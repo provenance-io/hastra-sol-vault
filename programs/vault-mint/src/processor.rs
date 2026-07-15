@@ -1,8 +1,8 @@
 use crate::account_structs::*;
 use crate::error::*;
 use crate::events::*;
-use crate::guard::validate_program_update_authority;
-use crate::state::{AllowedExternalMintPrograms, ProofNode};
+use crate::guard::{validate_administrators, validate_program_update_authority};
+use crate::state::{AllowedExternalMintPrograms, EpochClaimedAmount, ProofNode};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::hash::hashv;
 use anchor_lang::solana_program::program::invoke;
@@ -25,16 +25,8 @@ pub fn initialize(
     );
 
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
-
-    require!(
-        freeze_administrators.len() <= 5,
-        CustomErrorCode::TooManyAdministrators
-    );
-
-    require!(
-        rewards_administrators.len() <= 5,
-        CustomErrorCode::TooManyAdministrators
-    );
+    validate_administrators(&freeze_administrators)?;
+    validate_administrators(&rewards_administrators)?;
 
     require!(
         ctx.accounts.vault_token_mint.key() != ctx.accounts.mint.key(),
@@ -289,14 +281,9 @@ pub fn update_freeze_administrators(
 ) -> Result<()> {
     // Validate that the signer is the program's update authority
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    validate_administrators(&new_administrators)?;
 
     let config = &mut ctx.accounts.config;
-
-    require!(
-        new_administrators.len() <= 5,
-        CustomErrorCode::TooManyAdministrators
-    );
-
     config.freeze_administrators = new_administrators;
 
     msg!(
@@ -314,14 +301,9 @@ pub fn update_rewards_administrators(
 ) -> Result<()> {
     // Validate that the signer is the program's update authority
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    validate_administrators(&new_administrators)?;
 
     let config = &mut ctx.accounts.config;
-
-    require!(
-        new_administrators.len() <= 5,
-        CustomErrorCode::TooManyAdministrators
-    );
-
     config.rewards_administrators = new_administrators;
 
     msg!(
@@ -403,6 +385,47 @@ pub fn thaw_token_account(ctx: Context<ThawTokenAccount>) -> Result<()> {
     Ok(())
 }
 
+pub fn create_rewards_epoch(
+    ctx: Context<CreateRewardsEpoch>,
+    index: u64,
+    merkle_root: [u8; 32],
+    total: u64,
+) -> Result<()> {
+    require!(!ctx.accounts.config.paused, CustomErrorCode::ProtocolPaused);
+    require!(
+        ctx.accounts
+            .config
+            .rewards_administrators
+            .contains(&ctx.accounts.admin.key()),
+        CustomErrorCode::InvalidRewardsAdministrator
+    );
+    require!(total > 0, CustomErrorCode::InvalidAmount);
+
+    let caps = &ctx.accounts.epoch_caps_config;
+    require!(
+        total <= caps.max_epoch_cap,
+        CustomErrorCode::EpochCapAboveGlobal
+    );
+
+    let e = &mut ctx.accounts.epoch;
+    e.index = index;
+    e.merkle_root = merkle_root;
+    e.total = total;
+    e.created_ts = Clock::get()?.unix_timestamp;
+
+    ctx.accounts.epoch_claimed.claimed_total = 0;
+
+    emit!(RewardsEpochCreated {
+        admin: ctx.accounts.admin.key(),
+        index,
+        merkle_root,
+        total,
+        created_ts: e.created_ts,
+    });
+
+    Ok(())
+}
+
 pub fn claim_rewards(ctx: Context<ClaimRewards>, amount: u64, proof: Vec<ProofNode>) -> Result<()> {
     require!(!ctx.accounts.config.paused, CustomErrorCode::ProtocolPaused);
     require!(amount > 0, CustomErrorCode::InvalidAmount);
@@ -447,6 +470,35 @@ pub fn claim_rewards(ctx: Context<ClaimRewards>, amount: u64, proof: Vec<ProofNo
         CustomErrorCode::InvalidMerkleProof
     );
 
+    // Cap enforcement for epochs at or after `first_capped_epoch`.
+    // Epochs below that index skip the aggregate counter; ClaimRecord still prevents double-claim.
+    // `epoch_caps_config` must already be initialized (typed Account constraint).
+    let epoch_index = ctx.accounts.epoch.index;
+    let enforce_cap = epoch_index >= ctx.accounts.epoch_caps_config.first_capped_epoch;
+
+    if enforce_cap {
+        let claimed_info = ctx.accounts.epoch_claimed.to_account_info();
+        require!(
+            !claimed_info.data_is_empty(),
+            CustomErrorCode::EpochClaimedRequired
+        );
+        let mut data = claimed_info.try_borrow_mut_data()?;
+        let mut claimed = EpochClaimedAmount::try_deserialize(&mut &data[..])?;
+        let new_claimed = claimed
+            .claimed_total
+            .checked_add(amount)
+            .ok_or(CustomErrorCode::InvalidAmount)?;
+        require!(
+            new_claimed <= ctx.accounts.epoch.total,
+            CustomErrorCode::EpochCapExceeded
+        );
+        // Increment claimed_total before minting so a failed mint cannot leave
+        // the counter behind the actual minted supply.
+        claimed.claimed_total = new_claimed;
+        let mut cursor = std::io::Cursor::new(&mut data[..]);
+        claimed.try_serialize(&mut cursor)?;
+    }
+
     // mint tokens (wYLDS) to user
     let seeds: &[&[u8]] = &[b"mint_authority", &[ctx.bumps.mint_authority]];
     let signer = &[&seeds[..]];
@@ -477,152 +529,43 @@ pub fn claim_rewards(ctx: Context<ClaimRewards>, amount: u64, proof: Vec<ProofNo
     Ok(())
 }
 
-/// Creates a V2 rewards epoch: initializes the `RewardsEpoch` PDA, the `EpochCapTracker` PDA,
-/// and the `epoch_rewards_pool` token account, then mints `total` wYLDS into the pool.
-/// All claims against this epoch must use `claim_rewards_v2`.
-pub fn create_rewards_epoch_v2(
-    ctx: Context<CreateRewardsEpochV2>,
-    index: u64,
-    merkle_root: [u8; 32],
-    total: u64,
+/// One-shot initializer for epoch caps after program upgrade.
+pub fn initialize_epoch_caps(
+    ctx: Context<InitializeEpochCaps>,
+    first_capped_epoch: u64,
+    max_epoch_cap: u64,
 ) -> Result<()> {
-    require!(!ctx.accounts.config.paused, CustomErrorCode::ProtocolPaused);
-    require!(
-        ctx.accounts
-            .config
-            .rewards_administrators
-            .contains(&ctx.accounts.admin.key()),
-        CustomErrorCode::InvalidRewardsAdministrator
-    );
-    require!(total > 0, CustomErrorCode::InvalidAmount);
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    require!(max_epoch_cap > 0, CustomErrorCode::InvalidGlobalCap);
 
-    let e = &mut ctx.accounts.epoch;
-    e.index = index;
-    e.merkle_root = merkle_root;
-    e.total = total;
-    e.created_ts = Clock::get()?.unix_timestamp;
+    let caps = &mut ctx.accounts.epoch_caps_config;
+    caps.max_epoch_cap = max_epoch_cap;
+    caps.first_capped_epoch = first_capped_epoch;
+    caps.bump = ctx.bumps.epoch_caps_config;
 
-    let cap = &mut ctx.accounts.epoch_cap;
-    cap.index = index;
-    cap.total = total;
-    cap.claimed_total = 0;
-
-    // Pre-fund the pool so `pool.amount == cap.total - cap.claimed_total` holds from creation.
-    let seeds: &[&[u8]] = &[b"mint_authority", &[ctx.bumps.mint_authority]];
-    let signer = &[&seeds[..]];
-    let cpi_accounts = MintTo {
-        mint: ctx.accounts.mint.to_account_info(),
-        to: ctx.accounts.epoch_rewards_pool.to_account_info(),
-        authority: ctx.accounts.mint_authority.to_account_info(),
-    };
-    token::mint_to(
-        CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            cpi_accounts,
-            signer,
-        ),
-        total,
-    )?;
-
-    emit!(RewardsEpochCreated {
-        admin: ctx.accounts.admin.key(),
-        index,
-        merkle_root,
-        total,
-        created_ts: e.created_ts,
+    emit!(FirstCappedEpochSet {
+        epoch_index: first_capped_epoch,
+    });
+    emit!(MaxEpochCapUpdated {
+        old_cap: 0,
+        new_cap: max_epoch_cap,
     });
 
     Ok(())
 }
 
-/// Claims rewards from a V2 epoch. Verifies the Merkle proof, enforces the aggregate cap, then
-/// transfers `amount` from `epoch_rewards_pool` to the user (no minting).
-pub fn claim_rewards_v2(ctx: Context<ClaimRewardsV2>, amount: u64, proof: Vec<ProofNode>) -> Result<()> {
-    require!(!ctx.accounts.config.paused, CustomErrorCode::ProtocolPaused);
-    require!(amount > 0, CustomErrorCode::InvalidAmount);
+/// Updates the global max epoch cap. Affects future `create_rewards_epoch` calls only.
+pub fn update_max_epoch_cap(ctx: Context<UpdateMaxEpochCap>, new_cap: u64) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    require!(new_cap > 0, CustomErrorCode::InvalidGlobalCap);
 
-    // Verify the Merkle proof first so invalid claims fail with a clear error before cap state
-    // is checked. leaf = sha256(user || amount_le || epoch_index_le)
-    let mut data = Vec::with_capacity(32 + 8 + 8);
-    data.extend_from_slice(ctx.accounts.user.key.as_ref());
-    data.extend_from_slice(&amount.to_le_bytes());
-    data.extend_from_slice(&ctx.accounts.epoch.index.to_le_bytes());
-    let mut node = hashv(&[&data]).to_bytes();
+    let caps = &mut ctx.accounts.epoch_caps_config;
+    require!(caps.max_epoch_cap > 0, CustomErrorCode::CapsNotInitialized);
 
-    msg!("User Leaf node: {}", hex::encode(node));
+    let old_cap = caps.max_epoch_cap;
+    caps.max_epoch_cap = new_cap;
 
-    for (i, step) in proof.iter().enumerate() {
-        let sib = &step.sibling;
-        if sib.iter().all(|&b| b == 0) {
-            msg!("[{}] right: sibling is zero - hashing just the node", i);
-            node = hashv(&[&node]).to_bytes();
-            continue;
-        }
-        if step.is_left {
-            node = hashv(&[sib, &node]).to_bytes();
-            msg!("[{}] left: hash(sib,node) = {}", i, hex::encode(node));
-        } else {
-            node = hashv(&[&node, sib]).to_bytes();
-            msg!("[{}] right: hash(node,sib) = {}", i, hex::encode(node));
-        }
-    }
-
-    msg!("Computed root: {}", hex::encode(node));
-    msg!("Expected root: {}", hex::encode(ctx.accounts.epoch.merkle_root));
-
-    require!(
-        node == ctx.accounts.epoch.merkle_root,
-        CustomErrorCode::InvalidMerkleProof
-    );
-
-    // Enforce the aggregate cap. checked_add guards against overflow on a crafted amount.
-    require!(
-        ctx.accounts
-            .epoch_cap
-            .claimed_total
-            .checked_add(amount)
-            .ok_or(CustomErrorCode::InvalidAmount)?
-            <= ctx.accounts.epoch_cap.total,
-        CustomErrorCode::EpochCapExceeded
-    );
-
-    let index_bytes = ctx.accounts.epoch.index.to_le_bytes();
-    let seeds: &[&[u8]] = &[
-        b"epoch_rewards_pool_authority",
-        index_bytes.as_ref(),
-        &[ctx.bumps.epoch_rewards_pool_authority],
-    ];
-    let signer = &[&seeds[..]];
-    let cpi_accounts = Transfer {
-        from: ctx.accounts.epoch_rewards_pool.to_account_info(),
-        to: ctx.accounts.user_mint_token_account.to_account_info(),
-        authority: ctx.accounts.epoch_rewards_pool_authority.to_account_info(),
-    };
-    token::transfer(
-        CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            cpi_accounts,
-            signer,
-        ),
-        amount,
-    )?;
-
-    ctx.accounts.epoch_cap.claimed_total = ctx
-        .accounts
-        .epoch_cap
-        .claimed_total
-        .checked_add(amount)
-        .ok_or(CustomErrorCode::InvalidAmount)?;
-
-    msg!("Emitting RewardsClaimed");
-    emit!(RewardsClaimed {
-        user: ctx.accounts.user.key(),
-        epoch: ctx.accounts.epoch.index,
-        amount,
-        mint: ctx.accounts.config.mint,
-        vault: ctx.accounts.config.vault,
-    });
-    msg!("Emitted RewardsClaimed");
+    emit!(MaxEpochCapUpdated { old_cap, new_cap });
 
     Ok(())
 }
@@ -650,9 +593,9 @@ pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> 
 
     let config = &ctx.accounts.config;
 
-    // Verify admin is a rewards administrator.
-    // Note: admin is not a Signer here — the PDA (external_mint_authority) is the actual
-    // CPI signer. The admin pubkey is just passed through for authorization checking.
+    // Verify admin is a rewards administrator. `admin` is a Signer on the outer
+    // transaction (preserved across CPI); external_mint_authority remains the PDA
+    // that proves the calling program's identity.
     require!(
         config
             .rewards_administrators

@@ -133,7 +133,9 @@ pub struct Deposit<'info> {
         mut,
         token::mint = config.vault,
         constraint = user_vault_token_account.mint == config.vault @ CustomErrorCode::InvalidVaultMint,
-        constraint = user_vault_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner
+        constraint = user_vault_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner,
+        // Reject self-transfer deposits that would mint wYLDS without increasing vault balance.
+        constraint = user_vault_token_account.key() != vault_token_account.key() @ CustomErrorCode::DepositSelfTransfer
     )]
     pub user_vault_token_account: Account<'info, TokenAccount>,
 
@@ -251,21 +253,82 @@ pub struct ThawTokenAccount<'info> {
     pub token_program: Program<'info, Token>,
 }
 
-// user claims this epoch’s amount
+// Admin posts an epoch Merkle root. Requires epoch caps initialized; enforces the global
+// max epoch cap and creates the per-epoch claimed counter. Claims mint wYLDS on demand.
 #[derive(Accounts)]
-pub struct ClaimRewards<'info> {
+#[instruction(index: u64)]
+pub struct CreateRewardsEpoch<'info> {
     #[account(
-        seeds = [b"config"], 
+        seeds = [b"config"],
         bump = config.bump
     )]
     pub config: Account<'info, Config>,
+
+    #[account(
+        seeds = [b"epoch_caps_config"],
+        bump = epoch_caps_config.bump
+    )]
+    pub epoch_caps_config: Account<'info, EpochCapsConfig>,
+
+    #[account(mut)]
+    pub admin: Signer<'info>,
+
+    #[account(
+        init,
+        payer = admin,
+        space = RewardsEpoch::LEN,
+        seeds = [b"epoch", index.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub epoch: Account<'info, RewardsEpoch>,
+
+    /// Cumulative claim counter for this epoch.
+    #[account(
+        init,
+        payer = admin,
+        space = EpochClaimedAmount::LEN,
+        seeds = [b"epoch_claimed", index.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub epoch_claimed: Account<'info, EpochClaimedAmount>,
+
+    pub system_program: Program<'info, System>,
+}
+
+// User claims via Merkle proof; wYLDS are minted on demand.
+// Requires `epoch_caps_config` to be initialized. Cap enforcement runs when
+// `index >= first_capped_epoch`; `epoch_claimed` may still be empty for lower indices.
+#[derive(Accounts)]
+pub struct ClaimRewards<'info> {
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Account<'info, Config>,
+
     #[account(mut)]
     pub user: Signer<'info>,
+
     #[account(
         seeds = [b"epoch", epoch.index.to_le_bytes().as_ref()],
         bump
     )]
     pub epoch: Account<'info, RewardsEpoch>,
+
+    #[account(
+        seeds = [b"epoch_caps_config"],
+        bump = epoch_caps_config.bump
+    )]
+    pub epoch_caps_config: Account<'info, EpochCapsConfig>,
+
+    /// CHECK: Per-epoch claimed counter PDA; may be uninitialized for epochs below `first_capped_epoch`.
+    #[account(
+        mut,
+        seeds = [b"epoch_claimed", epoch.index.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub epoch_claimed: UncheckedAccount<'info>,
+
     #[account(
         init,
         payer = user,
@@ -299,135 +362,60 @@ pub struct ClaimRewards<'info> {
     pub system_program: Program<'info, System>,
 }
 
-/// Admin posts a V2 epoch Merkle root, initializes the cap tracker, and pre-funds the escrow pool.
-/// All three accounts are created atomically; `total` wYLDS are minted into `epoch_rewards_pool`.
+/// One-shot initializer for epoch caps (upgrade authority only).
 #[derive(Accounts)]
-#[instruction(index: u64)]
-pub struct CreateRewardsEpochV2<'info> {
+pub struct InitializeEpochCaps<'info> {
     #[account(
         seeds = [b"config"],
         bump = config.bump
     )]
     pub config: Account<'info, Config>,
 
+    #[account(
+        init,
+        payer = signer,
+        space = EpochCapsConfig::LEN,
+        seeds = [b"epoch_caps_config"],
+        bump
+    )]
+    pub epoch_caps_config: Account<'info, EpochCapsConfig>,
+
     #[account(mut)]
-    pub admin: Signer<'info>,
+    pub signer: Signer<'info>,
 
+    /// CHECK: Program data account that contains the upgrade authority
     #[account(
-        init,
-        payer = admin,
-        space = RewardsEpoch::LEN,
-        seeds = [b"epoch_v2", index.to_le_bytes().as_ref()],
-        bump
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
     )]
-    pub epoch: Account<'info, RewardsEpoch>,
+    pub program_data: UncheckedAccount<'info>,
 
-    #[account(
-        init,
-        payer = admin,
-        space = EpochCapTracker::LEN,
-        seeds = [b"epoch_cap", index.to_le_bytes().as_ref()],
-        bump
-    )]
-    pub epoch_cap: Account<'info, EpochCapTracker>,
-
-    #[account(
-        init,
-        payer = admin,
-        token::mint = mint,
-        token::authority = epoch_rewards_pool_authority,
-        seeds = [b"epoch_rewards_pool", index.to_le_bytes().as_ref()],
-        bump
-    )]
-    pub epoch_rewards_pool: Account<'info, TokenAccount>,
-
-    /// CHECK: Unsigned PDA that acts as the SPL authority for `epoch_rewards_pool`.
-    #[account(
-        seeds = [b"epoch_rewards_pool_authority", index.to_le_bytes().as_ref()],
-        bump
-    )]
-    pub epoch_rewards_pool_authority: UncheckedAccount<'info>,
-
-    #[account(
-        mut,
-        constraint = mint.key() == config.mint @ CustomErrorCode::InvalidMint
-    )]
-    pub mint: Account<'info, Mint>,
-
-    /// CHECK: PDA mint authority; validated by seeds + mint_authority constraint.
-    #[account(
-        seeds = [b"mint_authority"],
-        bump,
-        constraint = mint_authority.key() == mint.mint_authority.unwrap() @ CustomErrorCode::InvalidMintAuthority
-    )]
-    pub mint_authority: UncheckedAccount<'info>,
-
-    pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
 }
 
-/// User claims from the pre-funded V2 epoch pool. Merkle proof is verified and the aggregate
-/// cap is enforced before transferring from `epoch_rewards_pool` (no minting).
+/// Updates the global max epoch cap (upgrade authority only). Affects future creates only.
 #[derive(Accounts)]
-pub struct ClaimRewardsV2<'info> {
+pub struct UpdateMaxEpochCap<'info> {
     #[account(
         seeds = [b"config"],
         bump = config.bump
     )]
     pub config: Account<'info, Config>,
 
+    #[account(
+        mut,
+        seeds = [b"epoch_caps_config"],
+        bump = epoch_caps_config.bump
+    )]
+    pub epoch_caps_config: Account<'info, EpochCapsConfig>,
+
     #[account(mut)]
-    pub user: Signer<'info>,
+    pub signer: Signer<'info>,
 
+    /// CHECK: Program data account that contains the upgrade authority
     #[account(
-        seeds = [b"epoch_v2", epoch.index.to_le_bytes().as_ref()],
-        bump
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
     )]
-    pub epoch: Account<'info, RewardsEpoch>,
-
-    /// Cap tracker for this epoch; `total` must match `epoch.total` to prevent substitution attacks.
-    #[account(
-        mut,
-        seeds = [b"epoch_cap", epoch.index.to_le_bytes().as_ref()],
-        bump,
-        constraint = epoch_cap.total == epoch.total @ CustomErrorCode::InvalidRewardsEpoch
-    )]
-    pub epoch_cap: Account<'info, EpochCapTracker>,
-
-    /// One-time claim record — existence proves the user already claimed this epoch.
-    #[account(
-        init,
-        payer = user,
-        space = ClaimRecord::LEN,
-        seeds = [b"claim", epoch.key().as_ref(), user.key().as_ref()],
-        bump
-    )]
-    pub claim_record: Account<'info, ClaimRecord>,
-
-    #[account(
-        mut,
-        seeds = [b"epoch_rewards_pool", epoch.index.to_le_bytes().as_ref()],
-        bump,
-        constraint = epoch_rewards_pool.mint == config.mint @ CustomErrorCode::InvalidMint
-    )]
-    pub epoch_rewards_pool: Account<'info, TokenAccount>,
-
-    /// CHECK: Unsigned PDA authority over `epoch_rewards_pool`.
-    #[account(
-        seeds = [b"epoch_rewards_pool_authority", epoch.index.to_le_bytes().as_ref()],
-        bump
-    )]
-    pub epoch_rewards_pool_authority: UncheckedAccount<'info>,
-
-    #[account(
-        mut,
-        constraint = user_mint_token_account.mint == config.mint @ CustomErrorCode::InvalidMint,
-        constraint = user_mint_token_account.owner == user.key() @ CustomErrorCode::InvalidTokenOwner
-    )]
-    pub user_mint_token_account: Account<'info, TokenAccount>,
-
-    pub token_program: Program<'info, Token>,
-    pub system_program: Program<'info, System>,
+    pub program_data: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -582,10 +570,10 @@ pub struct ExternalProgramMint<'info> {
     pub mint_authority: UncheckedAccount<'info>,
 
     /// The rewards administrator who authorized this mint operation.
-    /// This is NOT a Signer in the CPI context — the PDA signs, not the admin.
-    /// The admin's pubkey is passed through for rewards_administrators list verification.
-    /// CHECK: Verified against config.rewards_administrators list in processor
-    pub admin: AccountInfo<'info>,
+    /// Must sign the outer transaction; that signer status is preserved across CPI so
+    /// vault-mint can independently verify authorization (not just list membership).
+    /// The calling program's `external_mint_authority` PDA remains the CPI program signer.
+    pub admin: Signer<'info>,
     #[account(
         mut,
         constraint = destination.mint == mint.key() @ CustomErrorCode::InvalidMint

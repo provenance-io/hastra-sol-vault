@@ -9,12 +9,17 @@ export const STAKE_IDL = require("../target/idl/vault_stake.json");
 export const ZERO32 = Buffer.alloc(0);
 export const sha256 = (x: Buffer) => createHash("sha256").update(x).digest();
 
-export const makeLeaf = (user: PublicKey, amount: anchor.BN | number, epoch: number): Buffer => {
-    return sha256(Buffer.concat([
-        user.toBuffer(),
-        (anchor.BN.isBN(amount) ? amount : new anchor.BN(amount)).toArrayLike(Buffer, "le", 8),
-        new anchor.BN(epoch).toArrayLike(Buffer, "le", 8),
-    ]));
+/**
+ * Builds a rewards Merkle leaf: sha256(user || amount_le || epoch_index_le).
+ */
+export const makeLeaf = (
+    user: PublicKey,
+    amount: anchor.BN | number,
+    epoch: number,
+): Buffer => {
+    const amountBytes = (anchor.BN.isBN(amount) ? amount : new anchor.BN(amount)).toArrayLike(Buffer, "le", 8);
+    const epochBytes = new anchor.BN(epoch).toArrayLike(Buffer, "le", 8);
+    return sha256(Buffer.concat([user.toBuffer(), amountBytes, epochBytes]));
 }
 
 export const nextPowerOf2Math = (n: number): number => {
@@ -37,7 +42,10 @@ export const padToPowerOfTwo = (leaves: Buffer<ArrayBufferLike>[])=> {
 }
 
 
-export const allocationsToMerkleTree = (allocationString: string, epochIndex: number) => {
+export const allocationsToMerkleTree = (
+    allocationString: string,
+    epochIndex: number,
+) => {
     const allocations: {user: PublicKey, amount: anchor.BN}[] = (JSON.parse(allocationString).allocations as {account: string, amount: number}[]).map((a: {account: string, amount: number}) => {
         return {user: new PublicKey(a.account), amount: new anchor.BN(a.amount)};
     });

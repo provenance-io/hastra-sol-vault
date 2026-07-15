@@ -114,9 +114,29 @@ pub mod vault_mint {
         processor::update_rewards_administrators(ctx, new_administrators)
     }
 
-    /// Claims rewards from a V1 (legacy) epoch via Merkle proof; mints wYLDS on demand.
-    /// V1 epochs use seeds `["epoch", index_le]` and have no on-chain cap enforcement.
-    /// New epochs must be created with `create_rewards_epoch_v2`.
+    pub fn create_rewards_epoch(
+        ctx: Context<CreateRewardsEpoch>,
+        index: u64,
+        merkle_root: [u8; 32],
+        total: u64,
+    ) -> Result<()> {
+        processor::create_rewards_epoch(ctx, index, merkle_root, total)
+    }
+
+    /// This is the classic “airdrop/claim per epoch” design
+    /// High-level idea:
+    /// 	1.	Off-chain (admin does this each epoch):
+    /// 	•	Calculate each user’s reward for this epoch.
+    /// 	•	Build a Merkle tree of (user, amount, epoch_index).
+    /// 	•	Publish the Merkle root on-chain with the create_rewards_epoch function above.
+    ///
+    /// 	2.	On-chain:
+    /// 	•	Store each epoch’s Merkle root in a PDA.
+    /// 	•	When a user claims, they present (amount, proof) for their pubkey.
+    /// 	•	The program verifies the Merkle proof against the root.
+    /// 	•	If valid, mint reward tokens (wYLDS) to the user's mint token account.
+    /// 	•	Mark the claim as redeemed so they can’t double-claim.
+    ///     •   Epochs with `index >= first_capped_epoch` also enforce the aggregate claim cap.
     pub fn claim_rewards(
         ctx: Context<ClaimRewards>,
         amount: u64,
@@ -125,26 +145,23 @@ pub mod vault_mint {
         processor::claim_rewards(ctx, amount, proof)
     }
 
-    /// Creates a V2 rewards epoch with an on-chain aggregate cap.
-    /// Initializes `RewardsEpoch`, `EpochCapTracker`, and `epoch_rewards_pool`, then mints
-    /// `total` wYLDS into the pool. Claims must use `claim_rewards_v2`.
-    pub fn create_rewards_epoch_v2(
-        ctx: Context<CreateRewardsEpochV2>,
-        index: u64,
-        merkle_root: [u8; 32],
-        total: u64,
+    /// One-shot: enables epoch caps (upgrade authority).
+    /// Must be executed after program upgrade before create/claim rewards.
+    /// Sets `first_capped_epoch` and `max_epoch_cap`. Epochs below that index stay uncapped.
+    pub fn initialize_epoch_caps(
+        ctx: Context<InitializeEpochCaps>,
+        first_capped_epoch: u64,
+        max_epoch_cap: u64,
     ) -> Result<()> {
-        processor::create_rewards_epoch_v2(ctx, index, merkle_root, total)
+        processor::initialize_epoch_caps(ctx, first_capped_epoch, max_epoch_cap)
     }
 
-    /// Claims rewards from a V2 epoch via Merkle proof.
-    /// Enforces `epoch_cap.claimed_total + amount <= epoch_cap.total` and transfers from the pool.
-    pub fn claim_rewards_v2(
-        ctx: Context<ClaimRewardsV2>,
-        amount: u64,
-        proof: Vec<ProofNode>,
+    /// Updates the global max epoch cap (upgrade authority). Affects future creates only.
+    pub fn update_max_epoch_cap(
+        ctx: Context<UpdateMaxEpochCap>,
+        new_cap: u64,
     ) -> Result<()> {
-        processor::claim_rewards_v2(ctx, amount, proof)
+        processor::update_max_epoch_cap(ctx, new_cap)
     }
 
     /// Allows an external authorized program to mint tokens to a specified account.

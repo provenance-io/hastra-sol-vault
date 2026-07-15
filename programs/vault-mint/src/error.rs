@@ -66,4 +66,18 @@ pub enum CustomErrorCode {
     InvalidAllowedExternalMintProgramsLimit = 35,
     #[msg("Claim would exceed the epoch's aggregate reward cap")]
     EpochCapExceeded = 36,
+    #[msg("Administrator list must not be empty")]
+    EmptyAdministrators = 37,
+    #[msg("Administrator list contains duplicate keys")]
+    DuplicateAdministrators = 38,
+    #[msg("Deposit source and vault token accounts must differ")]
+    DepositSelfTransfer = 39,
+    #[msg("Declared epoch total exceeds the global max epoch cap")]
+    EpochCapAboveGlobal = 40,
+    #[msg("Global epoch cap must be non-zero")]
+    InvalidGlobalCap = 41,
+    #[msg("Epoch caps have not been initialized")]
+    CapsNotInitialized = 43,
+    #[msg("Epoch claimed account required for capped epoch claim")]
+    EpochClaimedRequired = 44,
 }

@@ -2,60 +2,23 @@ import BN from "bn.js";
 import { PublicKey, Connection } from "@solana/web3.js";
 import { getAccount } from "@solana/spl-token";
 
-// ─── V2 rewards helpers ───────────────────────────────────────────────────────
-
-/** Derives all V2 PDAs for a given epoch index. */
-export function deriveRewardsEpochV2Accounts(programId: PublicKey, index: number) {
+/** Derives rewards epoch PDAs for a given epoch index. */
+export function deriveRewardsEpochAccounts(programId: PublicKey, index: number) {
     const indexLe = new BN(index).toArrayLike(Buffer, "le", 8);
     const [epoch] = PublicKey.findProgramAddressSync(
-        [Buffer.from("epoch_v2"), indexLe],
+        [Buffer.from("epoch"), indexLe],
         programId
     );
-    const [epochCap] = PublicKey.findProgramAddressSync(
-        [Buffer.from("epoch_cap"), indexLe],
+    const [epochClaimed] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch_claimed"), indexLe],
         programId
     );
-    const [epochRewardsPool] = PublicKey.findProgramAddressSync(
-        [Buffer.from("epoch_rewards_pool"), indexLe],
+    const [epochCapsConfig] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch_caps_config")],
         programId
     );
-    const [epochRewardsPoolAuthority] = PublicKey.findProgramAddressSync(
-        [Buffer.from("epoch_rewards_pool_authority"), indexLe],
-        programId
-    );
-    return { epoch, epochCap, epochRewardsPool, epochRewardsPoolAuthority };
+    return { epoch, epochClaimed, epochCapsConfig };
 }
-
-/**
- * Extra accounts for `createRewardsEpochV2`.
- * config / admin / epoch / systemProgram are passed separately by the caller.
- */
-export function createRewardsEpochV2Accounts(
-    programId: PublicKey,
-    index: number,
-    mint: PublicKey,
-    mintAuthority: PublicKey
-) {
-    const { epoch: _epoch, ...v2 } = deriveRewardsEpochV2Accounts(programId, index);
-    return {
-        ...v2,
-        mint,
-        mintAuthority,
-        tokenProgram: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
-    };
-}
-
-/**
- * Extra accounts for `claimRewardsV2`.
- * config / user / epoch / claimRecord / userMintTokenAccount / tokenProgram / systemProgram
- * are passed separately by the caller.
- */
-export function claimRewardsV2Accounts(programId: PublicKey, index: number) {
-    const { epoch: _epoch, ...v2 } = deriveRewardsEpochV2Accounts(programId, index);
-    return v2;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 
 /** Default `StakeRewardConfig` numeric fields (matches on-chain `state::StakeRewardConfig`). */
 export const STAKE_REWARD_CONFIG_DEFAULTS = {

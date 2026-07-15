@@ -4,6 +4,25 @@ use anchor_lang::prelude::*;
 #[allow(deprecated)]
 use anchor_lang::solana_program::bpf_loader_upgradeable::UpgradeableLoaderState;
 
+/// Validates freeze or rewards administrator lists: non-empty, at most five, no duplicates.
+pub fn validate_administrators(administrators: &[Pubkey]) -> Result<()> {
+    require!(
+        !administrators.is_empty(),
+        CustomErrorCode::EmptyAdministrators
+    );
+    require!(
+        administrators.len() <= 5,
+        CustomErrorCode::TooManyAdministrators
+    );
+    for (i, key) in administrators.iter().enumerate() {
+        require!(
+            !administrators[..i].contains(key),
+            CustomErrorCode::DuplicateAdministrators
+        );
+    }
+    Ok(())
+}
+
 pub fn validate_program_update_authority(
     program_data_account: &UncheckedAccount,
     authority: &Signer,

@@ -22,8 +22,9 @@ impl Config {
 #[account]
 pub struct RewardsEpoch {
     pub index: u64,            // epoch id
-    pub merkle_root: [u8; 32], // sha256 root (sortPairs)
-    pub total: u64,            // optional: sum of all allocations
+    pub merkle_root: [u8; 32], // sha256 merkle root (sortPairs: false; position via ProofNode.is_left)
+    /// Declared epoch reward budget. Binding for epochs at or after `first_capped_epoch`.
+    pub total: u64,
     pub created_ts: i64,
 }
 impl RewardsEpoch {
@@ -36,20 +37,29 @@ impl ClaimRecord {
     pub const LEN: usize = 8;
 }
 
-/// Tracks the aggregate cap and cumulative claims for a V2 rewards epoch.
-/// Invariant: `epoch_rewards_pool.amount == total - claimed_total`.
+/// Global configuration for rewards epoch caps.
 #[account]
-pub struct EpochCapTracker {
-    /// Mirrors `RewardsEpoch.index` for cross-account consistency checks.
-    pub index: u64,
-    /// Total tokens pre-funded into `epoch_rewards_pool` at epoch creation.
-    pub total: u64,
-    /// Running sum of all tokens transferred out of the pool via `claim_rewards_v2`.
+pub struct EpochCapsConfig {
+    /// Ceiling on `create_rewards_epoch.total` for future epochs.
+    pub max_epoch_cap: u64,
+    /// Epochs with `index >= first_capped_epoch` enforce aggregate claim caps.
+    /// Lower indices only require a valid Merkle proof and `ClaimRecord`.
+    pub first_capped_epoch: u64,
+    pub bump: u8,
+}
+
+impl EpochCapsConfig {
+    pub const LEN: usize = 8 + 8 + 8 + 1;
+}
+
+/// Tracks cumulative wYLDS minted via `claim_rewards` for one epoch.
+#[account]
+pub struct EpochClaimedAmount {
     pub claimed_total: u64,
 }
 
-impl EpochCapTracker {
-    pub const LEN: usize = 8 + 8 + 8 + 8; // discriminator + index + total + claimed_total
+impl EpochClaimedAmount {
+    pub const LEN: usize = 8 + 8;
 }
 
 #[account]
