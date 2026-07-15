@@ -75,9 +75,9 @@ const program = new anchor.Program(resolvedIdl as anchor.Idl, provider) as Progr
 
 async function main() {
     const feedIdHex = args.feed_id.replace(/^0x/, "");
-    if (feedIdHex.length !== 64) {
+    if (!/^[0-9a-fA-F]{64}$/.test(feedIdHex)) {
         throw new Error(
-            `feed_id must be a 64-character hex string (32 bytes), got ${feedIdHex.length} characters`
+            `feed_id must be a 64-character hex string (32 bytes, no 0x prefix), got: ${args.feed_id}`
         );
     }
 
