@@ -51,7 +51,7 @@ Rewards are distributed on-chain using a merkle tree-based claim system to ensur
 **Merkle Tree Structure:**
 
 - **Leaf Format**: `sha256(user_pubkey || reward_amount_le_bytes || epoch_index_le_bytes)`
-- **Tree Construction**: All user rewards for an epoch are hashed and organized into a sorted binary merkle tree
+- **Tree Construction**: Leaves are padded to a power of two and hashed into a binary merkle tree with `sortPairs: false` (sibling order is positional, not sorted)
 - **Root**: Final merkle root represents the entire reward distribution for that epoch
 
 **Administrative Posting Process:**
@@ -75,15 +75,15 @@ Users claim their rewards by providing their allocated amount and a merkle proof
 
 **Merkle Proof Verification:**
 
-1. User provides their allocated `amount` and merkle `proof` (array of sibling hashes)
-2. Program reconstructs leaf: `sha256(user || amount || epoch_index)`
-3. Program walks up the tree using proof siblings with sorted pair hashing
+1. User provides their allocated `amount` and merkle `proof` (`Vec<ProofNode>` with sibling hash + `is_left`)
+2. Program reconstructs leaf: `sha256(user_pubkey || amount_le_bytes || epoch_index_le_bytes)`
+3. Program walks up the tree using each proof sibling; `is_left` selects `hash(sib || node)` vs `hash(node || sib)` (not sorted-pair hashing)
 4. Final computed root must match the stored epoch merkle root
 ```rust
 pub fn claim_rewards(
     ctx: Context<ClaimRewards>,
     amount: u64,
-    proof: Vec<[u8; 32]>
+    proof: Vec<ProofNode>
 ) -> Result<()>
 ```
 

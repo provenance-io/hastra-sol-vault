@@ -22,7 +22,7 @@ impl Config {
 #[account]
 pub struct RewardsEpoch {
     pub index: u64,            // epoch id
-    pub merkle_root: [u8; 32], // sha256 root (sortPairs)
+    pub merkle_root: [u8; 32], // sha256 merkle root (sortPairs: false; position via ProofNode.is_left)
     /// Declared epoch reward budget. Binding for epochs at or after `first_capped_epoch`.
     pub total: u64,
     pub created_ts: i64,

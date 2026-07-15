@@ -134,7 +134,7 @@ pub mod vault_mint {
     /// 	•	Store each epoch’s Merkle root in a PDA.
     /// 	•	When a user claims, they present (amount, proof) for their pubkey.
     /// 	•	The program verifies the Merkle proof against the root.
-    /// 	•	If valid, transfer reward tokens (wYLDS) from the rewards vault to the user's mint token account.
+    /// 	•	If valid, mint reward tokens (wYLDS) to the user's mint token account.
     /// 	•	Mark the claim as redeemed so they can’t double-claim.
     ///     •   Epochs with `index >= first_capped_epoch` also enforce the aggregate claim cap.
     pub fn claim_rewards(
