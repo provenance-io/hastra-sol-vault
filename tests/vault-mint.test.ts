@@ -2358,6 +2358,102 @@ describe("vault-mint", () => {
             }
         });
 
+        it("claims succeed for epochs below first_capped_epoch without reading epoch_claimed", async () => {
+            // first_capped_epoch is 1 (suite init). Epoch 0 is grandfathered.
+            // create_rewards_epoch still allocates epoch_claimed (current API), but claim
+            // must skip the aggregate counter — claimed_total stays 0. That is the same
+            // processor branch used for pre-upgrade epochs whose epoch_claimed PDA was
+            // never created (UncheckedAccount + empty data is never read when uncapped).
+            const legacyIndex = 0;
+            const capsAccount = deriveRewardsEpochAccounts(program.programId, 0).epochCapsConfig;
+            const caps = await program.account.epochCapsConfig.fetch(capsAccount);
+            assert.isTrue(
+                legacyIndex < caps.firstCappedEpoch.toNumber(),
+                "legacyIndex must be below first_capped_epoch"
+            );
+
+            const legacyAllocations = {
+                allocations: [{ account: user.publicKey.toBase58(), amount: 250 }],
+            };
+            const legacyMerkle = allocationsToMerkleTree(
+                JSON.stringify(legacyAllocations),
+                legacyIndex
+            );
+            const legacyTotal = legacyMerkle.allocations.reduce(
+                (acc, a) => acc.add(a.amount),
+                new BN(0)
+            );
+            const { epoch, epochClaimed, epochCapsConfig } = deriveRewardsEpochAccounts(
+                program.programId,
+                legacyIndex
+            );
+            const [legacyClaimPda] = PublicKey.findProgramAddressSync(
+                [Buffer.from("claim"), epoch.toBuffer(), user.publicKey.toBuffer()],
+                program.programId
+            );
+
+            await program.methods
+                .createRewardsEpoch(
+                    new BN(legacyIndex),
+                    Array.from(legacyMerkle.tree.getRoot()),
+                    legacyTotal
+                )
+                .accountsStrict({
+                    config: configPda,
+                    epochCapsConfig,
+                    admin: rewardsAdmin.publicKey,
+                    epoch,
+                    epochClaimed,
+                    systemProgram: SystemProgram.programId,
+                })
+                .signers([rewardsAdmin])
+                .rpc();
+
+            const claimedBefore = await program.account.epochClaimedAmount.fetch(epochClaimed);
+            assert.equal(claimedBefore.claimedTotal.toNumber(), 0);
+
+            const userAlloc = legacyMerkle.allocations[0];
+            const leaf = makeLeaf(user.publicKey, userAlloc.amount, legacyIndex);
+            const proof = legacyMerkle.tree.getProof(leaf).map(p => ({
+                sibling: Array.from(p.data),
+                isLeft: p.position === "left",
+            }));
+
+            const userMintBalanceBefore = (await getAccount(provider.connection, userMintTokenAccount)).amount;
+
+            await program.methods
+                .claimRewards(userAlloc.amount, proof)
+                .accountsStrict({
+                    config: configPda,
+                    user: user.publicKey,
+                    epoch,
+                    epochCapsConfig,
+                    epochClaimed,
+                    claimRecord: legacyClaimPda,
+                    mintAuthority: mintAuthorityPda,
+                    mint: mintedToken,
+                    userMintTokenAccount: userMintTokenAccount,
+                    systemProgram: SystemProgram.programId,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                })
+                .signers([user])
+                .rpc();
+
+            const userMintBalanceAfter = (await getAccount(provider.connection, userMintTokenAccount)).amount;
+            assert.equal(
+                userMintBalanceAfter,
+                userMintBalanceBefore + createBigInt(userAlloc.amount.toNumber())
+            );
+
+            // Cap path skipped: counter must not move for grandfathered indices.
+            const claimedAfter = await program.account.epochClaimedAmount.fetch(epochClaimed);
+            assert.equal(
+                claimedAfter.claimedTotal.toNumber(),
+                0,
+                "claim must not update epoch_claimed when index < first_capped_epoch"
+            );
+        });
+
         it("rejects claim that exceeds epoch cap (EpochCapExceeded)", async () => {
             // Declared total is 500 but the Merkle tree allocates 1000.
             const capEpochIndex = 11;
