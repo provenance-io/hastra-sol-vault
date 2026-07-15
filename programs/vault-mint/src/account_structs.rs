@@ -321,7 +321,7 @@ pub struct ClaimRewards<'info> {
     )]
     pub epoch_caps_config: Account<'info, EpochCapsConfig>,
 
-    /// CHECK: Per-epoch claimed counter PDA; empty for epochs below `first_capped_epoch`.
+    /// CHECK: Per-epoch claimed counter PDA; may be uninitialized for epochs below `first_capped_epoch`.
     #[account(
         mut,
         seeds = [b"epoch_claimed", epoch.index.to_le_bytes().as_ref()],
