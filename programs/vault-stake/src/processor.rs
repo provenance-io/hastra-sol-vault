@@ -2,7 +2,7 @@ use crate::account_structs::*;
 use crate::error::*;
 use crate::events::*;
 use crate::guard::validate_program_update_authority;
-use crate::state::{StakeRewardConfig, MAX_ADMINISTRATORS};
+use crate::state::{StakePriceConfig, StakeRewardConfig, MAX_ADMINISTRATORS};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::{get_return_data, invoke};
 use anchor_spl::token::spl_token::instruction::AuthorityType;
@@ -816,11 +816,91 @@ pub fn update_max_total_rewards(ctx: Context<UpdateMaxTotalRewards>, new_cap: u6
     Ok(())
 }
 
+/// Validates a decoded Chainlink V7 report and writes price + observations_timestamp.
+/// Shared by `verify_price` (after CPI) and the testing-only apply path.
+fn apply_verified_report(
+    price_config: &mut StakePriceConfig,
+    report: &ReportDataV7,
+    current_time: i64,
+    verifier: Pubkey,
+) -> Result<()> {
+    msg!(
+        "Chainlink report verified - current_time: {}, valid_from: {}, observations_timestamp: {}, expires_at: {}",
+        current_time,
+        report.valid_from_timestamp,
+        report.observations_timestamp,
+        report.expires_at
+    );
+
+    // Validate the report is within its valid time window
+    require!(
+        current_time >= i64::from(report.valid_from_timestamp),
+        CustomErrorCode::FutureReportValidFromTimestamp
+    );
+    require!(
+        current_time <= i64::from(report.expires_at),
+        CustomErrorCode::ReportStale
+    );
+
+    // Validate the report is for the expected feed
+    require!(
+        report.feed_id == FeedId(price_config.feed_id),
+        CustomErrorCode::InvalidFeedId
+    );
+
+    // Require consistent applicability window: valid_from is the earliest second the price
+    // applies, observations the latest (per ReportDataV7).
+    require!(
+        report.valid_from_timestamp <= report.observations_timestamp,
+        CustomErrorCode::InvalidReportTimestamps
+    );
+
+    // Store price — exchange_rate is an i192-equivalent BigInt; i128 covers all realistic
+    // token pair prices (up to ~1.7e38 with 18 decimal precision).
+    let price_i128 = report
+        .exchange_rate
+        .to_i128()
+        .ok_or(CustomErrorCode::Overflow)?;
+    let observation_ts = i64::from(report.observations_timestamp);
+
+    // Reject reuse / oscillation: observations must strictly advance vs the stored anchor.
+    // price_timestamp == 0 means unset (first successful verify may seed any valid report).
+    require!(
+        price_config.price_timestamp == 0 || observation_ts > price_config.price_timestamp,
+        CustomErrorCode::ObservationTimestampNotIncreasing
+    );
+
+    price_config.price = price_i128;
+    price_config.price_timestamp = observation_ts;
+
+    msg!("Price verified and stored");
+    msg!("price: {}", price_config.price);
+    msg!(
+        "price_timestamp (observations_timestamp): {}",
+        price_config.price_timestamp
+    );
+    msg!("expires_at: {}", report.expires_at);
+
+    msg!("Emitting PriceVerifiedEvent");
+    emit!(PriceVerifiedEvent {
+        verifier,
+        feed_id: report.feed_id.0,
+        price: price_config.price,
+        price_scale: price_config.price_scale,
+        price_timestamp: observation_ts,
+        expires_at: report.expires_at as u64,
+        slot: Clock::get()?.slot,
+    });
+
+    Ok(())
+}
+
 /// Submits a signed Chainlink Data Streams report to the on-chain verifier via CPI.
 /// On successful verification:
 ///   1. The report's feed ID is checked against the configured feed ID.
 ///   2. The report's validity window is checked (valid_from_timestamp <= now <= expires_at).
-///   3. `exchange_rate` is stored as the new price, and `price_timestamp` is set to
+///   3. `observations_timestamp` must strictly exceed the stored `price_timestamp` (or seed when unset).
+///   4. `exchange_rate` is stored as the new price, and `price_timestamp` is set to
 ///      `observations_timestamp` (the Chainlink vouched “latest” instant for the price; downstream
 ///      staleness uses that observation clock, not the local submission time of this instruction).
 /// Only callable by rewards administrators.
@@ -876,69 +956,40 @@ pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result
         ReportDataV7::decode(&return_data).map_err(|_| CustomErrorCode::ChainlinkVerifyFailed)?;
 
     let current_time = Clock::get()?.unix_timestamp;
-
-    msg!(
-        "Chainlink report verified - current_time: {}, valid_from: {}, observations_timestamp: {}, expires_at: {}",
+    apply_verified_report(
+        &mut ctx.accounts.stake_price_config,
+        &report,
         current_time,
-        report.valid_from_timestamp,
-        report.observations_timestamp,
-        report.expires_at
-    );
-    // Validate the report is within its valid time window
+        ctx.accounts.signer.key(),
+    )
+}
+
+/// FOR TESTING ONLY — applies an ABI-encoded ReportDataV7 through the same acceptance path as
+/// `verify_price` after a successful Chainlink CPI (validity window, feed ID, monotonic
+/// observations_timestamp). Skips the verifier CPI so localnet tests can cover report rules.
+/// Only callable by rewards administrators.
+#[cfg(feature = "testing")]
+pub fn apply_verified_report_for_testing(
+    ctx: Context<ApplyVerifiedReportForTesting>,
+    encoded_report: Vec<u8>,
+) -> Result<()> {
     require!(
-        current_time >= i64::from(report.valid_from_timestamp),
-        CustomErrorCode::FutureReportValidFromTimestamp
-    );
-    require!(
-        current_time <= i64::from(report.expires_at),
-        CustomErrorCode::ReportStale
-    );
-
-    // Validate the report is for the expected feed
-    require!(
-        report.feed_id == FeedId(ctx.accounts.stake_price_config.feed_id),
-        CustomErrorCode::InvalidFeedId
+        ctx.accounts
+            .stake_config
+            .rewards_administrators
+            .contains(&ctx.accounts.signer.key()),
+        CustomErrorCode::InvalidRewardsAdministrator
     );
 
-    // Require consistent applicability window: valid_from is the earliest second the price
-    // applies, observations the latest (per ReportDataV7).
-    require!(
-        report.valid_from_timestamp <= report.observations_timestamp,
-        CustomErrorCode::InvalidReportTimestamps
-    );
-
-    // Store price — exchange_rate is an i192-equivalent BigInt; i128 covers all realistic
-    // token pair prices (up to ~1.7e38 with 18 decimal precision).
-    let price_i128 = report
-        .exchange_rate
-        .to_i128()
-        .ok_or(CustomErrorCode::Overflow)?;
-    let observation_ts = i64::from(report.observations_timestamp);
-
-    let price_config = &mut ctx.accounts.stake_price_config;
-    price_config.price = price_i128;
-    price_config.price_timestamp = observation_ts;
-
-    msg!("Price verified and stored");
-    msg!("price: {}", price_config.price);
-    msg!(
-        "price_timestamp (observations_timestamp): {}",
-        price_config.price_timestamp
-    );
-    msg!("expires_at: {}", report.expires_at);
-
-    msg!("Emitting PriceVerifiedEvent");
-    emit!(PriceVerifiedEvent {
-        verifier: ctx.accounts.signer.key(),
-        feed_id: report.feed_id.0,
-        price: price_config.price,
-        price_scale: price_config.price_scale,
-        price_timestamp: observation_ts,
-        expires_at: report.expires_at as u64,
-        slot: Clock::get()?.slot,
-    });
-
-    Ok(())
+    let report = ReportDataV7::decode(&encoded_report)
+        .map_err(|_| CustomErrorCode::ChainlinkVerifyFailed)?;
+    let current_time = Clock::get()?.unix_timestamp;
+    apply_verified_report(
+        &mut ctx.accounts.stake_price_config,
+        &report,
+        current_time,
+        ctx.accounts.signer.key(),
+    )
 }
 
 /// Get current exchange rate from stored Chainlink price.

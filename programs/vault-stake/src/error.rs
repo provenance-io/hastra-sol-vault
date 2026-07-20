@@ -86,4 +86,8 @@ pub enum CustomErrorCode {
     InvalidMaxTotalRewards = 48,
     #[msg("Chainlink report has invalid timestamp ordering (e.g. observations before valid_from)")]
     InvalidReportTimestamps = 49,
+    #[msg(
+        "Report observations_timestamp must be strictly greater than the stored price_timestamp"
+    )]
+    ObservationTimestampNotIncreasing = 50,
 }

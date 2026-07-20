@@ -189,6 +189,58 @@ describe("vault-stake", () => {
             .rpc();
     };
 
+    /** ABI word helpers matching chainlink-data-streams-report ReportBase encoding. */
+    const encodeUint32Word = (value: number): Buffer => {
+        const buf = Buffer.alloc(32);
+        buf.writeUInt32BE(value >>> 0, 28);
+        return buf;
+    };
+
+    const encodeInt192Word = (value: BN): Buffer => {
+        const buf = Buffer.alloc(32);
+        const hex = value.toTwos(192).toString("hex", 48); // 24 bytes
+        Buffer.from(hex, "hex").copy(buf, 8);
+        return buf;
+    };
+
+    /**
+     * ABI-encodes a ReportDataV7 payload for `apply_verified_report_for_testing`.
+     * Layout: feed_id | valid_from | observations | native_fee | link_fee | expires_at | exchange_rate
+     */
+    const encodeReportDataV7 = (args: {
+        feedId: number[] | Buffer;
+        validFrom: number;
+        observations: number;
+        expiresAt: number;
+        exchangeRate: BN;
+    }): Buffer => {
+        const feedId = Buffer.isBuffer(args.feedId)
+            ? args.feedId
+            : Buffer.from(args.feedId);
+        return Buffer.concat([
+            feedId,
+            encodeUint32Word(args.validFrom),
+            encodeUint32Word(args.observations),
+            Buffer.alloc(32), // native_fee = 0
+            Buffer.alloc(32), // link_fee = 0
+            encodeUint32Word(args.expiresAt),
+            encodeInt192Word(args.exchangeRate),
+        ]);
+    };
+
+    /** Applies an encoded ReportDataV7 through verify_price's acceptance path (testing feature). */
+    const applyVerifiedReportForTesting = async (encodedReport: Buffer) => {
+        await program.methods
+            .applyVerifiedReportForTesting(encodedReport)
+            .accountsStrict({
+                stakeConfig: stakeConfigPda,
+                stakePriceConfig: stakePriceConfigPda,
+                signer: rewardsAdmin.publicKey,
+            })
+            .signers([rewardsAdmin])
+            .rpc();
+    };
+
     /** Accounts for upgrade-authority instructions that mutate StakeRewardConfig. */
     const stakeRewardConfigUpgradeAuthorityAccounts = () => ({
         stakeConfig: stakeConfigPda,
@@ -961,6 +1013,128 @@ describe("vault-stake", () => {
                     .rpc();
                 await setPriceForTesting(TEST_PRICE_1TO1);
             }
+        });
+
+        it("rejects reused or older observations_timestamp; accepts strictly newer", async () => {
+            // Seed a known observation anchor via set_price_for_testing, then exercise the same
+            // acceptance path as verify_price (apply_verified_report_for_testing).
+            const now = Math.floor(Date.now() / 1000);
+            const storedObservation = now - 60;
+            await program.methods
+                .setPriceForTesting(TEST_PRICE_1TO1, new BN(storedObservation))
+                .accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    stakePriceConfig: stakePriceConfigPda,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                })
+                .rpc();
+
+            const mkReport = (observations: number, exchangeRate: BN = TEST_PRICE_1TO1) =>
+                encodeReportDataV7({
+                    feedId: TEST_FEED_ID,
+                    validFrom: observations - 10,
+                    observations,
+                    expiresAt: now + 3600,
+                    exchangeRate,
+                });
+
+            try {
+                await applyVerifiedReportForTesting(mkReport(storedObservation));
+                assert.fail("Should have thrown ObservationTimestampNotIncreasing for equal observation");
+            } catch (err) {
+                expect(err.toString()).to.include("ObservationTimestampNotIncreasing");
+            }
+
+            try {
+                await applyVerifiedReportForTesting(mkReport(storedObservation - 1));
+                assert.fail("Should have thrown ObservationTimestampNotIncreasing for older observation");
+            } catch (err) {
+                expect(err.toString()).to.include("ObservationTimestampNotIncreasing");
+            }
+
+            const newerObservation = storedObservation + 1;
+            const higherPrice = TEST_PRICE_1TO1.mul(new BN(2));
+            await applyVerifiedReportForTesting(mkReport(newerObservation, higherPrice));
+
+            let priceConfig = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
+            assert.equal(priceConfig.priceTimestamp.toNumber(), newerObservation);
+            assert.equal(priceConfig.price.toString(), higherPrice.toString());
+
+            try {
+                await applyVerifiedReportForTesting(mkReport(newerObservation, TEST_PRICE_1TO1));
+                assert.fail("Should have thrown ObservationTimestampNotIncreasing for report reuse");
+            } catch (err) {
+                expect(err.toString()).to.include("ObservationTimestampNotIncreasing");
+            }
+
+            priceConfig = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
+            assert.equal(
+                priceConfig.price.toString(),
+                higherPrice.toString(),
+                "failed reuse must not overwrite stored price"
+            );
+            assert.equal(priceConfig.priceTimestamp.toNumber(), newerObservation);
+
+            await setPriceForTesting(TEST_PRICE_1TO1);
+        });
+
+        it("allows first report when price_timestamp is unset", async () => {
+            const altFeedId = [...TEST_FEED_ID];
+            altFeedId[0] = 2;
+            await program.methods
+                .updatePriceConfig(
+                    PublicKey.default,
+                    PublicKey.default,
+                    PublicKey.default,
+                    altFeedId,
+                    TEST_PRICE_SCALE,
+                    new BN(3600)
+                )
+                .accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    stakePriceConfig: stakePriceConfigPda,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                })
+                .rpc();
+
+            let priceConfig = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
+            assert.equal(priceConfig.priceTimestamp.toString(), "0");
+
+            const now = Math.floor(Date.now() / 1000);
+            const observation = now - 5;
+            await applyVerifiedReportForTesting(
+                encodeReportDataV7({
+                    feedId: altFeedId,
+                    validFrom: observation - 10,
+                    observations: observation,
+                    expiresAt: now + 3600,
+                    exchangeRate: TEST_PRICE_1TO1,
+                })
+            );
+
+            priceConfig = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
+            assert.equal(priceConfig.priceTimestamp.toNumber(), observation);
+            assert.equal(priceConfig.price.toString(), TEST_PRICE_1TO1.toString());
+
+            await program.methods
+                .updatePriceConfig(
+                    PublicKey.default,
+                    PublicKey.default,
+                    PublicKey.default,
+                    TEST_FEED_ID,
+                    TEST_PRICE_SCALE,
+                    new BN(3600)
+                )
+                .accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    stakePriceConfig: stakePriceConfigPda,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                })
+                .rpc();
+            await setPriceForTesting(TEST_PRICE_1TO1);
         });
     });
 

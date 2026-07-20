@@ -201,10 +201,21 @@ pub mod vault_stake {
 
     /// Submits a signed Chainlink Data Streams report for on-chain verification.
     /// On success, stores the verified price and the report’s `observations_timestamp` in
-    /// StakePriceConfig; deposit and redeem measure staleness from that observation time.
+    /// StakePriceConfig (requiring a strictly newer observation than any previously stored);
+    /// deposit and redeem measure staleness from that observation time.
     /// Only callable by rewards administrators.
     pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result<()> {
         processor::verify_price(ctx, signed_report)
+    }
+
+    /// FOR TESTING ONLY — applies ABI-encoded ReportDataV7 via the same acceptance path as
+    /// `verify_price` after CPI (including monotonic observations_timestamp). Skips Chainlink CPI.
+    #[cfg(feature = "testing")]
+    pub fn apply_verified_report_for_testing(
+        ctx: Context<ApplyVerifiedReportForTesting>,
+        encoded_report: Vec<u8>,
+    ) -> Result<()> {
+        processor::apply_verified_report_for_testing(ctx, encoded_report)
     }
 
     /// FOR TESTING ONLY — directly sets price and price_timestamp on StakePriceConfig.

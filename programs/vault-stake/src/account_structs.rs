@@ -623,6 +623,30 @@ pub struct VerifyPrice<'info> {
     pub signer: Signer<'info>,
 }
 
+/// FOR TESTING ONLY — applies an ABI-encoded ReportDataV7 through `verify_price` acceptance
+/// rules without the Chainlink verifier CPI. Rewards administrators only.
+#[cfg(feature = "testing")]
+#[derive(Accounts)]
+pub struct ApplyVerifiedReportForTesting<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"stake_price_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_price_config.bump,
+    )]
+    pub stake_price_config: Account<'info, StakePriceConfig>,
+
+    pub signer: Signer<'info>,
+}
+
 /// FOR TESTING ONLY — directly sets the stored price and timestamp on StakePriceConfig.
 /// This bypasses the Chainlink CPI and allows localnet tests to set an arbitrary price.
 /// Access is restricted to the program upgrade authority (same as initialize).
