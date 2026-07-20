@@ -157,10 +157,7 @@ pub mod vault_mint {
     }
 
     /// Updates the global max epoch cap (upgrade authority). Affects future creates only.
-    pub fn update_max_epoch_cap(
-        ctx: Context<UpdateMaxEpochCap>,
-        new_cap: u64,
-    ) -> Result<()> {
+    pub fn update_max_epoch_cap(ctx: Context<UpdateMaxEpochCap>, new_cap: u64) -> Result<()> {
         processor::update_max_epoch_cap(ctx, new_cap)
     }
 

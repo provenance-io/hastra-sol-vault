@@ -197,7 +197,8 @@ describe("vault-stake", () => {
     };
 
     const encodeInt192Word = (value: BN): Buffer => {
-        const buf = Buffer.alloc(32);
+        // ABI word is 32 bytes; int192 occupies the low 24. Sign-extend the high 8 bytes.
+        const buf = Buffer.alloc(32, value.isNeg() ? 0xff : 0x00);
         const hex = value.toTwos(192).toString("hex", 48); // 24 bytes
         Buffer.from(hex, "hex").copy(buf, 8);
         return buf;
@@ -217,6 +218,9 @@ describe("vault-stake", () => {
         const feedId = Buffer.isBuffer(args.feedId)
             ? args.feedId
             : Buffer.from(args.feedId);
+        if (feedId.length !== 32) {
+            throw new Error(`feedId must be 32 bytes, got ${feedId.length}`);
+        }
         return Buffer.concat([
             feedId,
             encodeUint32Word(args.validFrom),
@@ -1075,6 +1079,54 @@ describe("vault-stake", () => {
                 "failed reuse must not overwrite stored price"
             );
             assert.equal(priceConfig.priceTimestamp.toNumber(), newerObservation);
+
+            await setPriceForTesting(TEST_PRICE_1TO1);
+        });
+
+        it("rejects observations after expires_at or ahead of current time", async () => {
+            const now = Math.floor(Date.now() / 1000);
+            // Keep stored anchor old enough that malformed reports are not rejected for monotonicity.
+            await program.methods
+                .setPriceForTesting(TEST_PRICE_1TO1, new BN(now - 120))
+                .accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    stakePriceConfig: stakePriceConfigPda,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                })
+                .rpc();
+
+            // observations > expires_at (but expires_at still >= now so ReportStale does not fire first)
+            try {
+                await applyVerifiedReportForTesting(
+                    encodeReportDataV7({
+                        feedId: TEST_FEED_ID,
+                        validFrom: now - 30,
+                        observations: now + 100,
+                        expiresAt: now + 50,
+                        exchangeRate: TEST_PRICE_1TO1,
+                    })
+                );
+                assert.fail("Should have thrown InvalidReportTimestamps");
+            } catch (err) {
+                expect(err.toString()).to.include("InvalidReportTimestamps");
+            }
+
+            // observations <= expires_at but observations > now
+            try {
+                await applyVerifiedReportForTesting(
+                    encodeReportDataV7({
+                        feedId: TEST_FEED_ID,
+                        validFrom: now - 10,
+                        observations: now + 30,
+                        expiresAt: now + 60,
+                        exchangeRate: TEST_PRICE_1TO1,
+                    })
+                );
+                assert.fail("Should have thrown FutureObservationTimestamp");
+            } catch (err) {
+                expect(err.toString()).to.include("FutureObservationTimestamp");
+            }
 
             await setPriceForTesting(TEST_PRICE_1TO1);
         });

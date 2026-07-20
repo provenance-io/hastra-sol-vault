@@ -848,11 +848,18 @@ fn apply_verified_report(
         CustomErrorCode::InvalidFeedId
     );
 
-    // Require consistent applicability window: valid_from is the earliest second the price
-    // applies, observations the latest (per ReportDataV7).
+    // Require consistent report timestamps:
+    //   valid_from <= observations <= expires_at
+    // and observations not in the future, so deposit/redeem age checks cannot underflow.
     require!(
-        report.valid_from_timestamp <= report.observations_timestamp,
+        report.valid_from_timestamp <= report.observations_timestamp
+            && report.observations_timestamp <= report.expires_at,
         CustomErrorCode::InvalidReportTimestamps
+    );
+    let observation_ts = i64::from(report.observations_timestamp);
+    require!(
+        observation_ts <= current_time,
+        CustomErrorCode::FutureObservationTimestamp
     );
 
     // Store price — exchange_rate is an i192-equivalent BigInt; i128 covers all realistic
@@ -861,7 +868,6 @@ fn apply_verified_report(
         .exchange_rate
         .to_i128()
         .ok_or(CustomErrorCode::Overflow)?;
-    let observation_ts = i64::from(report.observations_timestamp);
 
     // Reject reuse / oscillation: observations must strictly advance vs the stored anchor.
     // price_timestamp == 0 means unset (first successful verify may seed any valid report).
@@ -898,7 +904,9 @@ fn apply_verified_report(
 /// Submits a signed Chainlink Data Streams report to the on-chain verifier via CPI.
 /// On successful verification:
 ///   1. The report's feed ID is checked against the configured feed ID.
-///   2. The report's validity window is checked (valid_from_timestamp <= now <= expires_at).
+///   2. The report's validity window is checked (valid_from_timestamp <= now <= expires_at),
+///      with report-internal ordering valid_from <= observations <= expires_at and
+///      observations_timestamp <= now (prevents storing a future staleness anchor).
 ///   3. `observations_timestamp` must strictly exceed the stored `price_timestamp` (or seed when unset).
 ///   4. `exchange_rate` is stored as the new price, and `price_timestamp` is set to
 ///      `observations_timestamp` (the Chainlink vouched “latest” instant for the price; downstream
