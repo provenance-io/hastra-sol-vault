@@ -1087,7 +1087,7 @@ describe("vault-stake", () => {
             const now = Math.floor(Date.now() / 1000);
             // Keep stored anchor old enough that malformed reports are not rejected for monotonicity.
             await program.methods
-                .setPriceForTesting(TEST_PRICE_1TO1, new BN(now - 120))
+                .setPriceForTesting(TEST_PRICE_1TO1, new BN(now - 7200))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
                     stakePriceConfig: stakePriceConfigPda,
@@ -1096,14 +1096,14 @@ describe("vault-stake", () => {
                 })
                 .rpc();
 
-            // observations > expires_at (but expires_at still >= now so ReportStale does not fire first)
+            // observations > expires_at. Wide expires_at margin so clock drift cannot hit ReportStale first.
             try {
                 await applyVerifiedReportForTesting(
                     encodeReportDataV7({
                         feedId: TEST_FEED_ID,
-                        validFrom: now - 30,
-                        observations: now + 100,
-                        expiresAt: now + 50,
+                        validFrom: now - 3600,
+                        observations: now + 7200,
+                        expiresAt: now + 3600,
                         exchangeRate: TEST_PRICE_1TO1,
                     })
                 );
@@ -1112,14 +1112,14 @@ describe("vault-stake", () => {
                 expect(err.toString()).to.include("InvalidReportTimestamps");
             }
 
-            // observations <= expires_at but observations > now
+            // observations <= expires_at but observations clearly ahead of now.
             try {
                 await applyVerifiedReportForTesting(
                     encodeReportDataV7({
                         feedId: TEST_FEED_ID,
-                        validFrom: now - 10,
-                        observations: now + 30,
-                        expiresAt: now + 60,
+                        validFrom: now - 3600,
+                        observations: now + 3600,
+                        expiresAt: now + 7200,
                         exchangeRate: TEST_PRICE_1TO1,
                     })
                 );
