@@ -836,7 +836,7 @@ These have all the values needed for the FE and BE services.
 | `program-ci.yml` | Pull requests, pushes to `main`, version tags, and manual runs | Tests plus identical [solana-verify](https://solana.com/docs/programs/verified-builds) binaries, shared IDLs/types, and `checksums.txt` |
 | `program-ci.yml` release job | Version tags matching `v*` | Draft GitHub Release created from the verified-build artifact without rebuilding |
 
-Each trigger builds verified binaries under `programs/`, IDLs under `idl/`, and TypeScript types under `client/`. Non-PR runs also export Squads verification PDA files under `verify/` (`pda-tx-*` full transaction + `pda-msg-*` message-only for Transaction Builder). The test and verified-build jobs use separate checkouts so ephemeral test key synchronization cannot alter reproducible builds.
+Each trigger builds verified binaries under `programs/`, IDLs under `idl/`, TypeScript types under `client/`, and also export Squads verification PDA files under `verify/` (`pda-tx-*` full transaction + `pda-msg-*` message-only for Transaction Builder). The test and verified-build jobs use separate checkouts so ephemeral test key synchronization cannot alter reproducible builds.
 
 Squads v4 settings are in `.github/verify-config.env`:
 
