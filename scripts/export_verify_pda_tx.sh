@@ -6,24 +6,28 @@
 #   ./scripts/export_verify_pda_tx.sh both mainnet
 #   ./scripts/export_verify_pda_tx.sh mint devnet
 #   ./scripts/export_verify_pda_tx.sh show /path/to/downloaded/artifacts
+#   ./scripts/export_verify_pda_tx.sh to-msg /path/to/verify/pda-tx-*.txt
 #
 # Cluster defaults to devnet. Values: devnet | mainnet (mainnet-beta).
 # Requires: solana-verify on PATH, git, .github/verify-config.env
+# to-msg also requires yarn install (bs58) and Node.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VERIFY_CONFIG="${REPO_ROOT}/.github/verify-config.env"
-OUTPUT_DIR="${VERIFY_ARTIFACTS_DIR:-${REPO_ROOT}/verify-artifacts}"
+OUTPUT_DIR="${VERIFY_ARTIFACTS_DIR:-${REPO_ROOT}/verify-artifacts/verify}"
+PDA_TX_TO_MSG="${REPO_ROOT}/.github/scripts/pda_tx_to_msg.mjs"
 
 usage() {
-  echo "Usage: $0 {mint|stake|both|show <dir>} [devnet|mainnet]"
+  echo "Usage: $0 {mint|stake|both|show <dir>|to-msg <pda-tx-file>} [devnet|mainnet]"
   echo ""
   echo "  mint|stake|both  Run solana-verify export-pda-tx into ${OUTPUT_DIR}/"
-  echo "  show <dir>       List pda-tx-*.txt from a CI download or release"
+  echo "  show <dir>       List pda-tx-* / pda-msg-* from a CI download or release"
+  echo "  to-msg <file>    Convert a pda-tx-*.txt full tx into sibling pda-msg-*.txt"
   echo ""
-  echo "  Second argument selects cluster (default: devnet)."
+  echo "  Second argument selects cluster for mint|stake|both (default: devnet)."
   exit 1
 }
 
@@ -101,6 +105,38 @@ require_solana_verify() {
   fi
 }
 
+# Extract the last base58 line from solana-verify stdout and write a clean file.
+write_clean_pda_tx_from_cmd() {
+  local outfile="$1"
+  shift
+  local tmp status=0
+  tmp="$(mktemp)"
+  "$@" >"${tmp}" || status=$?
+
+  local b58=""
+  local line
+  while IFS= read -r line || [ -n "${line}" ]; do
+    line="${line%"${line##*[![:space:]]}"}"
+    if [[ "${line}" =~ ^[1-9A-HJ-NP-Za-km-z]{80,}$ ]]; then
+      b58="${line}"
+    elif [ -n "${line}" ]; then
+      echo "${line}" >&2
+    fi
+  done < "${tmp}"
+  rm -f "${tmp}"
+
+  if [ "${status}" -ne 0 ]; then
+    echo "ERROR: solana-verify export-pda-tx failed (exit ${status})" >&2
+    exit 1
+  fi
+  if [ -z "${b58}" ]; then
+    echo "ERROR: No base58 transaction produced" >&2
+    exit 1
+  fi
+
+  printf '%s\n' "${b58}" > "${outfile}"
+}
+
 export_pda_tx() {
   local library_label="$1"
   local program_id="$2"
@@ -118,21 +154,22 @@ export_pda_tx() {
   echo "  commit:     ${commit}"
   echo "  output:     ${outfile}"
 
-  solana-verify export-pda-tx "${repo_url}" \
-    --library-name "${library_label}" \
-    --program-id "${program_id}" \
-    --uploader "${VERIFY_SQUADS_VAULT}" \
-    --commit-hash "${commit}" \
-    --encoding base58 \
-    --url "${VERIFY_RPC_URL}" \
-    --compute-unit-price 0 \
-    > "${outfile}"
+  write_clean_pda_tx_from_cmd "${outfile}" \
+    solana-verify export-pda-tx "${repo_url}" \
+      --library-name "${library_label}" \
+      --program-id "${program_id}" \
+      --uploader "${VERIFY_SQUADS_VAULT}" \
+      --commit-hash "${commit}" \
+      --encoding base58 \
+      --url "${VERIFY_RPC_URL}" \
+      --compute-unit-price 0
 
-  echo "  wrote $(wc -c < "${outfile}" | tr -d ' ') bytes"
+  echo "  wrote $(wc -c < "${outfile}" | tr -d ' ') bytes (clean base58)"
+  node "${PDA_TX_TO_MSG}" "${outfile}" --write >/dev/null
 }
 
 print_squads_instructions() {
-  local squads_app="https://devnet.squads.so"
+  local squads_app="https://backup.app.squads.so"
   if [ "${VERIFY_CLUSTER_LABEL}" = "mainnet" ]; then
     squads_app="https://app.squads.so"
   fi
@@ -149,10 +186,10 @@ print_squads_instructions() {
   echo ""
   echo "  1. Execute the program upgrade proposal first."
   echo "  2. Open ${squads_app} → Transaction Builder → Import transaction."
-  echo "  3. Paste base58 from:"
-  echo "       pda-tx${VERIFY_PDA_SUFFIX}-vault_mint.txt"
-  echo "       pda-tx${VERIFY_PDA_SUFFIX}-vault_stake.txt"
-  echo "  4. Simulate: only otter verify + compute budget instructions."
+  echo "  3. Paste base58 from the message-only files:"
+  echo "       pda-msg${VERIFY_PDA_SUFFIX}-vault_mint.txt"
+  echo "       pda-msg${VERIFY_PDA_SUFFIX}-vault_stake.txt"
+  echo "  4. Simulate: only otter verify (+ compute budget if present)."
   echo "  5. After execution, per program:"
   echo "       solana-verify remote submit-job \\"
   echo "         --program-id <PROGRAM_ID> \\"
@@ -161,23 +198,45 @@ print_squads_instructions() {
   echo ""
 }
 
+resolve_verify_listing_dir() {
+  local dir="$1"
+  if [ -d "${dir}/verify" ]; then
+    echo "${dir}/verify"
+  else
+    echo "${dir}"
+  fi
+}
+
 show_pda_tx_dir() {
   local dir="$1"
   if [ ! -d "$dir" ]; then
     echo "ERROR: Directory not found: $dir"
     exit 1
   fi
-  echo "Verify PDA files in ${dir}:"
+  local list_dir
+  list_dir="$(resolve_verify_listing_dir "$dir")"
+  echo "Verify PDA files in ${list_dir}:"
   shopt -s nullglob
-  local files=("$dir"/pda-tx*.txt)
+  local files=("${list_dir}"/pda-tx*.txt "${list_dir}"/pda-msg*.txt)
   shopt -u nullglob
   if [ ${#files[@]} -eq 0 ]; then
-    echo "  (no pda-tx*.txt files)"
+    echo "  (no pda-tx* / pda-msg* files)"
     return
   fi
-  for f in "${files[@]}"; do
+  # Sort for stable output
+  local f
+  while IFS= read -r f; do
     echo "  $(basename "$f") ($(wc -c < "$f" | tr -d ' ') bytes)"
-  done
+  done < <(printf '%s\n' "${files[@]}" | sort)
+}
+
+to_msg_file() {
+  local file="$1"
+  if [ ! -f "$file" ]; then
+    echo "ERROR: File not found: $file"
+    exit 1
+  fi
+  node "${PDA_TX_TO_MSG}" "$file" --write
 }
 
 main() {
@@ -186,6 +245,10 @@ main() {
     show)
       [ $# -eq 2 ] || usage
       show_pda_tx_dir "$2"
+      ;;
+    to-msg)
+      [ $# -eq 2 ] || usage
+      to_msg_file "$2"
       ;;
     mint|stake|both)
       local cluster

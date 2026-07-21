@@ -13,10 +13,10 @@
 #   4. Set Mint and Freeze Authorities (mint, PRIME stake).
 #
 # Typical flow for an upgrade:
-#   1. Download verified .so (+ pda-tx-*.txt) from a GitHub Release or main CI artifact.
-#   2. Set verified .so directory in this script → Write Buffers.
+#   1. Download the verified-program-builds CI artifact (or release assets).
+#   2. Set verified .so directory to the artifact's programs/ folder → Write Buffers.
 #   3. Create a program upgrade proposal in Squads using the buffer addresses.
-#   4. After upgrade executes, import pda-tx-*.txt in Squads v4 Transaction Builder.
+#   4. After upgrade executes, import verify/pda-msg-*.txt in Squads Transaction Builder.
 #   5. solana-verify remote submit-job per program (see export_verify_pda_tx.sh).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -51,6 +51,9 @@ resolve_program_so() {
   if [ -n "$VERIFIED_SO_DIR" ]; then
     if [ -f "${VERIFIED_SO_DIR}/${name}" ]; then
       echo "${VERIFIED_SO_DIR}/${name}"
+    elif [ "$name" = "vault_stake.so" ] && [ -f "${VERIFIED_SO_DIR}/vault_stake_prime.so" ]; then
+      # CI verified layout ships pool-specific names; PRIME is the default stake buffer.
+      echo "${VERIFIED_SO_DIR}/vault_stake_prime.so"
     else
       echo "ERROR: VERIFIED_SO_DIR is set to '${VERIFIED_SO_DIR}', but '${VERIFIED_SO_DIR}/${name}' does not exist." >&2
       exit 1
@@ -63,7 +66,7 @@ resolve_program_so() {
 print_verify_pda_reminder() {
   echo ""
   echo "  After the upgrade executes:"
-  echo "    • Import pda-tx-<network>-vault_mint.txt / pda-tx-<network>-vault_stake.txt in Squads v4 (from release or CI)."
+  echo "    • Import verify/pda-msg-<network>-*.txt (message-only) in Squads Transaction Builder."
   echo "    • Or run: ./scripts/export_verify_pda_tx.sh both [devnet|mainnet]"
   echo "    • Then: solana-verify remote submit-job --program-id <ID> --uploader \$SQUADS_VAULT_ADDRESS"
   echo ""
@@ -118,21 +121,38 @@ build_programs() {
 
 configure_verified_so_dir() {
   local default="${VERIFIED_SO_DIR:-<target/deploy>}"
-  read -p "Directory containing vault_mint.so and vault_stake.so [$default]: " input
+  read -p "Directory with verified .so files (CI artifact programs/ folder) [$default]: " input
   if [ -z "$input" ]; then
     if [ "$default" = "<target/deploy>" ]; then
       VERIFIED_SO_DIR=""
     fi
   else
-    VERIFIED_SO_DIR="$input"
+    # Accept either .../programs or the artifact root that contains programs/.
+    if [ -d "${input}/programs" ] && [ -f "${input}/programs/vault_mint.so" ]; then
+      VERIFIED_SO_DIR="${input}/programs"
+    else
+      VERIFIED_SO_DIR="$input"
+    fi
   fi
   if [ -n "$VERIFIED_SO_DIR" ]; then
-    for f in vault_mint.so vault_stake.so; do
+    local missing=0
+    for f in vault_mint.so vault_stake_prime.so vault_stake_auto.so vault_stake_smb.so; do
       if [ ! -f "${VERIFIED_SO_DIR}/${f}" ]; then
+        # vault_stake.so is the local-build name; pool-specific names come from CI.
+        if [ "$f" = "vault_stake_prime.so" ] && [ -f "${VERIFIED_SO_DIR}/vault_stake.so" ]; then
+          continue
+        fi
         echo "WARNING: ${VERIFIED_SO_DIR}/${f} not found"
+        missing=1
       fi
     done
+    if [ ! -f "${VERIFIED_SO_DIR}/vault_mint.so" ]; then
+      echo "ERROR: ${VERIFIED_SO_DIR}/vault_mint.so not found (expected CI programs/ layout)."
+      VERIFIED_SO_DIR=""
+      return 1
+    fi
     echo "Verified .so directory: $VERIFIED_SO_DIR"
+    [ "$missing" -eq 0 ] || echo "NOTE: Some pool-specific .so files are missing; write only the buffers you need."
   else
     echo "Using ../target/deploy/ for buffer writes"
   fi
@@ -157,7 +177,7 @@ export_verify_pda_transactions() {
 }
 
 show_verify_pda_from_directory() {
-  read -p "Directory with pda-tx-*.txt (e.g. downloaded CI artifact): " pda_dir
+  read -p "CI artifact root or verify/ directory (pda-msg-*.txt): " pda_dir
   if [ -z "$pda_dir" ]; then
     echo "Cancelled."
     return

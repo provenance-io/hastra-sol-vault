@@ -836,7 +836,7 @@ These have all the values needed for the FE and BE services.
 | `program-ci.yml` | Pull requests, pushes to `main`, version tags, and manual runs | Tests plus identical [solana-verify](https://solana.com/docs/programs/verified-builds) binaries, shared IDLs/types, and `checksums.txt` |
 | `program-ci.yml` release job | Version tags matching `v*` | Draft GitHub Release created from the verified-build artifact without rebuilding |
 
-Each trigger builds verified `vault_mint.so`, `vault_stake_prime.so`, `vault_stake_auto.so`, and `vault_stake_smb.so` files. Non-PR runs also export the devnet and mainnet Squads verification PDA transactions. The test and verified-build jobs use separate checkouts so ephemeral test key synchronization cannot alter reproducible builds.
+Each trigger builds verified binaries under `programs/`, IDLs under `idl/`, and TypeScript types under `client/`. Non-PR runs also export Squads verification PDA files under `verify/` (`pda-tx-*` full transaction + `pda-msg-*` message-only for Transaction Builder). The test and verified-build jobs use separate checkouts so ephemeral test key synchronization cannot alter reproducible builds.
 
 Squads v4 settings are in `.github/verify-config.env`:
 
@@ -860,49 +860,51 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-The release will contain:
+Artifact layout (CI zip preserves directories; GitHub Release assets use the same basenames):
 
+```text
+programs/   vault_mint.so, vault_stake_prime.so, vault_stake_auto.so, vault_stake_smb.so
+idl/        vault_mint.json, vault_stake.json
+client/     vault_mint.ts, vault_stake.ts
+verify/     pda-tx-*.txt (full tx) + pda-msg-*.txt (Squads import)
+checksums.txt
+```
 
-| File | Description |
+| Path | Description |
 | ---- | ----------- |
-| `vault_mint.so` | Verifiable vault-mint program binary |
-| `vault_stake_prime.so` | Verifiable vault-stake PRIME program binary |
-| `vault_stake_auto.so` | Verifiable vault-stake AUTO program binary |
-| `vault_stake_smb.so` | Verifiable vault-stake SMB program binary |
-| `pda-tx-devnet-vault_mint.txt` | Devnet: verify PDA tx for vault-mint |
-| `pda-tx-devnet-vault_stake_prime.txt` | Devnet: verify PDA tx for vault-stake PRIME |
-| `pda-tx-devnet-vault_stake_auto.txt` | Devnet: verify PDA tx for vault-stake AUTO |
-| `pda-tx-devnet-vault_stake_smb.txt` | Devnet: verify PDA tx for vault-stake SMB |
-| `pda-tx-mainnet-vault_mint.txt` | Mainnet: verify PDA tx for vault-mint |
-| `pda-tx-mainnet-vault_stake_prime.txt` | Mainnet: verify PDA tx for vault-stake PRIME |
-| `pda-tx-mainnet-vault_stake_auto.txt` | Mainnet: verify PDA tx for vault-stake AUTO |
-| `pda-tx-mainnet-vault_stake_smb.txt` | Mainnet: verify PDA tx for vault-stake SMB |
-| `vault_mint.json` | Anchor IDL for vault-mint |
-| `vault_stake.json` | Anchor IDL for vault-stake |
-| `vault_mint.ts` | TypeScript types from vault-mint IDL |
-| `vault_stake.ts` | TypeScript types from vault-stake IDL |
+| `programs/vault_mint.so` | Verifiable vault-mint program binary |
+| `programs/vault_stake_prime.so` | Verifiable vault-stake PRIME program binary |
+| `programs/vault_stake_auto.so` | Verifiable vault-stake AUTO program binary |
+| `programs/vault_stake_smb.so` | Verifiable vault-stake SMB program binary |
+| `verify/pda-msg-*-vault_*.txt` | Message-only base58 for Squads Transaction Builder |
+| `verify/pda-tx-*-vault_*.txt` | Full transaction base58 from `solana-verify export-pda-tx` |
+| `idl/vault_mint.json` | Anchor IDL for vault-mint |
+| `idl/vault_stake.json` | Anchor IDL for vault-stake |
+| `client/vault_mint.ts` | TypeScript types from vault-mint IDL |
+| `client/vault_stake.ts` | TypeScript types from vault-stake IDL |
 | `checksums.txt` | SHA-256 of all release artifacts |
 
 
 ### Deploy from release artifacts
 
 1. Download the release assets (or main-branch CI artifact for a pre-release soak).
-2. In `scripts/deploy.sh`, choose **Set verified .so directory** and point at the folder containing `vault_mint.so` and the pool-specific `vault_stake_*.so` files.
+2. In `scripts/deploy.sh`, choose **Set verified .so directory** and point at the artifact root (it resolves `programs/`) or directly at `programs/`.
 3. **Write buffers** → create Squads program upgrade proposals.
-4. After upgrade executes, import the **cluster-matching** PDA files in Squads v4 Transaction Builder ([docs](https://solana.com/docs/programs/verified-builds#how-to-verify-your-program-when-its-controlled-by-a-multisig-like-squads)).
+4. After upgrade executes, import the **cluster-matching** `verify/pda-msg-*.txt` files in Squads Transaction Builder ([docs](https://solana.com/docs/programs/verified-builds#how-to-verify-your-program-when-its-controlled-by-a-multisig-like-squads)). Use message-only files on `backup.app.squads.so` / `app.squads.so`.
 5. Run `solana-verify remote submit-job` per program with `--uploader` set to that cluster's Squads **vault** PDA.
 
-To regenerate PDA txs locally: `./scripts/export_verify_pda_tx.sh both devnet` or `… both mainnet`.
+To regenerate PDA files locally: `./scripts/export_verify_pda_tx.sh both devnet` or `… both mainnet`.  
+To convert an existing `pda-tx-*.txt` into `pda-msg-*.txt`: `./scripts/export_verify_pda_tx.sh to-msg path/to/pda-tx-….txt`.
 
 ### Verify a Buffer Before Approving in Squads
 
 Before approving a program upgrade proposal, confirm the buffer SHA-256 matches the release:
 
 ```bash
-shasum -a 256 vault_mint.so
-shasum -a 256 vault_stake_prime.so
-shasum -a 256 vault_stake_auto.so
-shasum -a 256 vault_stake_smb.so
+shasum -a 256 programs/vault_mint.so
+shasum -a 256 programs/vault_stake_prime.so
+shasum -a 256 programs/vault_stake_auto.so
+shasum -a 256 programs/vault_stake_smb.so
 # Compare against checksums.txt and deploy.sh output
 ```
 
