@@ -6,11 +6,13 @@ import {Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram} from "@solana/web3.
 import * as fs from "fs";
 import * as path from "path";
 import {
+    approve,
     createAccount,
     createMint,
     getAccount,
     getMint,
     mintTo,
+    revoke,
     TOKEN_PROGRAM_ID,
     transfer,
 } from "@solana/spl-token";
@@ -902,6 +904,317 @@ describe("vault-mint", () => {
                 })
                 .signers([rewardsAdmin])
                 .rpc();
+        });
+
+        it("complete fails when user mint balance is below the request amount", async () => {
+            const redeemAmount = new BN(20_000_000);
+            const transferOut = BigInt(10_000_000);
+
+            await program.methods
+                .requestRedeem(redeemAmount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            // Move mint tokens out so the account can no longer cover the full request.
+            const parkingAccount = await createAccount(
+                provider.connection,
+                provider.wallet.payer,
+                mintedToken,
+                user.publicKey
+            );
+            await transfer(
+                provider.connection,
+                user,
+                userMintTokenAccount,
+                parkingAccount,
+                user,
+                transferOut
+            );
+
+            try {
+                await program.methods
+                    .completeRedeem()
+                    .accountsStrict({
+                        admin: rewardsAdmin.publicKey,
+                        user: user.publicKey,
+                        userMintTokenAccount: userMintTokenAccount,
+                        userVaultTokenAccount: userVaultTokenAccount,
+                        redemptionRequest: redemptionRequestPda,
+                        redeemVaultTokenAccount: redeemVaultTokenAccount,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        mint: mintedToken,
+                        config: configPda,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.match(/InsufficientRedemptionBalance|custom program error/i);
+            }
+
+            // Request must remain open (fail closed — no partial complete).
+            const redemptionRequest = await program.account.redemptionRequest.fetch(
+                redemptionRequestPda
+            );
+            assert.equal(redemptionRequest.amount.toNumber(), redeemAmount.toNumber());
+
+            // Restore balance and complete to clean up.
+            await transfer(
+                provider.connection,
+                user,
+                parkingAccount,
+                userMintTokenAccount,
+                user,
+                transferOut
+            );
+            await program.methods
+                .completeRedeem()
+                .accountsStrict({
+                    admin: rewardsAdmin.publicKey,
+                    user: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    userVaultTokenAccount: userVaultTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultTokenAccount: redeemVaultTokenAccount,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .signers([rewardsAdmin])
+                .rpc();
+        });
+
+        it("user can cancel a request that can no longer be completed", async () => {
+            const redeemAmount = new BN(20_000_000);
+            const transferOut = BigInt(10_000_000);
+
+            await program.methods
+                .requestRedeem(redeemAmount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            // Move mint tokens out so the request is permanently uncompletable (fail closed).
+            const parkingAccount = await createAccount(
+                provider.connection,
+                provider.wallet.payer,
+                mintedToken,
+                user.publicKey
+            );
+            await transfer(
+                provider.connection,
+                user,
+                userMintTokenAccount,
+                parkingAccount,
+                user,
+                transferOut
+            );
+
+            await program.methods
+                .cancelRedeem()
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    config: configPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .signers([user])
+                .rpc();
+
+            // Request account is closed and the burn delegate is released.
+            const closedRequest = await provider.connection.getAccountInfo(redemptionRequestPda);
+            assert.isNull(closedRequest);
+            const mintTokenAccount = await getAccount(provider.connection, userMintTokenAccount);
+            assert.isNull(mintTokenAccount.delegate);
+            assert.equal(mintTokenAccount.delegatedAmount.toString(), "0");
+
+            // Cancelling unblocks the user: a fresh request can be submitted.
+            await transfer(
+                provider.connection,
+                user,
+                parkingAccount,
+                userMintTokenAccount,
+                user,
+                transferOut
+            );
+            await program.methods
+                .requestRedeem(redeemAmount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            // Complete to leave the suite state clean for following tests.
+            await program.methods
+                .completeRedeem()
+                .accountsStrict({
+                    admin: rewardsAdmin.publicKey,
+                    user: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    userVaultTokenAccount: userVaultTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultTokenAccount: redeemVaultTokenAccount,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .signers([rewardsAdmin])
+                .rpc();
+        });
+
+        it("another user cannot cancel someone else's request", async () => {
+            const redeemAmount = new BN(5_000_000);
+
+            await program.methods
+                .requestRedeem(redeemAmount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            // The request PDA is seeded by the signer, so an attacker cannot target another
+            // user's request even while supplying that user's token account.
+            try {
+                await program.methods
+                    .cancelRedeem()
+                    .accountsStrict({
+                        signer: rewardsAdmin.publicKey,
+                        userMintTokenAccount: userMintTokenAccount,
+                        redemptionRequest: redemptionRequestPda,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        config: configPda,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.match(
+                    /ConstraintSeeds|InvalidTokenOwner|custom program error/i
+                );
+            }
+
+            // Request remains intact for its owner.
+            const redemptionRequest = await program.account.redemptionRequest.fetch(
+                redemptionRequestPda
+            );
+            assert.equal(redemptionRequest.amount.toNumber(), redeemAmount.toNumber());
+
+            await program.methods
+                .completeRedeem()
+                .accountsStrict({
+                    admin: rewardsAdmin.publicKey,
+                    user: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    userVaultTokenAccount: userVaultTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultTokenAccount: redeemVaultTokenAccount,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .signers([rewardsAdmin])
+                .rpc();
+        });
+
+        it("cancel leaves an unrelated delegate in place", async () => {
+            const redeemAmount = new BN(5_000_000);
+            const thirdPartyAllowance = BigInt(1_000_000);
+
+            await program.methods
+                .requestRedeem(redeemAmount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            // Re-delegating replaces the program's burn approval (SPL tokens hold one delegate),
+            // which is itself one way a request becomes uncompletable.
+            await approve(
+                provider.connection,
+                user,
+                userMintTokenAccount,
+                rewardsAdmin.publicKey,
+                user,
+                thirdPartyAllowance
+            );
+
+            await program.methods
+                .cancelRedeem()
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    config: configPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .signers([user])
+                .rpc();
+
+            // Request is cleared, but the user's unrelated approval is untouched.
+            const closedRequest = await provider.connection.getAccountInfo(redemptionRequestPda);
+            assert.isNull(closedRequest);
+            const mintTokenAccount = await getAccount(provider.connection, userMintTokenAccount);
+            assert.ok(mintTokenAccount.delegate?.equals(rewardsAdmin.publicKey));
+            assert.equal(
+                mintTokenAccount.delegatedAmount.toString(),
+                thirdPartyAllowance.toString()
+            );
+
+            // Restore a clean delegate state for following tests.
+            await revoke(provider.connection, user, userMintTokenAccount, user);
         });
 
         it("handles multiple redeems correctly", async () => {

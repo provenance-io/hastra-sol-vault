@@ -34,6 +34,16 @@ pub struct RedeemCompleted {
     pub vault: Pubkey,
 }
 
+/// Emitted when a user withdraws their own pending redemption request before it is completed.
+#[event]
+pub struct RedemptionCancelled {
+    pub user: Pubkey,
+    /// Amount the cancelled request had reserved for burning.
+    pub amount: u64,
+    pub mint: Pubkey,
+    pub vault: Pubkey,
+}
+
 #[event]
 pub struct ExternalProgramMintEvent {
     pub admin: Pubkey,

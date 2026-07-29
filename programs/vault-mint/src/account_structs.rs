@@ -462,6 +462,44 @@ pub struct RequestRedeem<'info> {
     pub token_program: Program<'info, Token>,
 }
 
+// Lets a user withdraw their own pending redemption request. The `redemption_request` seeds are
+// derived from `signer`, so a caller can only ever cancel their own request.
+#[derive(Accounts)]
+pub struct CancelRedeem<'info> {
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    #[account(
+        mut,
+        constraint = user_mint_token_account.mint == config.mint @ CustomErrorCode::InvalidMint,
+        constraint = user_mint_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner
+    )]
+    pub user_mint_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        close = signer,   // refund rent to the requesting user
+        seeds = [b"redemption_request", signer.key().as_ref()],
+        bump = redemption_request.bump
+    )]
+    pub redemption_request: Account<'info, RedemptionRequest>,
+
+    /// CHECK: PDA recorded as the burn delegate by `request_redeem`; compared against, never signed.
+    #[account(
+        seeds = [b"redeem_vault_authority"],
+        bump
+    )]
+    pub redeem_vault_authority: AccountInfo<'info>,
+
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Account<'info, Config>,
+
+    pub token_program: Program<'info, Token>,
+}
+
 #[derive(Accounts)]
 pub struct CompleteRedeem<'info> {
     #[account()]

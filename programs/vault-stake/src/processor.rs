@@ -586,7 +586,8 @@ pub fn shares_to_assets(ctx: Context<ConversionView>, shares: u64) -> Result<u64
         .checked_mul(price_config.price as u128)
         .ok_or(CustomErrorCode::Overflow)?
         .checked_div(price_config.price_scale as u128)
-        .ok_or(CustomErrorCode::DivisionByZero)? as u64;
+        .ok_or(CustomErrorCode::DivisionByZero)?;
+    let assets: u64 = assets.try_into().map_err(|_| CustomErrorCode::Overflow)?;
 
     msg!("shares_to_assets: {} shares = {} assets", shares, assets);
 
@@ -606,7 +607,8 @@ pub fn assets_to_shares(ctx: Context<ConversionView>, assets: u64) -> Result<u64
         .checked_mul(price_config.price_scale as u128)
         .ok_or(CustomErrorCode::Overflow)?
         .checked_div(price_config.price as u128)
-        .ok_or(CustomErrorCode::DivisionByZero)? as u64;
+        .ok_or(CustomErrorCode::DivisionByZero)?;
+    let shares: u64 = shares.try_into().map_err(|_| CustomErrorCode::Overflow)?;
 
     msg!("assets_to_shares: {} assets = {} shares", assets, shares);
 
@@ -958,8 +960,13 @@ pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result
         ],
     )?;
 
-    // Decode the verified report from return data
-    let (_, return_data) = get_return_data().ok_or(CustomErrorCode::ChainlinkVerifyFailed)?;
+    // Decode the verified report from return data — require it came from Chainlink.
+    let (return_program_id, return_data) =
+        get_return_data().ok_or(CustomErrorCode::ChainlinkVerifyFailed)?;
+    require!(
+        return_program_id == ctx.accounts.chainlink_program.key(),
+        CustomErrorCode::ChainlinkVerifyFailed
+    );
     let report =
         ReportDataV7::decode(&return_data).map_err(|_| CustomErrorCode::ChainlinkVerifyFailed)?;
 
@@ -1012,7 +1019,8 @@ pub fn exchange_rate(ctx: Context<ConversionView>) -> Result<u64> {
         .checked_mul(SCALE)
         .ok_or(CustomErrorCode::Overflow)?
         .checked_div(price_config.price_scale as u128)
-        .ok_or(CustomErrorCode::DivisionByZero)? as u64;
+        .ok_or(CustomErrorCode::DivisionByZero)?;
+    let rate: u64 = rate.try_into().map_err(|_| CustomErrorCode::Overflow)?;
 
     msg!("exchange_rate: {} (scaled by 1e9)", rate);
 

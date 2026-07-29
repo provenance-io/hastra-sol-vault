@@ -93,6 +93,17 @@ pub mod vault_mint {
         processor::complete_redeem(ctx)
     }
 
+    /// Lets a user withdraw their own pending redemption request:
+    /// - Clears the burn delegate granted by `request_redeem`, if still set to that authority
+    /// - Closes the request account, refunding its rent to the user
+    ///
+    /// Needed because `complete_redeem` requires the full requested amount to still be held, so a
+    /// user who moved their mint tokens after requesting can clear the stale request and submit a
+    /// new one.
+    pub fn cancel_redeem(ctx: Context<CancelRedeem>) -> Result<()> {
+        processor::cancel_redeem(ctx)
+    }
+
     pub fn update_freeze_administrators(
         ctx: Context<UpdateFreezeAdministrators>,
         new_administrators: Vec<Pubkey>,

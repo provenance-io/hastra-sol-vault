@@ -5,6 +5,7 @@ use crate::guard::{validate_administrators, validate_program_update_authority};
 use crate::state::{AllowedExternalMintPrograms, EpochClaimedAmount, ProofNode};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::hash::hashv;
+use anchor_lang::solana_program::program_option::COption;
 use anchor_lang::solana_program::program::invoke;
 use anchor_lang::solana_program::system_instruction;
 use anchor_spl::token::spl_token::instruction::AuthorityType;
@@ -196,6 +197,50 @@ pub fn request_redeem(ctx: Context<RequestRedeem>, amount: u64) -> Result<()> {
     Ok(())
 }
 
+/// Withdraws the caller's own pending redemption request.
+///
+/// `complete_redeem` requires the user to still hold the full requested amount, so a request whose
+/// owner has since moved wYLDS out cannot be completed. Without this instruction that request would
+/// stay open indefinitely and block new ones, since `request_redeem` allows only one
+/// `RedemptionRequest` PDA per user. Closes the request, refunding its rent to the user, and clears
+/// the burn delegate granted at request time when that delegate is still in place.
+///
+/// Not gated on `paused`: cancelling releases a protocol obligation and moves no protocol funds, so
+/// blocking it during a pause would only trap users.
+pub fn cancel_redeem(ctx: Context<CancelRedeem>) -> Result<()> {
+    let amount = ctx.accounts.redemption_request.amount;
+
+    // Only clear the allowance if it is still the one `request_redeem` granted. SPL token accounts
+    // hold a single delegate, so a user who re-delegated afterwards already invalidated the burn
+    // approval; cancelling must not silently revoke that unrelated grant.
+    let delegate_is_redeem_authority = matches!(
+        ctx.accounts.user_mint_token_account.delegate,
+        COption::Some(delegate) if delegate == ctx.accounts.redeem_vault_authority.key()
+    );
+
+    if delegate_is_redeem_authority {
+        token::revoke(CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            token::Revoke {
+                source: ctx.accounts.user_mint_token_account.to_account_info(),
+                authority: ctx.accounts.signer.to_account_info(),
+            },
+        ))?;
+    }
+
+    msg!("Cancelled redemption request for {} tokens", amount);
+
+    emit!(RedemptionCancelled {
+        user: ctx.accounts.signer.key(),
+        amount,
+        mint: ctx.accounts.config.mint,
+        vault: ctx.accounts.config.vault,
+    });
+
+    // Anchor closes redemption_request to `signer` per the accounts attr
+    Ok(())
+}
+
 pub fn complete_redeem(ctx: Context<CompleteRedeem>) -> Result<()> {
     // Admin gate
     require!(
@@ -207,16 +252,16 @@ pub fn complete_redeem(ctx: Context<CompleteRedeem>) -> Result<()> {
     );
 
     let req = &ctx.accounts.redemption_request;
-
-    // The request redeem function will set the redeem amount to the min
-    // of the requested amount and the user's mint balance at the request.
-    // This prevents program from burning more than their balance at the time.
-    // However, we also do the same here to prevent error in the situation where
-    // the user transfers mint out of their account before this complete request
-    // executes.
-    let user_mint_balance = ctx.accounts.user_mint_token_account.amount;
-    let amount_to_redeem = std::cmp::min(user_mint_balance, req.amount);
+    let amount_to_redeem = req.amount;
     require!(amount_to_redeem > 0, CustomErrorCode::InvalidAmount);
+
+    // Fail closed if the user no longer holds the full requested amount.
+    // Partial completion would close the request and silently under-deliver USDC.
+    let user_mint_balance = ctx.accounts.user_mint_token_account.amount;
+    require!(
+        user_mint_balance >= amount_to_redeem,
+        CustomErrorCode::InsufficientRedemptionBalance
+    );
 
     // check vault has enough USDC
     require!(
