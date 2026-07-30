@@ -255,6 +255,8 @@ pub struct ThawTokenAccount<'info> {
 
 // Admin posts an epoch Merkle root. Requires epoch caps initialized; enforces the global
 // max epoch cap and creates the per-epoch claimed counter. Claims mint wYLDS on demand.
+// `index` must be at or above `first_capped_epoch`: every epoch created through this
+// instruction is capped, so lower indices remain exclusive to pre-upgrade epochs.
 #[derive(Accounts)]
 #[instruction(index: u64)]
 pub struct CreateRewardsEpoch<'info> {
@@ -298,6 +300,8 @@ pub struct CreateRewardsEpoch<'info> {
 // User claims via Merkle proof; wYLDS are minted on demand.
 // Requires `epoch_caps_config` to be initialized. Cap enforcement runs when
 // `index >= first_capped_epoch`; `epoch_claimed` may still be empty for lower indices.
+// Only pre-upgrade epochs can occupy those lower indices, since `create_rewards_epoch`
+// rejects them — the uncapped branch is therefore unreachable for newly created epochs.
 #[derive(Accounts)]
 pub struct ClaimRewards<'info> {
     #[account(

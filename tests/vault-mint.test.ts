@@ -2549,6 +2549,16 @@ describe("vault-mint", () => {
 
             const userMintBalanceAfter = (await getAccount(provider.connection, userMintTokenAccount)).amount;
             assert.equal(userMintBalanceAfter, userMintBalanceBefore + createBigInt(userAllocation!.amount.toNumber()));
+
+            // epochIndex is at first_capped_epoch, so the aggregate counter must track the claim.
+            const claimed = await program.account.epochClaimedAmount.fetch(
+                deriveRewardsEpochAccounts(program.programId, epochIndex).epochClaimed
+            );
+            assert.equal(
+                claimed.claimedTotal.toString(),
+                userAllocation!.amount.toString(),
+                "claim must be recorded in epoch_claimed for capped epochs"
+            );
         });
 
         it("prevents double claim", async () => {
@@ -2732,15 +2742,17 @@ describe("vault-mint", () => {
             }
         });
 
-        it("claims succeed for epochs below first_capped_epoch without reading epoch_claimed", async () => {
-            // first_capped_epoch is 1 (suite init). Epoch 0 is grandfathered.
-            // create_rewards_epoch still allocates epoch_claimed (current API), but claim
-            // must skip the aggregate counter — claimed_total stays 0. That is the same
-            // processor branch used for pre-upgrade epochs whose epoch_claimed PDA was
-            // never created (UncheckedAccount + empty data is never read when uncapped).
+        it("rejects create for an index below first_capped_epoch", async () => {
+            // first_capped_epoch is 1 (suite init), so index 0 is an unused grandfathered slot.
+            // claim_rewards exempts indices below the boundary from the aggregate counter, so an
+            // epoch created there could mint past its declared total. Creation must be refused,
+            // leaving those indices exclusive to epochs that predate the caps upgrade.
             const legacyIndex = 0;
-            const capsAccount = deriveRewardsEpochAccounts(program.programId, 0).epochCapsConfig;
-            const caps = await program.account.epochCapsConfig.fetch(capsAccount);
+            const { epoch, epochClaimed, epochCapsConfig } = deriveRewardsEpochAccounts(
+                program.programId,
+                legacyIndex
+            );
+            const caps = await program.account.epochCapsConfig.fetch(epochCapsConfig);
             assert.isTrue(
                 legacyIndex < caps.firstCappedEpoch.toNumber(),
                 "legacyIndex must be below first_capped_epoch"
@@ -2757,75 +2769,37 @@ describe("vault-mint", () => {
                 (acc, a) => acc.add(a.amount),
                 new BN(0)
             );
-            const { epoch, epochClaimed, epochCapsConfig } = deriveRewardsEpochAccounts(
-                program.programId,
-                legacyIndex
-            );
-            const [legacyClaimPda] = PublicKey.findProgramAddressSync(
-                [Buffer.from("claim"), epoch.toBuffer(), user.publicKey.toBuffer()],
-                program.programId
-            );
 
-            await program.methods
-                .createRewardsEpoch(
-                    new BN(legacyIndex),
-                    Array.from(legacyMerkle.tree.getRoot()),
-                    legacyTotal
-                )
-                .accountsStrict({
-                    config: configPda,
-                    epochCapsConfig,
-                    admin: rewardsAdmin.publicKey,
-                    epoch,
-                    epochClaimed,
-                    systemProgram: SystemProgram.programId,
-                })
-                .signers([rewardsAdmin])
-                .rpc();
+            try {
+                await program.methods
+                    .createRewardsEpoch(
+                        new BN(legacyIndex),
+                        Array.from(legacyMerkle.tree.getRoot()),
+                        legacyTotal
+                    )
+                    .accountsStrict({
+                        config: configPda,
+                        epochCapsConfig,
+                        admin: rewardsAdmin.publicKey,
+                        epoch,
+                        epochClaimed,
+                        systemProgram: SystemProgram.programId,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                // Message deliberately omits the error name so it cannot satisfy the match below.
+                assert.fail("create below the cap boundary should have been rejected");
+            } catch (err) {
+                expect(err.toString()).to.match(
+                    /EpochIndexBelowFirstCapped|custom program error: 0x2d/i
+                );
+            }
 
-            const claimedBefore = await program.account.epochClaimedAmount.fetch(epochClaimed);
-            assert.equal(claimedBefore.claimedTotal.toNumber(), 0);
-
-            const userAlloc = legacyMerkle.allocations[0];
-            const leaf = makeLeaf(user.publicKey, userAlloc.amount, legacyIndex);
-            const proof = legacyMerkle.tree.getProof(leaf).map(p => ({
-                sibling: Array.from(p.data),
-                isLeft: p.position === "left",
-            }));
-
-            const userMintBalanceBefore = (await getAccount(provider.connection, userMintTokenAccount)).amount;
-
-            await program.methods
-                .claimRewards(userAlloc.amount, proof)
-                .accountsStrict({
-                    config: configPda,
-                    user: user.publicKey,
-                    epoch,
-                    epochCapsConfig,
-                    epochClaimed,
-                    claimRecord: legacyClaimPda,
-                    mintAuthority: mintAuthorityPda,
-                    mint: mintedToken,
-                    userMintTokenAccount: userMintTokenAccount,
-                    systemProgram: SystemProgram.programId,
-                    tokenProgram: TOKEN_PROGRAM_ID,
-                })
-                .signers([user])
-                .rpc();
-
-            const userMintBalanceAfter = (await getAccount(provider.connection, userMintTokenAccount)).amount;
-            assert.equal(
-                userMintBalanceAfter,
-                userMintBalanceBefore + createBigInt(userAlloc.amount.toNumber())
-            );
-
-            // Cap path skipped: counter must not move for grandfathered indices.
-            const claimedAfter = await program.account.epochClaimedAmount.fetch(epochClaimed);
-            assert.equal(
-                claimedAfter.claimedTotal.toNumber(),
-                0,
-                "claim must not update epoch_claimed when index < first_capped_epoch"
-            );
+            // Nothing may be left behind: neither PDA is initialized by the failed create.
+            const epochInfo = await provider.connection.getAccountInfo(epoch);
+            assert.isNull(epochInfo, "epoch PDA must not be created below the boundary");
+            const claimedInfo = await provider.connection.getAccountInfo(epochClaimed);
+            assert.isNull(claimedInfo, "epoch_claimed PDA must not be created below the boundary");
         });
 
         it("rejects claim that exceeds epoch cap (EpochCapExceeded)", async () => {

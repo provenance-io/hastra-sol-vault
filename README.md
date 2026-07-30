@@ -46,7 +46,7 @@ Rewards are distributed on-chain using a merkle tree-based claim system to ensur
 - Administrators can create epochs with a merkle root summarizing user rewards
 - Users claim rewards by providing a merkle proof against the stored root
 - Rewards are minted as additional mint tokens (e.g. wYLDS)
-- After upgrade, `initialize_epoch_caps` is required on-chain before create/claim. New epochs (`index >= first_capped_epoch`) enforce an aggregate claim cap; creates also require `total <= max_epoch_cap`. Epochs with a lower index stay uncapped.
+- After upgrade, `initialize_epoch_caps` is required on-chain before create/claim. New epochs (`index >= first_capped_epoch`) enforce an aggregate claim cap; creates also require `total <= max_epoch_cap`. Epochs created before the upgrade stay uncapped, and no new epoch can be created at an index below `first_capped_epoch`, so every epoch created from now on is capped.
 
 **Merkle Tree Structure:**
 
@@ -58,7 +58,7 @@ Rewards are distributed on-chain using a merkle tree-based claim system to ensur
 
 1. Upgrade authority calls `initialize_epoch_caps(first_capped_epoch, max_epoch_cap)` once after program upgrade — use `scripts/vault-mint/initialize_epoch_caps_proposal_squads.ts` when the upgrade authority is a Squads vault PDA (or `initialize_epoch_caps.ts` for a local keypair)
 2. Authorized reward admin computes user rewards off-chain
-3. Constructs merkle tree and computes root; `total` must be `> 0` and `<= max_epoch_cap`
+3. Constructs merkle tree and computes root; `total` must be `> 0` and `<= max_epoch_cap`, and `index` must be `>= first_capped_epoch`
 4. Calls `create_rewards_epoch()` with epoch index, merkle root, and total:
 ```rust
 pub fn create_rewards_epoch(

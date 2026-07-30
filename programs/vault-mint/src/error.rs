@@ -80,4 +80,6 @@ pub enum CustomErrorCode {
     CapsNotInitialized = 43,
     #[msg("Epoch claimed account required for capped epoch claim")]
     EpochClaimedRequired = 44,
+    #[msg("Epoch index is below first_capped_epoch and reserved for pre-upgrade epochs")]
+    EpochIndexBelowFirstCapped = 45,
 }

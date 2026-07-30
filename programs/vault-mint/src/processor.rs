@@ -447,6 +447,14 @@ pub fn create_rewards_epoch(
     require!(total > 0, CustomErrorCode::InvalidAmount);
 
     let caps = &ctx.accounts.epoch_caps_config;
+    // Indices below `first_capped_epoch` are reserved for epochs that predate the caps
+    // upgrade, which `claim_rewards` exempts from aggregate cap enforcement. Creating a new
+    // epoch at an unused index down there would make its declared `total` unenforceable and
+    // allow unbounded minting against the Merkle root, so the boundary is closed here.
+    require!(
+        index >= caps.first_capped_epoch,
+        CustomErrorCode::EpochIndexBelowFirstCapped
+    );
     require!(
         total <= caps.max_epoch_cap,
         CustomErrorCode::EpochCapAboveGlobal
@@ -517,6 +525,8 @@ pub fn claim_rewards(ctx: Context<ClaimRewards>, amount: u64, proof: Vec<ProofNo
 
     // Cap enforcement for epochs at or after `first_capped_epoch`.
     // Epochs below that index skip the aggregate counter; ClaimRecord still prevents double-claim.
+    // Only epochs predating the caps upgrade can sit below the boundary, because
+    // `create_rewards_epoch` refuses those indices.
     // `epoch_caps_config` must already be initialized (typed Account constraint).
     let epoch_index = ctx.accounts.epoch.index;
     let enforce_cap = epoch_index >= ctx.accounts.epoch_caps_config.first_capped_epoch;

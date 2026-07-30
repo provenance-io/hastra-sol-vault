@@ -43,7 +43,9 @@ pub struct EpochCapsConfig {
     /// Ceiling on `create_rewards_epoch.total` for future epochs.
     pub max_epoch_cap: u64,
     /// Epochs with `index >= first_capped_epoch` enforce aggregate claim caps.
-    /// Lower indices only require a valid Merkle proof and `ClaimRecord`.
+    /// Lower indices only require a valid Merkle proof and `ClaimRecord`, and are
+    /// reserved for epochs created before the caps upgrade: `create_rewards_epoch`
+    /// rejects any index below this boundary.
     pub first_capped_epoch: u64,
     pub bump: u8,
 }

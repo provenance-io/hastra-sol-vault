@@ -158,7 +158,9 @@ pub mod vault_mint {
 
     /// One-shot: enables epoch caps (upgrade authority).
     /// Must be executed after program upgrade before create/claim rewards.
-    /// Sets `first_capped_epoch` and `max_epoch_cap`. Epochs below that index stay uncapped.
+    /// Sets `first_capped_epoch` and `max_epoch_cap`. Epochs already created below that index
+    /// stay uncapped; new epochs cannot be created there. Set it above the highest existing
+    /// epoch index so no unused uncapped slot is left behind.
     pub fn initialize_epoch_caps(
         ctx: Context<InitializeEpochCaps>,
         first_capped_epoch: u64,
