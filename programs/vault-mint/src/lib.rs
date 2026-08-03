@@ -89,8 +89,16 @@ pub mod vault_mint {
         processor::request_redeem(ctx, amount)
     }
 
-    pub fn complete_redeem(ctx: Context<CompleteRedeem>) -> Result<()> {
-        processor::complete_redeem(ctx)
+    /// Settles a pending redemption request, burning the user's mint tokens and paying out the
+    /// corresponding vault tokens. Only callable by a rewards administrator.
+    ///
+    /// `expected_amount` must equal the amount recorded on the request, failing with
+    /// `RedemptionAmountMismatch` otherwise. The request PDA is keyed on the user alone, so a user
+    /// can cancel a reviewed request and open a replacement for a different amount at the same
+    /// address; restating the approved amount keeps an already-signed completion bound to the
+    /// request that was reviewed.
+    pub fn complete_redeem(ctx: Context<CompleteRedeem>, expected_amount: u64) -> Result<()> {
+        processor::complete_redeem(ctx, expected_amount)
     }
 
     /// Lets a user withdraw their own pending redemption request:

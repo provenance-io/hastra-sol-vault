@@ -356,7 +356,7 @@ pub struct ThawTokenAccount<'info> {
 
 // admin publishes rewards
 #[derive(Accounts)]
-#[instruction(id: u32, amount: u64)]
+#[instruction(id: u32)]
 pub struct PublishRewards<'info> {
     #[account(
         seeds = [b"stake_config"], 
@@ -456,7 +456,17 @@ pub struct PublishRewards<'info> {
     )]
     pub mint: Box<Account<'info, Mint>>,
 
-    /// Reward record PDA to prevent duplicates
+    /// Replay guard for reward publications: `id` alone is the uniqueness key, so a publication
+    /// is not republishable. `init` fails on any later attempt to reuse an `id`, including one
+    /// carrying a different `amount`. The published `amount` is still recorded in the account but
+    /// deliberately does not form part of the address — including it would reduce the guard to
+    /// blocking only an exact `(id, amount)` repeat, leaving the same `id` republishable at a
+    /// different amount.
+    ///
+    /// Uniqueness is enforced from this upgrade forward. Records published earlier live at
+    /// `(id, amount)`-derived addresses that never collide with these, so ids issued before the
+    /// upgrade are unaffected and remain exactly as they are; the publisher simply continues
+    /// issuing ids above the highest of them.
     #[account(
         init,
         payer = admin,
@@ -464,7 +474,6 @@ pub struct PublishRewards<'info> {
         seeds = [
             b"reward_record",
             id.to_le_bytes().as_ref(),
-            amount.to_le_bytes().as_ref(),
         ],
         bump
     )]

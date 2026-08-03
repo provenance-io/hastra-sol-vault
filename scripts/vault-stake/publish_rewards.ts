@@ -2,7 +2,6 @@ import * as anchor from "@coral-xyz/anchor";
 import {Program} from "@coral-xyz/anchor";
 import yargs from "yargs";
 import {VaultStake} from "../../target/types/vault_stake";
-import {createBigInt} from "@metaplex-foundation/umi";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
@@ -110,11 +109,11 @@ const main = async () => {
         mintProgramId
     );
 
+    // Seeded on rewardId alone: a given id is publishable exactly once, at any amount.
     const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [
             Buffer.from("reward_record"),
-            Buffer.from(new Uint32Array([rewardId]).buffer),
-            Buffer.from(new BigUint64Array([createBigInt(amount.toString())]).buffer)
+            Buffer.from(new Uint32Array([rewardId]).buffer)
         ],
         program.programId);
 

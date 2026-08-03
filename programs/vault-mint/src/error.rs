@@ -82,4 +82,6 @@ pub enum CustomErrorCode {
     EpochClaimedRequired = 44,
     #[msg("Epoch index is below first_capped_epoch and reserved for pre-upgrade epochs")]
     EpochIndexBelowFirstCapped = 45,
+    #[msg("Redemption request amount does not match the amount the administrator approved")]
+    RedemptionAmountMismatch = 46,
 }

@@ -34,10 +34,13 @@ impl UnbondingTicket {
     pub const LEN: usize = 8 + 32 + 8 + 8 + 8;
 }
 
+// One record per reward publication, created by `publish_rewards` and never closed. Its PDA is
+// seeded on `id` alone, so the account's existence is what makes a publication unique and stops it
+// from being republished at a different amount.
 #[account]
 pub struct RewardPublicationRecord {
-    pub id: u32,           // Unique identifier
-    pub amount: u64,       // Reward amount
+    pub id: u32,           // Uniqueness key — the sole seed, so each id is publishable exactly once
+    pub amount: u64,       // Reward amount published under this id; recorded only, not part of the PDA
     pub published_at: i64, // Timestamp when published
     pub bump: u8,          // PDA bump seed
 }

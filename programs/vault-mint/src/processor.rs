@@ -241,7 +241,17 @@ pub fn cancel_redeem(ctx: Context<CancelRedeem>) -> Result<()> {
     Ok(())
 }
 
-pub fn complete_redeem(ctx: Context<CompleteRedeem>) -> Result<()> {
+/// Settles a pending redemption request: burns the user's mint tokens and pays out the
+/// corresponding vault tokens.
+///
+/// `expected_amount` is the amount the administrator approved. The `RedemptionRequest` PDA is
+/// derived from the user alone, so its address does not change when the recorded amount does: a
+/// user can `cancel_redeem` a reviewed request and open a replacement for a different amount at the
+/// same address, and an already-signed completion would otherwise settle whatever it finds there.
+/// Requiring the caller to restate the approved amount binds this settlement to the request that
+/// was actually reviewed. Solvency was never at risk — the full recorded amount is burned and paid
+/// to the same user either way — but amount-specific operational and compliance approval was.
+pub fn complete_redeem(ctx: Context<CompleteRedeem>, expected_amount: u64) -> Result<()> {
     // Admin gate
     require!(
         ctx.accounts
@@ -254,6 +264,12 @@ pub fn complete_redeem(ctx: Context<CompleteRedeem>) -> Result<()> {
     let req = &ctx.accounts.redemption_request;
     let amount_to_redeem = req.amount;
     require!(amount_to_redeem > 0, CustomErrorCode::InvalidAmount);
+
+    // Reject a request that was substituted after the administrator approved this amount.
+    require!(
+        amount_to_redeem == expected_amount,
+        CustomErrorCode::RedemptionAmountMismatch
+    );
 
     // Fail closed if the user no longer holds the full requested amount.
     // Partial completion would close the request and silently under-deliver USDC.

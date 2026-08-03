@@ -803,7 +803,7 @@ describe("vault-mint", () => {
 
             // Now perform the redeem
             await program.methods
-                .completeRedeem() // Amount is calculated in the function
+                .completeRedeem(new BN(redeemAmount))
                 .accountsStrict({
                     admin: rewardsAdmin.publicKey,
                     user: user.publicKey,
@@ -839,10 +839,177 @@ describe("vault-mint", () => {
             }
         });
 
+        it("complete rejects an amount the administrator did not approve", async () => {
+            // Small amounts keep the suite's running balances untouched; only the equality
+            // check is under test here.
+            const approvedAmount = new BN(1_000);
+
+            await program.methods
+                .requestRedeem(approvedAmount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            try {
+                await program.methods
+                    .completeRedeem(approvedAmount.add(new BN(1)))
+                    .accountsStrict({
+                        admin: rewardsAdmin.publicKey,
+                        user: user.publicKey,
+                        userMintTokenAccount: userMintTokenAccount,
+                        userVaultTokenAccount: userVaultTokenAccount,
+                        redemptionRequest: redemptionRequestPda,
+                        redeemVaultTokenAccount: redeemVaultTokenAccount,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        mint: mintedToken,
+                        config: configPda,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown RedemptionAmountMismatch");
+            } catch (err) {
+                expect(err.toString()).to.match(
+                    /RedemptionAmountMismatch|custom program error/i
+                );
+            }
+
+            // Fails closed: the request survives and still settles for the approved amount.
+            const openRequest = await program.account.redemptionRequest.fetch(
+                redemptionRequestPda
+            );
+            assert.equal(openRequest.amount.toNumber(), approvedAmount.toNumber());
+
+            await program.methods
+                .completeRedeem(approvedAmount)
+                .accountsStrict({
+                    admin: rewardsAdmin.publicKey,
+                    user: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    userVaultTokenAccount: userVaultTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultTokenAccount: redeemVaultTokenAccount,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .signers([rewardsAdmin])
+                .rpc();
+        });
+
+        it("complete rejects a request substituted after approval", async () => {
+            const approvedAmount = new BN(1_000);
+            const substitutedAmount = new BN(2_000);
+
+            await program.methods
+                .requestRedeem(approvedAmount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            // The request PDA is keyed on the user alone, so cancelling and re-requesting puts a
+            // different amount at the very address the administrator already reviewed.
+            await program.methods
+                .cancelRedeem()
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    config: configPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .signers([user])
+                .rpc();
+
+            await program.methods
+                .requestRedeem(substitutedAmount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            // A completion signed against the reviewed amount must not settle the replacement.
+            try {
+                await program.methods
+                    .completeRedeem(approvedAmount)
+                    .accountsStrict({
+                        admin: rewardsAdmin.publicKey,
+                        user: user.publicKey,
+                        userMintTokenAccount: userMintTokenAccount,
+                        userVaultTokenAccount: userVaultTokenAccount,
+                        redemptionRequest: redemptionRequestPda,
+                        redeemVaultTokenAccount: redeemVaultTokenAccount,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        mint: mintedToken,
+                        config: configPda,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown RedemptionAmountMismatch");
+            } catch (err) {
+                expect(err.toString()).to.match(
+                    /RedemptionAmountMismatch|custom program error/i
+                );
+            }
+
+            const openRequest = await program.account.redemptionRequest.fetch(
+                redemptionRequestPda
+            );
+            assert.equal(openRequest.amount.toNumber(), substitutedAmount.toNumber());
+
+            // The replacement only settles once an administrator approves it explicitly.
+            await program.methods
+                .completeRedeem(substitutedAmount)
+                .accountsStrict({
+                    admin: rewardsAdmin.publicKey,
+                    user: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    userVaultTokenAccount: userVaultTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultTokenAccount: redeemVaultTokenAccount,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .signers([rewardsAdmin])
+                .rpc();
+        });
+
         it("complete fails with no open redemption request", async () => {
             try {
                 await program.methods
-                    .completeRedeem()
+                    // No request exists, so the account constraint rejects before the amount check.
+                    .completeRedeem(new BN(1))
                     .accountsStrict({
                         admin: rewardsAdmin.publicKey,
                         user: user.publicKey,
@@ -893,7 +1060,7 @@ describe("vault-mint", () => {
 
             try {
                 await program.methods
-                    .completeRedeem()
+                    .completeRedeem(redeemAmount)
                     .accountsStrict({
                         admin: rewardsAdmin.publicKey,
                         user: user.publicKey,
@@ -917,7 +1084,7 @@ describe("vault-mint", () => {
 
             // Clean up: complete with the correct user-owned destination account.
             await program.methods
-                .completeRedeem()
+                .completeRedeem(redeemAmount)
                 .accountsStrict({
                     admin: rewardsAdmin.publicKey,
                     user: user.publicKey,
@@ -985,7 +1152,7 @@ describe("vault-mint", () => {
             try {
                 try {
                     await program.methods
-                        .completeRedeem()
+                        .completeRedeem(redeemAmount)
                         .accountsStrict({
                             admin: rewardsAdmin.publicKey,
                             user: user.publicKey,
@@ -1031,7 +1198,7 @@ describe("vault-mint", () => {
                 const open = await provider.connection.getAccountInfo(redemptionRequestPda);
                 if (open) {
                     await program.methods
-                        .completeRedeem()
+                        .completeRedeem(redeemAmount)
                         .accountsStrict({
                             admin: rewardsAdmin.publicKey,
                             user: user.publicKey,
@@ -1145,7 +1312,7 @@ describe("vault-mint", () => {
 
             // Complete to leave the suite state clean for following tests.
             await program.methods
-                .completeRedeem()
+                .completeRedeem(redeemAmount)
                 .accountsStrict({
                     admin: rewardsAdmin.publicKey,
                     user: user.publicKey,
@@ -1210,7 +1377,7 @@ describe("vault-mint", () => {
             assert.equal(redemptionRequest.amount.toNumber(), redeemAmount.toNumber());
 
             await program.methods
-                .completeRedeem()
+                .completeRedeem(redeemAmount)
                 .accountsStrict({
                     admin: rewardsAdmin.publicKey,
                     user: user.publicKey,
@@ -1325,7 +1492,7 @@ describe("vault-mint", () => {
 
             // clean up by completing the redeem
             await program.methods
-                .completeRedeem() // Amount is calculated in the function
+                .completeRedeem(firstRedeem)
                 .accountsStrict({
                     admin: rewardsAdmin.publicKey,
                     user: user.publicKey,
@@ -1436,7 +1603,7 @@ describe("vault-mint", () => {
 
             try {
                 await program.methods
-                    .completeRedeem() // Amount is calculated in the function
+                    .completeRedeem(excessiveAmount)
                     .accountsStrict({
                         admin: rewardsAdmin.publicKey,
                         user: user.publicKey,
@@ -1468,7 +1635,7 @@ describe("vault-mint", () => {
 
             // clean up by completing the redeem
             await program.methods
-                .completeRedeem() // Amount is calculated in the function
+                .completeRedeem(excessiveAmount)
                 .accountsStrict({
                     admin: rewardsAdmin.publicKey,
                     user: user.publicKey,
@@ -1783,7 +1950,7 @@ describe("vault-mint", () => {
                 .rpc();
 
             await program.methods
-                .completeRedeem() // Amount is calculated in the function
+                .completeRedeem(amount)
                 .accountsStrict({
                     admin: rewardsAdmin.publicKey,
                     user: user.publicKey,
@@ -1995,12 +2162,12 @@ describe("vault-mint", () => {
                 .rpc();
         };
 
-        const makeAutoRewardsRecordPda = (id: number, amount: bigint) =>
+        // The record PDA is seeded on `id` alone, so the published amount is not an input here.
+        const makeAutoRewardsRecordPda = (id: number) =>
             PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("reward_record"),
                     Buffer.from(new Uint32Array([id]).buffer),
-                    Buffer.from(new BigUint64Array([amount]).buffer),
                 ],
                 stakeAutoProgram.programId
             )[0];
@@ -2215,7 +2382,7 @@ describe("vault-mint", () => {
             const amount = (vaultBal * BigInt(50)) / BigInt(10_000);
             assert.ok(amount > BigInt(0), "need vault balance for publish amount");
             const id = ++autoPublishRewardsId;
-            const rewardRecord = makeAutoRewardsRecordPda(id, amount);
+            const rewardRecord = makeAutoRewardsRecordPda(id);
 
             try {
                 await stakeAutoProgram.methods
@@ -2249,7 +2416,7 @@ describe("vault-mint", () => {
             const amount = (vaultBalBefore * BigInt(50)) / BigInt(10_000);
             assert.ok(amount > BigInt(0));
             const id = ++autoPublishRewardsId;
-            const rewardRecord = makeAutoRewardsRecordPda(id, amount);
+            const rewardRecord = makeAutoRewardsRecordPda(id);
 
             await stakeAutoProgram.methods
                 .publishRewards(id, new BN(amount.toString()))
@@ -3092,7 +3259,7 @@ describe("vault-mint", () => {
 
             // Now perform the redeem
             await program.methods
-                .completeRedeem() // Amount is calculated in the function
+                .completeRedeem(new BN(1))
                 .accountsStrict({
                     admin: addRewardsAdmin.publicKey,
                     user: user.publicKey,

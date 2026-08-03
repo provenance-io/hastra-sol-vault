@@ -761,8 +761,11 @@ $ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
     ANCHOR_WALLET=~/.config/solana/hastra-devnet-id.json
     yarn run ts-node scripts/complete_redeem.ts \
     --user <USER_PUBLIC_KEY_WHO_REQUESTED_REDEEM> \
+    --expected_amount <RAW_AMOUNT_THAT_WAS_APPROVED> \
     --mint AVpS6aTBQyCFBA4jymYRWqDyL7ipurn24PZVdjbbWT3X
 ```
+
+`--expected_amount` must come from the approval record, not from re-reading the request: the program rejects with `RedemptionAmountMismatch` if it does not match the amount recorded on-chain. This is what keeps a request the user replaced after approval from being settled by an already-signed completion.
 
 ## Testing
 
