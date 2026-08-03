@@ -10,7 +10,8 @@ anchor.setProvider(provider);
 const workspaceProgram = anchor.workspace.VaultStake as Program<VaultStake>;
 
 const args = yargs(process.argv.slice(2))
-  .option("program_id", {
+  .option("program-id", {
+    alias: "program_id",
     type: "string",
     description: "Optional program id override (use vault-stake script against stake-auto deployment).",
   })
