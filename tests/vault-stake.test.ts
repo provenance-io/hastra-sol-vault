@@ -121,6 +121,7 @@ describe("vault-stake", () => {
 
     let stakePriceConfigPda: PublicKey;
     let stakeRewardConfigPda: PublicKey;
+    let lastRewardPublicationPda: PublicKey;
 
     // Price config constants for testing.
     // price_scale = 1e9; price = 1e9 → 1:1 ratio (1 PRIME per 1 wYLDS, 1 wYLDS per 1 PRIME).
@@ -264,6 +265,24 @@ describe("vault-stake", () => {
             .accountsStrict({
                 stakeConfig: stakeConfigPda,
                 stakeRewardConfig: stakeRewardConfigPda,
+                signer: provider.wallet.publicKey,
+                programData: programDataPda,
+                systemProgram: SystemProgram.programId,
+            })
+            .rpc();
+    };
+
+    /** Creates LastRewardPublication when missing (required before publish_rewards). */
+    const ensureLastRewardPublicationInitialized = async (startId = 0) => {
+        const info = await provider.connection.getAccountInfo(lastRewardPublicationPda);
+        if (info) {
+            return;
+        }
+        await program.methods
+            .initializeLastRewardPublication(startId)
+            .accountsStrict({
+                stakeConfig: stakeConfigPda,
+                lastRewardPublication: lastRewardPublicationPda,
                 signer: provider.wallet.publicKey,
                 programData: programDataPda,
                 systemProgram: SystemProgram.programId,
@@ -433,6 +452,14 @@ describe("vault-stake", () => {
         [stakeRewardConfigPda] = PublicKey.findProgramAddressSync(
             [
                 Buffer.from("stake_reward_config"),
+                stakeConfigPda.toBuffer()
+            ],
+            program.programId
+        );
+
+        [lastRewardPublicationPda] = PublicKey.findProgramAddressSync(
+            [
+                Buffer.from("last_reward_publication"),
                 stakeConfigPda.toBuffer()
             ],
             program.programId
@@ -744,6 +771,61 @@ describe("vault-stake", () => {
                     .accountsStrict({
                         stakeConfig: stakeConfigPda,
                         stakeRewardConfig: stakeRewardConfigPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programDataPda,
+                        systemProgram: SystemProgram.programId,
+                    })
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+            }
+        });
+
+        it("rejects last reward publication init from a non-upgrade authority", async () => {
+            try {
+                await program.methods
+                    .initializeLastRewardPublication(0)
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        lastRewardPublication: lastRewardPublicationPda,
+                        signer: rewardsAdmin.publicKey,
+                        programData: programDataPda,
+                        systemProgram: SystemProgram.programId,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(String(err)).to.match(
+                    /InvalidUpgradeAuthority|custom program error:\s*0x12\b/i
+                );
+            }
+        });
+
+        it("initializes last reward publication", async () => {
+            await program.methods
+                .initializeLastRewardPublication(0)
+                .accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    lastRewardPublication: lastRewardPublicationPda,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
+
+            const last = await program.account.lastRewardPublication.fetch(lastRewardPublicationPda);
+            assert.equal(last.id, 0, "start_id should be stored as the floor");
+        });
+
+        it("fails to initialize last reward publication twice", async () => {
+            try {
+                await program.methods
+                    .initializeLastRewardPublication(0)
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        lastRewardPublication: lastRewardPublicationPda,
                         signer: provider.wallet.publicKey,
                         programData: programDataPda,
                         systemProgram: SystemProgram.programId,
@@ -1584,6 +1666,7 @@ describe("vault-stake", () => {
         // publish_rewards here still observes a cleared cooldown.
         beforeEach(async () => {
             await ensureStakeRewardConfigInitialized();
+            await ensureLastRewardPublicationInitialized();
             await ensureShortRewardCooldownForTests();
         });
 
@@ -1741,7 +1824,8 @@ describe("vault-stake", () => {
                 const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
                     [
                         Buffer.from("reward_record"),
-                        Buffer.from(new Uint32Array([++publishRewardsId]).buffer)
+                        Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
+                        Buffer.from(new BigUint64Array([BigInt(amount.toString())]).buffer),
                     ],
                     program.programId);
 
@@ -1763,6 +1847,7 @@ describe("vault-stake", () => {
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
                         stakeRewardConfig: stakeRewardConfigPda,
+                        lastRewardPublication: lastRewardPublicationPda,
                         systemProgram: anchor.web3.SystemProgram.programId,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     })
@@ -1933,6 +2018,7 @@ describe("vault-stake", () => {
     describe("rewards", () => {
         beforeEach(async () => {
             await ensureStakeRewardConfigInitialized();
+            await ensureLastRewardPublicationInitialized();
             await ensureShortRewardCooldownForTests();
         });
 
@@ -1947,12 +2033,11 @@ describe("vault-stake", () => {
             }
         });
 
-        // A collision on the reward record is raised by the system program while Anchor is still
-        // validating accounts, so the marker lands in the transaction logs rather than surfacing as
-        // an Anchor error code.
-        const expectRejectedAsDuplicateRecord = (err: unknown) => {
+        // 52 = 0x34. Match name or raw code; Anchor surfaces either depending on client path.
+        const expectRewardPublicationIdNotMonotonic = (err: unknown) => {
             const logs = (err as { logs?: string[] }).logs ?? [];
-            expect(`${err}\n${logs.join("\n")}`).to.include("already in use");
+            const msg = `${err}\n${logs.join("\n")}`;
+            expect(msg).to.match(/RewardPublicationIdNotMonotonic|custom program error:\s*0x34\b/i);
         };
 
         it("publish rewards", async () => {
@@ -1965,7 +2050,8 @@ describe("vault-stake", () => {
             const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("reward_record"),
-                    Buffer.from(new Uint32Array([++publishRewardsId]).buffer)
+                    Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
+                    Buffer.from(new BigUint64Array([BigInt(amount.toString())]).buffer),
                 ],
                 program.programId);
 
@@ -1987,6 +2073,7 @@ describe("vault-stake", () => {
                     mint: mintedToken,
                     rewardRecord: rewardsRecordPda,
                     stakeRewardConfig: stakeRewardConfigPda,
+                    lastRewardPublication: lastRewardPublicationPda,
                     systemProgram: anchor.web3.SystemProgram.programId,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                 })
@@ -2016,18 +2103,18 @@ describe("vault-stake", () => {
         });
 
         it("prevents duplicate publish rewards", async () => {
-
-            // Republish the id the previous test consumed, at an amount that clears every cap, so
-            // the existing reward record is the only thing that can reject the call. No cooldown
-            // sleep is needed: `init` collides during account validation, before the handler runs.
+            // Reuse the id the previous test consumed with a different amount so a fresh record PDA
+            // would allocate; LastRewardPublication is what rejects the call.
             const vaultBalance = (await getAccount(provider.connection, vaultTokenAccount)).amount;
             const amount = (vaultBalance * BigInt(50)) / BigInt(10_000);
             const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("reward_record"),
-                    Buffer.from(new Uint32Array([publishRewardsId]).buffer)
+                    Buffer.from(new Uint32Array([publishRewardsId]).buffer),
+                    Buffer.from(new BigUint64Array([BigInt(amount.toString())]).buffer),
                 ],
-                program.programId);
+                program.programId
+            );
 
             try {
                 await program.methods
@@ -2048,6 +2135,7 @@ describe("vault-stake", () => {
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
                         stakeRewardConfig: stakeRewardConfigPda,
+                        lastRewardPublication: lastRewardPublicationPda,
                         systemProgram: anchor.web3.SystemProgram.programId,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     })
@@ -2055,31 +2143,34 @@ describe("vault-stake", () => {
                     .rpc();
                 assert.fail("Should have thrown error");
             } catch (e) {
-                expectRejectedAsDuplicateRecord(e);
+                expectRewardPublicationIdNotMonotonic(e);
             }
         });
 
-        // Audit follow-up: the record PDA used to be seeded on (id, amount), so reusing an id with a
-        // different amount derived a fresh address and published a second time under the same id.
-        // Seeding on id alone makes a publication unique regardless of the amount it carries.
+        // Same id at a different amount used to succeed under (id, amount) seeds alone. The counter
+        // now rejects it; the original record must remain untouched after the failed attempt.
         it("prevents republishing an id with a different amount", async () => {
+            const records = await program.account.rewardPublicationRecord.all();
+            const published = records.find((r) => r.account.id === publishRewardsId);
+            assert.isDefined(published, "Expected a prior publication for the current id");
 
-            const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
-                [
-                    Buffer.from("reward_record"),
-                    Buffer.from(new Uint32Array([publishRewardsId]).buffer)
-                ],
-                program.programId);
-
-            const published = await program.account.rewardPublicationRecord.fetch(rewardsRecordPda);
             const vaultBalance = (await getAccount(provider.connection, vaultTokenAccount)).amount;
             // 0.25% of the vault stays under the 0.75% cap, so the amount itself is publishable.
             const differentAmount = (vaultBalance * BigInt(25)) / BigInt(10_000);
             assert.isTrue(differentAmount > BigInt(0), "Test amount must be non-zero");
             assert.notEqual(
                 differentAmount.toString(),
-                published.amount.toString(),
+                published!.account.amount.toString(),
                 "Test amount must differ from the original publication for this to prove anything"
+            );
+
+            const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("reward_record"),
+                    Buffer.from(new Uint32Array([publishRewardsId]).buffer),
+                    Buffer.from(new BigUint64Array([BigInt(differentAmount.toString())]).buffer),
+                ],
+                program.programId
             );
 
             try {
@@ -2101,6 +2192,7 @@ describe("vault-stake", () => {
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
                         stakeRewardConfig: stakeRewardConfigPda,
+                        lastRewardPublication: lastRewardPublicationPda,
                         systemProgram: anchor.web3.SystemProgram.programId,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     })
@@ -2108,14 +2200,13 @@ describe("vault-stake", () => {
                     .rpc();
                 assert.fail("Should have thrown error");
             } catch (e) {
-                expectRejectedAsDuplicateRecord(e);
+                expectRewardPublicationIdNotMonotonic(e);
             }
 
-            // The original publication must be untouched by the rejected attempt.
-            const after = await program.account.rewardPublicationRecord.fetch(rewardsRecordPda);
+            const after = await program.account.rewardPublicationRecord.fetch(published!.publicKey);
             assert.equal(
                 after.amount.toString(),
-                published.amount.toString(),
+                published!.account.amount.toString(),
                 "Rejected republish must not overwrite the recorded amount"
             );
         });
@@ -2127,7 +2218,8 @@ describe("vault-stake", () => {
             const [rewardsRecordPda1] = anchor.web3.PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("reward_record"),
-                    Buffer.from(new Uint32Array([++publishRewardsId]).buffer)
+                    Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
+                    Buffer.from(new BigUint64Array([BigInt(amount.toString())]).buffer),
                 ],
                 program.programId);
 
@@ -2149,6 +2241,7 @@ describe("vault-stake", () => {
                     mint: mintedToken,
                     rewardRecord: rewardsRecordPda1,
                     stakeRewardConfig: stakeRewardConfigPda,
+                    lastRewardPublication: lastRewardPublicationPda,
                     systemProgram: anchor.web3.SystemProgram.programId,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                 })
@@ -2158,7 +2251,8 @@ describe("vault-stake", () => {
             const [rewardsRecordPda2] = anchor.web3.PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("reward_record"),
-                    Buffer.from(new Uint32Array([++publishRewardsId]).buffer)
+                    Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
+                    Buffer.from(new BigUint64Array([BigInt(amount.toString())]).buffer),
                 ],
                 program.programId);
 
@@ -2183,6 +2277,7 @@ describe("vault-stake", () => {
                     mint: mintedToken,
                     rewardRecord: rewardsRecordPda2,
                     stakeRewardConfig: stakeRewardConfigPda,
+                    lastRewardPublication: lastRewardPublicationPda,
                     systemProgram: anchor.web3.SystemProgram.programId,
                     tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                 })
@@ -2203,7 +2298,8 @@ describe("vault-stake", () => {
                 const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
                     [
                         Buffer.from("reward_record"),
-                        Buffer.from(new Uint32Array([++publishRewardsId]).buffer)
+                        Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
+                        Buffer.from(new BigUint64Array([BigInt(amount.toString())]).buffer),
                     ],
                     program.programId);
 
@@ -2225,6 +2321,7 @@ describe("vault-stake", () => {
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
                         stakeRewardConfig: stakeRewardConfigPda,
+                        lastRewardPublication: lastRewardPublicationPda,
                         systemProgram: anchor.web3.SystemProgram.programId,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     })
@@ -2240,6 +2337,7 @@ describe("vault-stake", () => {
     describe("StakeRewardConfig", () => {
         beforeEach(async () => {
             await ensureStakeRewardConfigInitialized();
+            await ensureLastRewardPublicationInitialized();
             await ensureShortRewardCooldownForTests();
         });
 
@@ -2260,16 +2358,18 @@ describe("vault-stake", () => {
             mint: mintedToken,
             rewardRecord: rewardsRecordPda,
             stakeRewardConfig: stakeRewardConfigPda,
+            lastRewardPublication: lastRewardPublicationPda,
             systemProgram: anchor.web3.SystemProgram.programId,
             tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
         });
 
-        // The record PDA is seeded on `id` alone, so the published amount is not an input here.
-        const makeRewardsRecordPda = (id: number) => {
+        // Record PDA is addressed by (id, amount); uniqueness of id is the LastRewardPublication counter.
+        const makeRewardsRecordPda = (id: number, amount: number | bigint | BN) => {
             return anchor.web3.PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("reward_record"),
                     Buffer.from(new Uint32Array([id]).buffer),
+                    Buffer.from(new BigUint64Array([BigInt(amount.toString())]).buffer),
                 ],
                 program.programId
             )[0];
@@ -2316,7 +2416,7 @@ describe("vault-stake", () => {
                 const configBefore = await program.account.stakeRewardConfig.fetch(stakeRewardConfigPda);
                 const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
                 const safeAmount = (totalAssets * BigInt(50)) / BigInt(10_000); // 0.5% — within 0.75% cap
-                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId);
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, safeAmount);
                 await program.methods
                     .publishRewards(publishRewardsId, new BN(safeAmount.toString()))
                     .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
@@ -2331,6 +2431,67 @@ describe("vault-stake", () => {
                 );
             });
 
+            it("rejects publish_rewards when id equals the stored last id", async () => {
+                const last = await program.account.lastRewardPublication.fetch(lastRewardPublicationPda);
+                const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+                const amount = (totalAssets * BigInt(50)) / BigInt(10_000);
+                const reusedId = last.id;
+                const rewardsRecordPda = makeRewardsRecordPda(reusedId, amount);
+                try {
+                    await program.methods
+                        .publishRewards(reusedId, new BN(amount.toString()))
+                        .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown RewardPublicationIdNotMonotonic");
+                } catch (err) {
+                    expect(String(err)).to.match(
+                        /RewardPublicationIdNotMonotonic|custom program error:\s*0x34\b/i
+                    );
+                }
+            });
+
+            it("rejects publish_rewards when id is below the stored last id", async () => {
+                const last = await program.account.lastRewardPublication.fetch(lastRewardPublicationPda);
+                assert.isTrue(last.id > 0, "need a prior publication so a lower id exists");
+                const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+                const amount = (totalAssets * BigInt(50)) / BigInt(10_000);
+                const lowerId = last.id - 1;
+                const rewardsRecordPda = makeRewardsRecordPda(lowerId, amount);
+                try {
+                    await program.methods
+                        .publishRewards(lowerId, new BN(amount.toString()))
+                        .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown RewardPublicationIdNotMonotonic");
+                } catch (err) {
+                    expect(String(err)).to.match(
+                        /RewardPublicationIdNotMonotonic|custom program error:\s*0x34\b/i
+                    );
+                }
+            });
+
+            it("advances last reward publication id on a successful publish", async () => {
+                const lastBefore = await program.account.lastRewardPublication.fetch(
+                    lastRewardPublicationPda
+                );
+                const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+                const amount = (totalAssets * BigInt(50)) / BigInt(10_000);
+                const nextId = lastBefore.id + 1;
+                publishRewardsId = nextId;
+                const rewardsRecordPda = makeRewardsRecordPda(nextId, amount);
+                await program.methods
+                    .publishRewards(nextId, new BN(amount.toString()))
+                    .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                    .signers([rewardsAdmin])
+                    .rpc();
+                const lastAfter = await program.account.lastRewardPublication.fetch(
+                    lastRewardPublicationPda
+                );
+                assert.equal(lastAfter.id, nextId, "counter must advance to the published id");
+            });
+
         });
 
         // ── Default 0.75% cap enforcement ─────────────────────────────────────
@@ -2342,7 +2503,7 @@ describe("vault-stake", () => {
             it("rejects reward above 0.75% of total_assets with RewardExceedsMaxDelta", async () => {
                 const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
                 const overCapAmount = (totalAssets * BigInt(76)) / BigInt(10_000) + BigInt(1); // just over 0.75%
-                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId);
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, overCapAmount);
                 try {
                     await program.methods
                         .publishRewards(publishRewardsId, new BN(overCapAmount.toString()))
@@ -2358,7 +2519,7 @@ describe("vault-stake", () => {
             it("allows reward at exactly 0.75% of total_assets", async () => {
                 const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
                 const exactCapAmount = (totalAssets * BigInt(75)) / BigInt(10_000); // exactly 0.75%
-                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId);
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, exactCapAmount);
                 await program.methods
                     .publishRewards(publishRewardsId, new BN(exactCapAmount.toString()))
                     .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
@@ -2400,7 +2561,7 @@ describe("vault-stake", () => {
 
                 const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
                 const amount = (totalAssets * BigInt(30)) / BigInt(100); // 30%: blocked at 20%, allowed at 50%
-                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId);
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, amount);
                 await program.methods
                     .publishRewards(publishRewardsId, new BN(amount.toString()))
                     .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
@@ -2435,7 +2596,7 @@ describe("vault-stake", () => {
 
                 const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
                 const overCapAmount = (totalAssets * BigInt(30)) / BigInt(100); // 30% — over 20% cap
-                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId);
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, overCapAmount);
                 try {
                     await program.methods
                         .publishRewards(publishRewardsId, new BN(overCapAmount.toString()))
@@ -2683,7 +2844,7 @@ describe("vault-stake", () => {
                     .rpc();
                 await sleep(REWARD_COOLDOWN_TEST_SLEEP_MS);
 
-                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId);
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, 2);
                 try {
                     await program.methods
                         .publishRewards(publishRewardsId, new BN(2))
@@ -2704,7 +2865,7 @@ describe("vault-stake", () => {
                 // Parent beforeEach leaves reward_period_seconds = 1 and sleeps so the first publish
                 // here is allowed even after prior tests published. Raise the cooldown only after that
                 // publish, so the immediate second publish hits RewardCooldownNotElapsed.
-                const firstRewardRecordPda = makeRewardsRecordPda(++publishRewardsId);
+                const firstRewardRecordPda = makeRewardsRecordPda(++publishRewardsId, 1);
                 await program.methods
                     .publishRewards(publishRewardsId, new BN(1))
                     .accountsStrict(publishRewardsAccounts(firstRewardRecordPda))
@@ -2716,7 +2877,7 @@ describe("vault-stake", () => {
                     .accountsStrict(updateRewardPeriodSecondsAccounts())
                     .rpc();
 
-                const secondRewardRecordPda = makeRewardsRecordPda(++publishRewardsId);
+                const secondRewardRecordPda = makeRewardsRecordPda(++publishRewardsId, 1);
                 try {
                     await program.methods
                         .publishRewards(publishRewardsId, new BN(1))
@@ -2747,7 +2908,7 @@ describe("vault-stake", () => {
                     .rpc();
                 await sleep(REWARD_COOLDOWN_TEST_SLEEP_MS);
 
-                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId);
+                const rewardsRecordPda = makeRewardsRecordPda(++publishRewardsId, 2);
                 try {
                     await program.methods
                         .publishRewards(publishRewardsId, new BN(2))
@@ -2891,7 +3052,8 @@ describe("vault-stake", () => {
                 const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
                     [
                         Buffer.from("reward_record"),
-                        Buffer.from(new Uint32Array([++publishRewardsId]).buffer)
+                        Buffer.from(new Uint32Array([++publishRewardsId]).buffer),
+                        Buffer.from(new BigUint64Array([BigInt(amount.toString())]).buffer),
                     ],
                     program.programId);
 
@@ -2913,6 +3075,7 @@ describe("vault-stake", () => {
                         mint: mintedToken,
                         rewardRecord: rewardsRecordPda,
                         stakeRewardConfig: stakeRewardConfigPda,
+                        lastRewardPublication: lastRewardPublicationPda,
                         systemProgram: anchor.web3.SystemProgram.programId,
                         tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
                     })

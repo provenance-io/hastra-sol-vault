@@ -88,6 +88,12 @@ pub struct MaxTotalRewardsUpdated {
 }
 
 #[event]
+pub struct LastRewardPublicationInitialized {
+    pub start_id: u32,
+    pub stake_config: Pubkey,
+}
+
+#[event]
 pub struct PriceInvalidated {
     pub verifier: Pubkey,
     pub feed_id: [u8; 32],

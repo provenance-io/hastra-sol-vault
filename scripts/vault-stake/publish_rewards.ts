@@ -2,6 +2,7 @@ import * as anchor from "@coral-xyz/anchor";
 import {Program} from "@coral-xyz/anchor";
 import yargs from "yargs";
 import {VaultStake} from "../../target/types/vault_stake";
+import {createBigInt} from "@metaplex-foundation/umi";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
@@ -72,6 +73,14 @@ const main = async () => {
         program.programId
     );
 
+    const [lastRewardPublicationPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("last_reward_publication"),
+            stakeConfigPda.toBuffer()
+        ],
+        program.programId
+    );
+
     const [vaultAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("vault_authority")],
         program.programId
@@ -109,11 +118,12 @@ const main = async () => {
         mintProgramId
     );
 
-    // Seeded on rewardId alone: a given id is publishable exactly once, at any amount.
+    // Addressed by (id, amount); uniqueness of id is enforced by LastRewardPublication.
     const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [
             Buffer.from("reward_record"),
-            Buffer.from(new Uint32Array([rewardId]).buffer)
+            Buffer.from(new Uint32Array([rewardId]).buffer),
+            Buffer.from(new BigUint64Array([createBigInt(amount.toString())]).buffer)
         ],
         program.programId);
 
@@ -149,6 +159,7 @@ const main = async () => {
             mint: mint,
             rewardRecord: rewardsRecordPda,
             stakeRewardConfig: stakeRewardConfigPda,
+            lastRewardPublication: lastRewardPublicationPda,
             tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
             systemProgram: anchor.web3.SystemProgram.programId,
         }).rpc();

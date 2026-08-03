@@ -440,6 +440,16 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
     );
     require!(amount > 0, CustomErrorCode::InvalidAmount);
 
+    // Enforce strictly increasing publication ids. The counter must already exist
+    // (see `initialize_last_reward_publication`); seeding too low at init would leave a gap
+    // of reusable ids, so operators should err high.
+    let last = &mut ctx.accounts.last_reward_publication;
+    require!(
+        id > last.id,
+        CustomErrorCode::RewardPublicationIdNotMonotonic
+    );
+    last.id = id;
+
     let config = &mut ctx.accounts.stake_reward_config;
 
     // Enforce reward cap: amount must not exceed max_reward_bps % of current total_assets.
@@ -718,6 +728,30 @@ pub fn initialize_stake_reward_config(ctx: Context<InitializeStakeRewardConfig>)
     msg!("max_period_rewards: {}", config.max_period_rewards);
     msg!("reward_period_seconds: {}", config.reward_period_seconds);
     msg!("max_total_rewards: {}", config.max_total_rewards);
+
+    Ok(())
+}
+
+/// Initializes the LastRewardPublication PDA with `start_id` as the floor for future publishes.
+/// Must be called once before `publish_rewards` can succeed. Only callable by the program
+/// upgrade authority. Seed at or above the highest historical publication id for the pool.
+pub fn initialize_last_reward_publication(
+    ctx: Context<InitializeLastRewardPublication>,
+    start_id: u32,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+
+    let last = &mut ctx.accounts.last_reward_publication;
+    last.id = start_id;
+    last.bump = ctx.bumps.last_reward_publication;
+
+    emit!(LastRewardPublicationInitialized {
+        start_id,
+        stake_config: ctx.accounts.stake_config.key(),
+    });
+
+    msg!("LastRewardPublication initialized");
+    msg!("start_id: {}", start_id);
 
     Ok(())
 }

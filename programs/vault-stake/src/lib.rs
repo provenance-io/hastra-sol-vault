@@ -236,6 +236,16 @@ pub mod vault_stake {
         processor::initialize_stake_reward_config(ctx)
     }
 
+    /// Creates the LastRewardPublication PDA, seeding the monotonic id floor for publish_rewards.
+    /// Must be called once before `publish_rewards` can succeed. Only callable by the program
+    /// upgrade authority. Pass `start_id` at or above the highest historical publication id.
+    pub fn initialize_last_reward_publication(
+        ctx: Context<InitializeLastRewardPublication>,
+        start_id: u32,
+    ) -> Result<()> {
+        processor::initialize_last_reward_publication(ctx, start_id)
+    }
+
     /// Updates the maximum reward distribution cap on an existing StakeRewardConfig.
     /// Only callable by the program upgrade authority.
     pub fn update_max_reward_bps(ctx: Context<UpdateMaxRewardBps>, new_bps: u64) -> Result<()> {

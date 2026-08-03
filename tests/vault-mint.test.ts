@@ -2109,6 +2109,7 @@ describe("vault-mint", () => {
         let stakeVaultTokenAccountConfigPdaAuto: PublicKey;
         let stakePriceConfigPdaAuto: PublicKey;
         let stakeRewardConfigPdaAuto: PublicKey;
+        let lastRewardPublicationPdaAuto: PublicKey;
         let programDataPdaAuto: PublicKey;
         let externalMintAuthorityPdaAuto: PublicKey;
         let autoShareMint: PublicKey;
@@ -2162,12 +2163,13 @@ describe("vault-mint", () => {
                 .rpc();
         };
 
-        // The record PDA is seeded on `id` alone, so the published amount is not an input here.
-        const makeAutoRewardsRecordPda = (id: number) =>
+        // Record PDA is addressed by (id, amount); uniqueness of id is the LastRewardPublication counter.
+        const makeAutoRewardsRecordPda = (id: number, amount: number | bigint | BN) =>
             PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("reward_record"),
                     Buffer.from(new Uint32Array([id]).buffer),
+                    Buffer.from(new BigUint64Array([BigInt(amount.toString())]).buffer),
                 ],
                 stakeAutoProgram.programId
             )[0];
@@ -2189,6 +2191,7 @@ describe("vault-mint", () => {
             mint: autoShareMint,
             rewardRecord,
             stakeRewardConfig: stakeRewardConfigPdaAuto,
+            lastRewardPublication: lastRewardPublicationPdaAuto,
             tokenProgram: TOKEN_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
         });
@@ -2242,6 +2245,13 @@ describe("vault-mint", () => {
             [stakeRewardConfigPdaAuto] = PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("stake_reward_config"),
+                    stakeConfigPdaAuto.toBuffer(),
+                ],
+                stakeAutoProgram.programId
+            );
+            [lastRewardPublicationPdaAuto] = PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("last_reward_publication"),
                     stakeConfigPdaAuto.toBuffer(),
                 ],
                 stakeAutoProgram.programId
@@ -2361,7 +2371,27 @@ describe("vault-mint", () => {
                 })
                 .rpc();
 
-            // stake_reward_config for AUTO is created lazily on first publish_rewards.
+            // Cap + monotonic-id accounts must exist before publish_rewards (no lazy init).
+            await stakeAutoProgram.methods
+                .initializeStakeRewardConfig()
+                .accountsStrict({
+                    stakeConfig: stakeConfigPdaAuto,
+                    stakeRewardConfig: stakeRewardConfigPdaAuto,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPdaAuto,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
+            await stakeAutoProgram.methods
+                .initializeLastRewardPublication(0)
+                .accountsStrict({
+                    stakeConfig: stakeConfigPdaAuto,
+                    lastRewardPublication: lastRewardPublicationPdaAuto,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPdaAuto,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
 
             await setPriceForTestingAuto();
         });
@@ -2382,7 +2412,7 @@ describe("vault-mint", () => {
             const amount = (vaultBal * BigInt(50)) / BigInt(10_000);
             assert.ok(amount > BigInt(0), "need vault balance for publish amount");
             const id = ++autoPublishRewardsId;
-            const rewardRecord = makeAutoRewardsRecordPda(id);
+            const rewardRecord = makeAutoRewardsRecordPda(id, amount);
 
             try {
                 await stakeAutoProgram.methods
@@ -2416,7 +2446,7 @@ describe("vault-mint", () => {
             const amount = (vaultBalBefore * BigInt(50)) / BigInt(10_000);
             assert.ok(amount > BigInt(0));
             const id = ++autoPublishRewardsId;
-            const rewardRecord = makeAutoRewardsRecordPda(id);
+            const rewardRecord = makeAutoRewardsRecordPda(id, amount);
 
             await stakeAutoProgram.methods
                 .publishRewards(id, new BN(amount.toString()))

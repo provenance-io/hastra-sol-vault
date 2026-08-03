@@ -356,7 +356,7 @@ pub struct ThawTokenAccount<'info> {
 
 // admin publishes rewards
 #[derive(Accounts)]
-#[instruction(id: u32)]
+#[instruction(id: u32, amount: u64)]
 pub struct PublishRewards<'info> {
     #[account(
         seeds = [b"stake_config"], 
@@ -456,17 +456,8 @@ pub struct PublishRewards<'info> {
     )]
     pub mint: Box<Account<'info, Mint>>,
 
-    /// Replay guard for reward publications: `id` alone is the uniqueness key, so a publication
-    /// is not republishable. `init` fails on any later attempt to reuse an `id`, including one
-    /// carrying a different `amount`. The published `amount` is still recorded in the account but
-    /// deliberately does not form part of the address — including it would reduce the guard to
-    /// blocking only an exact `(id, amount)` repeat, leaving the same `id` republishable at a
-    /// different amount.
-    ///
-    /// Uniqueness is enforced from this upgrade forward. Records published earlier live at
-    /// `(id, amount)`-derived addresses that never collide with these, so ids issued before the
-    /// upgrade are unaffected and remain exactly as they are; the publisher simply continues
-    /// issuing ids above the highest of them.
+    /// Per-publication record. Seeds `(id, amount)` are addressing only; uniqueness of the
+    /// publication id is enforced by `last_reward_publication` in the handler.
     #[account(
         init,
         payer = admin,
@@ -474,6 +465,7 @@ pub struct PublishRewards<'info> {
         seeds = [
             b"reward_record",
             id.to_le_bytes().as_ref(),
+            amount.to_le_bytes().as_ref(),
         ],
         bump
     )]
@@ -489,6 +481,18 @@ pub struct PublishRewards<'info> {
         bump = stake_reward_config.bump,
     )]
     pub stake_reward_config: Box<Account<'info, StakeRewardConfig>>,
+
+    /// Highest accepted reward publication id — must exist (see `initialize_last_reward_publication`).
+    /// Typed and required so a missing account fails closed rather than materializing at zero.
+    #[account(
+        mut,
+        seeds = [
+            b"last_reward_publication",
+            stake_config.key().as_ref(),
+        ],
+        bump = last_reward_publication.bump,
+    )]
+    pub last_reward_publication: Box<Account<'info, LastRewardPublication>>,
 
     pub system_program: Program<'info, System>,
 
@@ -710,6 +714,41 @@ pub struct InitializeStakeRewardConfig<'info> {
         bump
     )]
     pub stake_reward_config: Account<'info, StakeRewardConfig>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Creates the LastRewardPublication PDA, seeding the monotonic id floor for `publish_rewards`.
+/// Must be called once before `publish_rewards` can succeed. Only callable by the program
+/// upgrade authority. `start_id` should be at or above the highest historical publication id.
+#[derive(Accounts)]
+pub struct InitializeLastRewardPublication<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        init,
+        payer = signer,
+        space = LastRewardPublication::LEN,
+        seeds = [
+            b"last_reward_publication",
+            stake_config.key().as_ref(),
+        ],
+        bump
+    )]
+    pub last_reward_publication: Account<'info, LastRewardPublication>,
 
     #[account(mut)]
     pub signer: Signer<'info>,

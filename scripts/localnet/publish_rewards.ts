@@ -14,6 +14,7 @@ import {Connection} from "@solana/web3.js";
 import yargs from "yargs";
 import {VaultStake} from "../../target/types/vault_stake";
 import {VaultStakeAuto} from "../../target/types/vault_stake_auto";
+import {createBigInt} from "@metaplex-foundation/umi";
 import {
     defaultLocalValidatorConfigPath,
     defaultLocalValidatorEnvPath,
@@ -212,6 +213,11 @@ async function main() {
         thisProgramId
     );
 
+    const [lastRewardPublicationPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("last_reward_publication"), stakeConfigPda.toBuffer()],
+        thisProgramId
+    );
+
     const [vaultAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("vault_authority")],
         thisProgramId
@@ -244,11 +250,12 @@ async function main() {
             mintProgramId
         );
 
-    // Seeded on rewardId alone: a given id is publishable exactly once, at any amount.
+    // Addressed by (id, amount); uniqueness of id is enforced by LastRewardPublication.
     const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [
             Buffer.from("reward_record"),
             Buffer.from(new Uint32Array([rewardId]).buffer),
+            Buffer.from(new BigUint64Array([createBigInt(amount.toString())]).buffer),
         ],
         thisProgramId
     );
@@ -284,6 +291,7 @@ async function main() {
             mint: mint,
             rewardRecord: rewardsRecordPda,
             stakeRewardConfig: stakeRewardConfigPda,
+            lastRewardPublication: lastRewardPublicationPda,
             tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
             systemProgram: anchor.web3.SystemProgram.programId,
         })
