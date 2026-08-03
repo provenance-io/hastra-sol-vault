@@ -8,7 +8,7 @@ import { getAssociatedTokenAddress } from "@solana/spl-token";
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
 
-const program = anchor.workspace.VaultMint as Program<VaultMint>;
+const workspaceProgram = anchor.workspace.VaultMint as Program<VaultMint>;
 
 const args = yargs(process.argv.slice(2))
     .option("user", {
@@ -40,9 +40,23 @@ const args = yargs(process.argv.slice(2))
             "request or the program rejects with RedemptionAmountMismatch.",
         required: true,
     })
+    .option("program_id", {
+        type: "string",
+        description: "Optional vault-mint program id override",
+    })
     .parseSync();
 
 const main = async () => {
+    const resolvedIdl = JSON.parse(JSON.stringify(workspaceProgram.idl));
+    if (args.program_id) {
+        new PublicKey(args.program_id);
+        resolvedIdl.address = args.program_id;
+        if (resolvedIdl.metadata) {
+            resolvedIdl.metadata.address = args.program_id;
+        }
+    }
+    const program = new anchor.Program(resolvedIdl as anchor.Idl, provider) as Program<VaultMint>;
+
     const admin = provider.wallet.publicKey;
     const user = new PublicKey(args.user);
     const mint = new PublicKey(args.mint);
@@ -51,7 +65,7 @@ const main = async () => {
     const expectedAmount = new BN(args.expected_amount);
 
     // Derive PDAs
-    const [configPda] = anchor.web3.PublicKey.findProgramAddressSync(
+    const [configPda] = PublicKey.findProgramAddressSync(
         [Buffer.from("config")],
         program.programId
     );

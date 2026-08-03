@@ -1,12 +1,13 @@
 import * as anchor from "@coral-xyz/anchor";
-import {Program} from "@coral-xyz/anchor";
-import {VaultStake} from "../../target/types/vault_stake";
+import { Program } from "@coral-xyz/anchor";
+import { PublicKey } from "@solana/web3.js";
+import { VaultStake } from "../../target/types/vault_stake";
 import yargs from "yargs";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
 
-const program = anchor.workspace.VaultStake as Program<VaultStake>;
+const workspaceProgram = anchor.workspace.VaultStake as Program<VaultStake>;
 
 const args = yargs(process.argv.slice(2))
     .option("pause", {
@@ -14,10 +15,24 @@ const args = yargs(process.argv.slice(2))
         description: "Set to true to pause the program, false to unpause",
         required: true,
     })
+    .option("program_id", {
+        type: "string",
+        description: "Optional vault-stake program id override (AUTO / SMB)",
+    })
     .parseSync();
 
 const main = async () => {
-    const [stakeConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
+    const resolvedIdl = JSON.parse(JSON.stringify(workspaceProgram.idl));
+    if (args.program_id) {
+        new PublicKey(args.program_id);
+        resolvedIdl.address = args.program_id;
+        if (resolvedIdl.metadata) {
+            resolvedIdl.metadata.address = args.program_id;
+        }
+    }
+    const program = new anchor.Program(resolvedIdl as anchor.Idl, provider) as Program<VaultStake>;
+
+    const [stakeConfigPda] = PublicKey.findProgramAddressSync(
         [Buffer.from("stake_config")],
         program.programId
     );
@@ -25,7 +40,6 @@ const main = async () => {
     console.log("Program ID:", program.programId.toBase58());
     console.log("Stake Config PDA:", stakeConfigPda.toBase58());
 
-    // Call initialize
     await program.methods
         .pause(args.pause)
         .accountsStrict({
@@ -36,15 +50,13 @@ const main = async () => {
         .then((tx) => {
             console.log("Transaction:", tx);
         })
-        .catch(
-            (err) => {
-                if (err.getLogs) {
-                    console.dir(err.getLogs);
-                }
-                console.error("Transaction failed:", err);
-                throw err;
+        .catch((err) => {
+            if (err.getLogs) {
+                console.dir(err.getLogs);
             }
-        )
+            console.error("Transaction failed:", err);
+            throw err;
+        });
 };
 
 main().catch(console.error);
