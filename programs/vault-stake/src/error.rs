@@ -92,6 +92,6 @@ pub enum CustomErrorCode {
     ObservationTimestampNotIncreasing = 50,
     #[msg("Chainlink report observations_timestamp is ahead of current time")]
     FutureObservationTimestamp = 51,
-    #[msg("Reward publication id must be greater than the last published id")]
+    #[msg("Reward publication id must equal last published id + 1")]
     RewardPublicationIdNotMonotonic = 52,
 }

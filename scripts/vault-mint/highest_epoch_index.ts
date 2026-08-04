@@ -55,7 +55,7 @@ async function main() {
     console.log("Highest epoch index:        ", highest);
     console.log("\nSuggested --first_capped_epoch:", highest + 1);
     console.log(
-        "(Err high if unsure — skipped indices are harmless; seeding too low leaves a permanent gap.)"
+        "(After init, create_rewards_epoch requires last_rewards_epoch.index + 1.)"
     );
 }
 

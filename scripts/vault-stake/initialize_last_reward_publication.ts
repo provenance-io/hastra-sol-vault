@@ -8,8 +8,9 @@
  * Use this when the PDA does not exist yet (e.g. after upgrading a pool that
  * already has historical RewardPublicationRecord accounts). Fails if the account
  * already exists. Seed `--start_id` at or above the highest historical id
- * (see highest_reward_publication_id.ts); err high — skipped ids are harmless,
- * seeding too low leaves a reusable gap.
+ * (see highest_reward_publication_id.ts); err high — ids skipped by a high init
+ * floor stay unused, then publish_rewards requires contiguous succession
+ * (`start_id + 1`, then last.id + 1). Seeding too low leaves a reusable gap.
  *
  * Requires a program build that includes `initialize_last_reward_publication`
  * (run `anchor build` so target/idl and types are current).
@@ -33,7 +34,7 @@ const args = yargs(process.argv.slice(2))
     .option("start_id", {
         type: "number",
         description:
-            "Floor for future publish_rewards ids; must be >= highest historical publication id",
+            "Floor for future publish_rewards ids; must be >= highest historical publication id; next publish uses start_id + 1",
         required: true,
     })
     .option("program_id", {

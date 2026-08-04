@@ -440,12 +440,13 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
     );
     require!(amount > 0, CustomErrorCode::InvalidAmount);
 
-    // Enforce strictly increasing publication ids. The counter must already exist
-    // (see `initialize_last_reward_publication`); seeding too low at init would leave a gap
-    // of reusable ids, so operators should err high.
+    // Enforce exact succession: each publish must use last.id + 1. Init may seed a high
+    // floor (see `initialize_last_reward_publication`); after that, gaps are rejected so a
+    // publisher cannot jump to u32::MAX and brick future publications.
     let last = &mut ctx.accounts.last_reward_publication;
+    let expected = last.id.checked_add(1).ok_or(CustomErrorCode::Overflow)?;
     require!(
-        id > last.id,
+        id == expected,
         CustomErrorCode::RewardPublicationIdNotMonotonic
     );
     last.id = id;
@@ -734,7 +735,8 @@ pub fn initialize_stake_reward_config(ctx: Context<InitializeStakeRewardConfig>)
 
 /// Initializes the LastRewardPublication PDA with `start_id` as the floor for future publishes.
 /// Must be called once before `publish_rewards` can succeed. Only callable by the program
-/// upgrade authority. Seed at or above the highest historical publication id for the pool.
+/// upgrade authority. Seed at or above the highest historical publication id for the pool;
+/// the next publish must use `start_id + 1`, then contiguous ids.
 pub fn initialize_last_reward_publication(
     ctx: Context<InitializeLastRewardPublication>,
     start_id: u32,

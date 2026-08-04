@@ -166,15 +166,25 @@ pub mod vault_mint {
 
     /// One-shot: enables epoch caps (upgrade authority).
     /// Must be executed after program upgrade before create/claim rewards.
-    /// Sets `first_capped_epoch` and `max_epoch_cap`. Epochs already created below that index
-    /// stay uncapped; new epochs cannot be created there. Set it above the highest existing
-    /// epoch index so no unused uncapped slot is left behind.
+    /// Sets `first_capped_epoch` and `max_epoch_cap`. Epochs already created below that
+    /// index stay uncapped; new epochs cannot be created there. Contiguous create indices
+    /// are enforced separately by `LastRewardsEpoch` (see `initialize_last_rewards_epoch`).
     pub fn initialize_epoch_caps(
         ctx: Context<InitializeEpochCaps>,
         first_capped_epoch: u64,
         max_epoch_cap: u64,
     ) -> Result<()> {
         processor::initialize_epoch_caps(ctx, first_capped_epoch, max_epoch_cap)
+    }
+
+    /// Creates the LastRewardsEpoch PDA, seeding the index floor for create_rewards_epoch.
+    /// Must be called once before create can succeed. Only callable by the program upgrade
+    /// authority. Subsequent creates must use exact succession (`start_index + 1`, then contiguous).
+    pub fn initialize_last_rewards_epoch(
+        ctx: Context<InitializeLastRewardsEpoch>,
+        start_index: u64,
+    ) -> Result<()> {
+        processor::initialize_last_rewards_epoch(ctx, start_index)
     }
 
     /// Updates the global max epoch cap (upgrade authority). Affects future creates only.

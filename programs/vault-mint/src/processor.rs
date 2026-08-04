@@ -5,8 +5,8 @@ use crate::guard::{validate_administrators, validate_program_update_authority};
 use crate::state::{AllowedExternalMintPrograms, EpochClaimedAmount, ProofNode};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::hash::hashv;
-use anchor_lang::solana_program::program_option::COption;
 use anchor_lang::solana_program::program::invoke;
+use anchor_lang::solana_program::program_option::COption;
 use anchor_lang::solana_program::system_instruction;
 use anchor_spl::token::spl_token::instruction::AuthorityType;
 use anchor_spl::token::{self, MintTo, Transfer};
@@ -471,10 +471,22 @@ pub fn create_rewards_epoch(
         index >= caps.first_capped_epoch,
         CustomErrorCode::EpochIndexBelowFirstCapped
     );
+    // Exact succession via LastRewardsEpoch (separate from cap config so create cannot
+    // mutate first_capped_epoch / max_epoch_cap). Overflow of u64 is the natural ceiling.
+    let last = &mut ctx.accounts.last_rewards_epoch;
+    let expected = last
+        .index
+        .checked_add(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    require!(
+        index == expected,
+        CustomErrorCode::EpochIndexNotContiguous
+    );
     require!(
         total <= caps.max_epoch_cap,
         CustomErrorCode::EpochCapAboveGlobal
     );
+    last.index = index;
 
     let e = &mut ctx.accounts.epoch;
     e.index = index;
@@ -621,6 +633,27 @@ pub fn initialize_epoch_caps(
         old_cap: 0,
         new_cap: max_epoch_cap,
     });
+
+    Ok(())
+}
+
+/// Initializes the LastRewardsEpoch PDA with `start_index` as the floor for future creates.
+/// Must be called once before `create_rewards_epoch` can succeed. The next create must use
+/// `start_index + 1`, then contiguous indices. Only callable by the program upgrade authority.
+pub fn initialize_last_rewards_epoch(
+    ctx: Context<InitializeLastRewardsEpoch>,
+    start_index: u64,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+
+    let last = &mut ctx.accounts.last_rewards_epoch;
+    last.index = start_index;
+    last.bump = ctx.bumps.last_rewards_epoch;
+
+    emit!(LastRewardsEpochInitialized { start_index });
+
+    msg!("LastRewardsEpoch initialized");
+    msg!("start_index: {}", start_index);
 
     Ok(())
 }

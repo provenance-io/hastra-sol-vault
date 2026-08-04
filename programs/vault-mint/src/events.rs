@@ -80,3 +80,8 @@ pub struct MaxEpochCapUpdated {
 pub struct FirstCappedEpochSet {
     pub epoch_index: u64,
 }
+
+#[event]
+pub struct LastRewardsEpochInitialized {
+    pub start_index: u64,
+}

@@ -62,6 +62,19 @@ async function main() {
     } catch {
         line("Status", "Not initialized");
     }
+
+    const [lastRewardsEpochPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("last_rewards_epoch")],
+        program.programId
+    );
+    line("LastRewardsEpoch PDA", lastRewardsEpochPda.toBase58());
+    try {
+        const last = await program.account.lastRewardsEpoch.fetch(lastRewardsEpochPda);
+        line("last_rewards_epoch.index", last.index.toString());
+        line("next create index", (BigInt(last.index.toString()) + 1n).toString());
+    } catch {
+        line("LastRewardsEpoch", "Not initialized");
+    }
 }
 
 main().catch((err) => {

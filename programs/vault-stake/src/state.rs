@@ -106,7 +106,7 @@ impl StakeRewardConfig {
 // Singleton per pool tracking the highest reward publication id accepted so far.
 // Separated from StakeRewardConfig so the live reward-cap account layout stays unchanged.
 // Must be initialized (with start_id at or above the historical maximum) before publish_rewards
-// can succeed; from then on publish_rewards requires each new id to be strictly greater.
+// can succeed; from then on publish_rewards requires each new id to equal last.id + 1.
 #[account]
 pub struct LastRewardPublication {
     pub id: u32, // highest reward publication id accepted so far

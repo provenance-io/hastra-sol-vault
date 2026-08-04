@@ -128,9 +128,13 @@ Staking rewards are published via `publish_rewards`, which CPIs into **vault-min
 3. **Cooldown (`reward_period_seconds`)**: default `3540` seconds (59 minutes).
 4. **Lifetime cap (`max_total_rewards`)**: default `10,000,000` wYLDS (6-decimal raw units: `10_000_000_000_000`).
 
+Publication ids must be contiguous: each `--reward_id` must equal the per-pool `LastRewardPublication.id` + 1 (`RewardPublicationIdNotMonotonic` otherwise). Initialize that PDA once with `scripts/vault-stake/initialize_last_reward_publication.ts` (or the Squads proposal variant) before the first publish.
+
 The guard state is stored at PDA:
 
 `[b"stake_reward_config", stake_config.key()]`
+
+`LastRewardPublication` is a separate PDA at `[b"last_reward_publication", stake_config.key()]`.
 
 #### Updating reward caps (Squads v4)
 

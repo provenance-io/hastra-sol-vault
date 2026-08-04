@@ -84,4 +84,6 @@ pub enum CustomErrorCode {
     EpochIndexBelowFirstCapped = 45,
     #[msg("Redemption request amount does not match the amount the administrator approved")]
     RedemptionAmountMismatch = 46,
+    #[msg("Epoch index must equal last accepted index + 1")]
+    EpochIndexNotContiguous = 47,
 }

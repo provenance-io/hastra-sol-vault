@@ -255,8 +255,8 @@ pub struct ThawTokenAccount<'info> {
 
 // Admin posts an epoch Merkle root. Requires epoch caps initialized; enforces the global
 // max epoch cap and creates the per-epoch claimed counter. Claims mint wYLDS on demand.
-// `index` must be at or above `first_capped_epoch`: every epoch created through this
-// instruction is capped, so lower indices remain exclusive to pre-upgrade epochs.
+// `index` must equal `last_rewards_epoch.index + 1` and be at or above `first_capped_epoch`
+// so lower indices remain exclusive to pre-upgrade epochs. Cap fields stay read-only here.
 #[derive(Accounts)]
 #[instruction(index: u64)]
 pub struct CreateRewardsEpoch<'info> {
@@ -271,6 +271,14 @@ pub struct CreateRewardsEpoch<'info> {
         bump = epoch_caps_config.bump
     )]
     pub epoch_caps_config: Account<'info, EpochCapsConfig>,
+
+    /// Contiguous-index counter — the only account create is allowed to mutate for succession.
+    #[account(
+        mut,
+        seeds = [b"last_rewards_epoch"],
+        bump = last_rewards_epoch.bump
+    )]
+    pub last_rewards_epoch: Account<'info, LastRewardsEpoch>,
 
     #[account(mut)]
     pub admin: Signer<'info>,
@@ -383,6 +391,38 @@ pub struct InitializeEpochCaps<'info> {
         bump
     )]
     pub epoch_caps_config: Account<'info, EpochCapsConfig>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: Program data account that contains the upgrade authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Creates the LastRewardsEpoch PDA, seeding the index floor for `create_rewards_epoch`.
+/// Must be called once before create can succeed. Only callable by the program upgrade
+/// authority. Subsequent creates require exact succession (`last.index + 1`).
+#[derive(Accounts)]
+pub struct InitializeLastRewardsEpoch<'info> {
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Account<'info, Config>,
+
+    #[account(
+        init,
+        payer = signer,
+        space = LastRewardsEpoch::LEN,
+        seeds = [b"last_rewards_epoch"],
+        bump
+    )]
+    pub last_rewards_epoch: Account<'info, LastRewardsEpoch>,
 
     #[account(mut)]
     pub signer: Signer<'info>,

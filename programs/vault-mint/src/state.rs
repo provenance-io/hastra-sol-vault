@@ -54,6 +54,20 @@ impl EpochCapsConfig {
     pub const LEN: usize = 8 + 8 + 8 + 1;
 }
 
+/// Singleton tracking the highest rewards-epoch index accepted so far.
+/// Separated from `EpochCapsConfig` so create cannot mutate cap fields — only this counter.
+/// Must be initialized before `create_rewards_epoch`; each create requires `index == last + 1`.
+#[account]
+pub struct LastRewardsEpoch {
+    /// Highest accepted epoch index so far (floor for the next create).
+    pub index: u64,
+    pub bump: u8,
+}
+
+impl LastRewardsEpoch {
+    pub const LEN: usize = 8 + 8 + 1;
+}
+
 /// Tracks cumulative wYLDS minted via `claim_rewards` for one epoch.
 #[account]
 pub struct EpochClaimedAmount {

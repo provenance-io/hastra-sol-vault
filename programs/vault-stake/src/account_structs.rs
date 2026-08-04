@@ -727,9 +727,10 @@ pub struct InitializeStakeRewardConfig<'info> {
     pub system_program: Program<'info, System>,
 }
 
-/// Creates the LastRewardPublication PDA, seeding the monotonic id floor for `publish_rewards`.
+/// Creates the LastRewardPublication PDA, seeding the id floor for `publish_rewards`.
 /// Must be called once before `publish_rewards` can succeed. Only callable by the program
-/// upgrade authority. `start_id` should be at or above the highest historical publication id.
+/// upgrade authority. `start_id` should be at or above the highest historical publication id;
+/// subsequent publishes require exact succession (`last.id + 1`).
 #[derive(Accounts)]
 pub struct InitializeLastRewardPublication<'info> {
     #[account(

@@ -452,9 +452,12 @@ describe("vault-mint", () => {
             assert.ok(config.rewardsAdministrators[0].equals(rewardsAdmin.publicKey));
             assert.ok(!config.paused);
 
-            // Initialize epoch caps for subsequent create/claim tests.
-            // first_capped_epoch = 1: all epochs in this suite (starting at 1) are capped.
-            const { epochCapsConfig } = deriveRewardsEpochAccounts(program.programId, 0);
+            // Initialize epoch caps + last-index floor for subsequent create/claim tests.
+            // first_capped_epoch = 1; LastRewardsEpoch start_index = 0 so the first create is 1.
+            const { epochCapsConfig, lastRewardsEpoch } = deriveRewardsEpochAccounts(
+                program.programId,
+                0
+            );
             await program.methods
                 .initializeEpochCaps(new BN(1), new BN("1000000000000"))
                 .accountsStrict({
@@ -465,9 +468,21 @@ describe("vault-mint", () => {
                     systemProgram: SystemProgram.programId,
                 })
                 .rpc();
+            await program.methods
+                .initializeLastRewardsEpoch(new BN(0))
+                .accountsStrict({
+                    config: configPda,
+                    lastRewardsEpoch,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
             const caps = await program.account.epochCapsConfig.fetch(epochCapsConfig);
             assert.equal(caps.firstCappedEpoch.toNumber(), 1);
             assert.equal(caps.maxEpochCap.toString(), "1000000000000");
+            const last = await program.account.lastRewardsEpoch.fetch(lastRewardsEpoch);
+            assert.equal(last.index.toNumber(), 0, "start_index floor for first create at 1");
         });
 
         it("fails when called twice", async () => {
@@ -1751,6 +1766,7 @@ describe("vault-mint", () => {
                     .accountsStrict({
                         config: configPda,
                         epochCapsConfig: deriveRewardsEpochAccounts(program.programId, pausedEpochIndex).epochCapsConfig,
+                        lastRewardsEpoch: deriveRewardsEpochAccounts(program.programId, 0).lastRewardsEpoch,
                         admin: rewardsAdmin.publicKey,
                         epoch: pausedEpochPda,
                         epochClaimed: deriveRewardsEpochAccounts(program.programId, pausedEpochIndex).epochClaimed,
@@ -2661,6 +2677,7 @@ describe("vault-mint", () => {
                 .accountsStrict({
                     config: configPda,
                     epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epochIndex).epochCapsConfig,
+                    lastRewardsEpoch: deriveRewardsEpochAccounts(program.programId, 0).lastRewardsEpoch,
                     admin: rewardsAdmin.publicKey,
                     epoch: epochPda,
                     epochClaimed: deriveRewardsEpochAccounts(program.programId, epochIndex).epochClaimed,
@@ -2680,6 +2697,7 @@ describe("vault-mint", () => {
                     .accountsStrict({
                         config: configPda,
                         epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epochIndex).epochCapsConfig,
+                        lastRewardsEpoch: deriveRewardsEpochAccounts(program.programId, 0).lastRewardsEpoch,
                         admin: rewardsAdmin.publicKey,
                         epoch: epochPda,
                         epochClaimed: deriveRewardsEpochAccounts(program.programId, epochIndex).epochClaimed,
@@ -2700,6 +2718,7 @@ describe("vault-mint", () => {
                     .accountsStrict({
                         config: configPda,
                         epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epochIndex).epochCapsConfig,
+                        lastRewardsEpoch: deriveRewardsEpochAccounts(program.programId, 0).lastRewardsEpoch,
                         admin: provider.wallet.publicKey,
                         epoch: epochPda,
                         epochClaimed: deriveRewardsEpochAccounts(program.programId, epochIndex).epochClaimed,
@@ -2856,6 +2875,7 @@ describe("vault-mint", () => {
                 .accountsStrict({
                     config: configPda,
                     epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epoch2Index).epochCapsConfig,
+                    lastRewardsEpoch: deriveRewardsEpochAccounts(program.programId, 0).lastRewardsEpoch,
                     admin: rewardsAdmin.publicKey,
                     epoch: epoch2Pda,
                     epochClaimed: deriveRewardsEpochAccounts(program.programId, epoch2Index).epochClaimed,
@@ -2904,12 +2924,14 @@ describe("vault-mint", () => {
         });
 
         it("rejects create when total exceeds max_epoch_cap", async () => {
-            const overIndex = 10;
-            const { epoch, epochClaimed, epochCapsConfig } = deriveRewardsEpochAccounts(
-                program.programId,
-                overIndex
-            );
+            // After epochs 1 and 2, last.index is 2 so the next create is 3.
+            const overIndex = 3;
+            const { epoch, epochClaimed, epochCapsConfig, lastRewardsEpoch } =
+                deriveRewardsEpochAccounts(program.programId, overIndex);
+            const last = await program.account.lastRewardsEpoch.fetch(lastRewardsEpoch);
+            assert.equal(last.index.toNumber() + 1, overIndex);
             const caps = await program.account.epochCapsConfig.fetch(epochCapsConfig);
+            const firstCappedBefore = caps.firstCappedEpoch.toString();
             const overTotal = caps.maxEpochCap.add(new BN(1));
             const overAlloc = {
                 allocations: [{ account: user.publicKey.toBase58(), amount: 1 }],
@@ -2926,6 +2948,7 @@ describe("vault-mint", () => {
                     .accountsStrict({
                         config: configPda,
                         epochCapsConfig,
+                        lastRewardsEpoch,
                         admin: rewardsAdmin.publicKey,
                         epoch,
                         epochClaimed,
@@ -2937,6 +2960,12 @@ describe("vault-mint", () => {
             } catch (err) {
                 expect(err.toString()).to.match(/EpochCapAboveGlobal|custom program error: 0x28/i);
             }
+            const capsAfter = await program.account.epochCapsConfig.fetch(epochCapsConfig);
+            assert.equal(
+                capsAfter.firstCappedEpoch.toString(),
+                firstCappedBefore,
+                "failed create must not mutate first_capped_epoch"
+            );
         });
 
         it("rejects create for an index below first_capped_epoch", async () => {
@@ -2945,10 +2974,8 @@ describe("vault-mint", () => {
             // epoch created there could mint past its declared total. Creation must be refused,
             // leaving those indices exclusive to epochs that predate the caps upgrade.
             const legacyIndex = 0;
-            const { epoch, epochClaimed, epochCapsConfig } = deriveRewardsEpochAccounts(
-                program.programId,
-                legacyIndex
-            );
+            const { epoch, epochClaimed, epochCapsConfig, lastRewardsEpoch } =
+                deriveRewardsEpochAccounts(program.programId, legacyIndex);
             const caps = await program.account.epochCapsConfig.fetch(epochCapsConfig);
             assert.isTrue(
                 legacyIndex < caps.firstCappedEpoch.toNumber(),
@@ -2977,6 +3004,7 @@ describe("vault-mint", () => {
                     .accountsStrict({
                         config: configPda,
                         epochCapsConfig,
+                        lastRewardsEpoch,
                         admin: rewardsAdmin.publicKey,
                         epoch,
                         epochClaimed,
@@ -2999,18 +3027,104 @@ describe("vault-mint", () => {
             assert.isNull(claimedInfo, "epoch_claimed PDA must not be created below the boundary");
         });
 
+        it("rejects create when index skips ahead of last.index + 1", async () => {
+            const { epochCapsConfig, lastRewardsEpoch } = deriveRewardsEpochAccounts(program.programId, 0);
+            const last = await program.account.lastRewardsEpoch.fetch(lastRewardsEpoch);
+            const gappedIndex = last.index.toNumber() + 2;
+            const { epoch, epochClaimed } = deriveRewardsEpochAccounts(
+                program.programId,
+                gappedIndex
+            );
+            const gappedAlloc = {
+                allocations: [{ account: user.publicKey.toBase58(), amount: 1 }],
+            };
+            const gappedMerkle = allocationsToMerkleTree(
+                JSON.stringify(gappedAlloc),
+                gappedIndex
+            );
+
+            try {
+                await program.methods
+                    .createRewardsEpoch(
+                        new BN(gappedIndex),
+                        Array.from(gappedMerkle.tree.getRoot()),
+                        new BN(1)
+                    )
+                    .accountsStrict({
+                        config: configPda,
+                        epochCapsConfig,
+                        lastRewardsEpoch,
+                        admin: rewardsAdmin.publicKey,
+                        epoch,
+                        epochClaimed,
+                        systemProgram: SystemProgram.programId,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown EpochIndexNotContiguous");
+            } catch (err) {
+                expect(err.toString()).to.match(
+                    /EpochIndexNotContiguous|custom program error: 0x2f/i
+                );
+            }
+        });
+
+        it("create_rewards_epoch does not mutate EpochCapsConfig", async () => {
+            const { epochCapsConfig, lastRewardsEpoch } = deriveRewardsEpochAccounts(
+                program.programId,
+                0
+            );
+            const capsBefore = await program.account.epochCapsConfig.fetch(epochCapsConfig);
+            const lastBefore = await program.account.lastRewardsEpoch.fetch(lastRewardsEpoch);
+            const index = lastBefore.index.toNumber() + 1;
+            const { epoch, epochClaimed } = deriveRewardsEpochAccounts(program.programId, index);
+            const alloc = {
+                allocations: [{ account: user.publicKey.toBase58(), amount: 1 }],
+            };
+            const merkle = allocationsToMerkleTree(JSON.stringify(alloc), index);
+
+            await program.methods
+                .createRewardsEpoch(new BN(index), Array.from(merkle.tree.getRoot()), new BN(1))
+                .accountsStrict({
+                    config: configPda,
+                    epochCapsConfig,
+                    lastRewardsEpoch,
+                    admin: rewardsAdmin.publicKey,
+                    epoch,
+                    epochClaimed,
+                    systemProgram: SystemProgram.programId,
+                })
+                .signers([rewardsAdmin])
+                .rpc();
+
+            const capsAfter = await program.account.epochCapsConfig.fetch(epochCapsConfig);
+            assert.equal(
+                capsAfter.firstCappedEpoch.toString(),
+                capsBefore.firstCappedEpoch.toString(),
+                "first_capped_epoch must not change across create_rewards_epoch"
+            );
+            assert.equal(
+                capsAfter.maxEpochCap.toString(),
+                capsBefore.maxEpochCap.toString(),
+                "max_epoch_cap must not change across create_rewards_epoch"
+            );
+            assert.equal(capsAfter.bump, capsBefore.bump, "bump must not change");
+            const lastAfter = await program.account.lastRewardsEpoch.fetch(lastRewardsEpoch);
+            assert.equal(lastAfter.index.toNumber(), index, "counter advances on successful create");
+        });
+
         it("rejects claim that exceeds epoch cap (EpochCapExceeded)", async () => {
             // Declared total is 500 but the Merkle tree allocates 1000.
-            const capEpochIndex = 11;
+            const { lastRewardsEpoch: lastPda } = deriveRewardsEpochAccounts(program.programId, 0);
+            const lastBefore = await program.account.lastRewardsEpoch.fetch(lastPda);
+            const capEpochIndex = lastBefore.index.toNumber() + 1;
             const capAllocations = {
                 allocations: [{ account: user.publicKey.toBase58(), amount: 1000 }],
             };
             const capMerkle = allocationsToMerkleTree(JSON.stringify(capAllocations), capEpochIndex);
             const declaredTotal = new BN(500);
-            const { epoch, epochClaimed, epochCapsConfig } = deriveRewardsEpochAccounts(
-                program.programId,
-                capEpochIndex
-            );
+            const { epoch, epochClaimed, epochCapsConfig, lastRewardsEpoch } =
+                deriveRewardsEpochAccounts(program.programId, capEpochIndex);
             const [capClaimPda] = PublicKey.findProgramAddressSync(
                 [Buffer.from("claim"), epoch.toBuffer(), user.publicKey.toBuffer()],
                 program.programId
@@ -3025,6 +3139,7 @@ describe("vault-mint", () => {
                 .accountsStrict({
                     config: configPda,
                     epochCapsConfig,
+                    lastRewardsEpoch,
                     admin: rewardsAdmin.publicKey,
                     epoch,
                     epochClaimed,
