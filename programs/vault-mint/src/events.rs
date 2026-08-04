@@ -85,3 +85,9 @@ pub struct FirstCappedEpochSet {
 pub struct LastRewardsEpochInitialized {
     pub start_index: u64,
 }
+
+#[event]
+pub struct LastRewardsEpochUpdated {
+    pub old_index: u64,
+    pub new_index: u64,
+}

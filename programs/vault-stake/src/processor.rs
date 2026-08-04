@@ -758,6 +758,32 @@ pub fn initialize_last_reward_publication(
     Ok(())
 }
 
+/// Corrects the LastRewardPublication floor. Recovery for a wrongly seeded start_id so
+/// exact succession cannot leave the pool permanently unable to publish. Upgrade
+/// authority only.
+pub fn update_last_reward_publication(
+    ctx: Context<UpdateLastRewardPublication>,
+    new_id: u32,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+
+    let last = &mut ctx.accounts.last_reward_publication;
+    let old_id = last.id;
+    last.id = new_id;
+
+    emit!(LastRewardPublicationUpdated {
+        old_id,
+        new_id,
+        stake_config: ctx.accounts.stake_config.key(),
+    });
+
+    msg!("LastRewardPublication updated");
+    msg!("old_id: {}", old_id);
+    msg!("new_id: {}", new_id);
+
+    Ok(())
+}
+
 /// Updates max_reward_bps on an existing StakeRewardConfig.
 /// Only callable by the program upgrade authority.
 pub fn update_max_reward_bps(ctx: Context<UpdateMaxRewardBps>, new_bps: u64) -> Result<()> {

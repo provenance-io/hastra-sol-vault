@@ -94,6 +94,13 @@ pub struct LastRewardPublicationInitialized {
 }
 
 #[event]
+pub struct LastRewardPublicationUpdated {
+    pub old_id: u32,
+    pub new_id: u32,
+    pub stake_config: Pubkey,
+}
+
+#[event]
 pub struct PriceInvalidated {
     pub verifier: Pubkey,
     pub feed_id: [u8; 32],

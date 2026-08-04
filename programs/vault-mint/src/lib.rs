@@ -179,12 +179,23 @@ pub mod vault_mint {
 
     /// Creates the LastRewardsEpoch PDA, seeding the index floor for create_rewards_epoch.
     /// Must be called once before create can succeed. Only callable by the program upgrade
-    /// authority. Subsequent creates must use exact succession (`start_index + 1`, then contiguous).
+    /// authority. Requires epoch caps already initialized; rejects a floor that would deadlock
+    /// create (`start_index + 1 < first_capped_epoch`). Subsequent creates must use exact
+    /// succession (`start_index + 1`, then contiguous).
     pub fn initialize_last_rewards_epoch(
         ctx: Context<InitializeLastRewardsEpoch>,
         start_index: u64,
     ) -> Result<()> {
         processor::initialize_last_rewards_epoch(ctx, start_index)
+    }
+
+    /// Corrects the LastRewardsEpoch floor (upgrade authority). Recovery when start_index was
+    /// seeded wrongly; enforces the same first_capped_epoch check as init.
+    pub fn update_last_rewards_epoch(
+        ctx: Context<UpdateLastRewardsEpoch>,
+        new_index: u64,
+    ) -> Result<()> {
+        processor::update_last_rewards_epoch(ctx, new_index)
     }
 
     /// Updates the global max epoch cap (upgrade authority). Affects future creates only.

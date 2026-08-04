@@ -763,6 +763,37 @@ pub struct InitializeLastRewardPublication<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Corrects the LastRewardPublication floor (upgrade authority only). Recovery path when
+/// `start_id` was seeded wrongly — without this, a too-high floor permanently skips ids
+/// under exact succession, and a floor of `u32::MAX` deadlocks all future publishes.
+#[derive(Accounts)]
+pub struct UpdateLastRewardPublication<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"last_reward_publication",
+            stake_config.key().as_ref(),
+        ],
+        bump = last_reward_publication.bump,
+    )]
+    pub last_reward_publication: Account<'info, LastRewardPublication>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+}
+
 /// Updates max_reward_bps on an existing StakeRewardConfig.
 /// Only callable by the program upgrade authority.
 #[derive(Accounts)]

@@ -46,7 +46,7 @@ Rewards are distributed on-chain using a merkle tree-based claim system to ensur
 - Administrators can create epochs with a merkle root summarizing user rewards
 - Users claim rewards by providing a merkle proof against the stored root
 - Rewards are minted as additional mint tokens (e.g. wYLDS)
-- After upgrade, `initialize_epoch_caps` is required on-chain before create/claim. New epochs (`index >= first_capped_epoch`) enforce an aggregate claim cap; creates also require `total <= max_epoch_cap`. Epochs created before the upgrade stay uncapped, and no new epoch can be created at an index below `first_capped_epoch`, so every epoch created from now on is capped.
+- After upgrade, `initialize_epoch_caps` and `initialize_last_rewards_epoch` are required on-chain before create/claim. New epochs (`index >= first_capped_epoch`) enforce an aggregate claim cap; creates also require `total <= max_epoch_cap` and exact succession (`index == last_rewards_epoch.index + 1`). Epochs created before the upgrade stay uncapped, and no new epoch can be created at an index below `first_capped_epoch`, so every epoch created from now on is capped.
 
 **Merkle Tree Structure:**
 
@@ -57,9 +57,10 @@ Rewards are distributed on-chain using a merkle tree-based claim system to ensur
 **Administrative Posting Process:**
 
 1. Upgrade authority calls `initialize_epoch_caps(first_capped_epoch, max_epoch_cap)` once after program upgrade — use `scripts/vault-mint/initialize_epoch_caps_proposal_squads.ts` when the upgrade authority is a Squads vault PDA (or `initialize_epoch_caps.ts` for a local keypair)
-2. Authorized reward admin computes user rewards off-chain
-3. Constructs merkle tree and computes root; `total` must be `> 0` and `<= max_epoch_cap`, and `index` must be `>= first_capped_epoch`
-4. Calls `create_rewards_epoch()` with epoch index, merkle root, and total:
+2. Upgrade authority calls `initialize_last_rewards_epoch(start_index)` once (requires caps already initialized). Must satisfy `start_index + 1 >= first_capped_epoch` or init rejects (`EpochIndexBelowFirstCapped`) — typically `start_index = first_capped_epoch - 1`. Use `scripts/vault-mint/initialize_last_rewards_epoch_proposal_squads.ts` (or the non-Squads script). Wrong floor can be corrected later with `update_last_rewards_epoch` (upgrade authority only; same boundary check).
+3. Authorized reward admin computes user rewards off-chain
+4. Constructs merkle tree and computes root; `total` must be `> 0` and `<= max_epoch_cap`, and `index` must equal `last_rewards_epoch.index + 1` (and therefore be `>= first_capped_epoch`)
+5. Calls `create_rewards_epoch()` with epoch index, merkle root, and total:
 ```rust
 pub fn create_rewards_epoch(
     ctx: Context<CreateRewardsEpoch>,
@@ -128,7 +129,7 @@ Staking rewards are published via `publish_rewards`, which CPIs into **vault-min
 3. **Cooldown (`reward_period_seconds`)**: default `3540` seconds (59 minutes).
 4. **Lifetime cap (`max_total_rewards`)**: default `10,000,000` wYLDS (6-decimal raw units: `10_000_000_000_000`).
 
-Publication ids must be contiguous: each `--reward_id` must equal the per-pool `LastRewardPublication.id` + 1 (`RewardPublicationIdNotMonotonic` otherwise). Initialize that PDA once with `scripts/vault-stake/initialize_last_reward_publication.ts` (or the Squads proposal variant) before the first publish.
+Publication ids must be contiguous: each `--reward_id` must equal the per-pool `LastRewardPublication.id` + 1 (`RewardPublicationIdNotMonotonic` otherwise). Initialize that PDA once with `scripts/vault-stake/initialize_last_reward_publication.ts` (or the Squads proposal variant) before the first publish — seed `start_id` at or above the highest historical publication id for the pool. A wrongly seeded floor can be corrected with `update_last_reward_publication` (upgrade authority only).
 
 The guard state is stored at PDA:
 

@@ -406,7 +406,9 @@ pub struct InitializeEpochCaps<'info> {
 
 /// Creates the LastRewardsEpoch PDA, seeding the index floor for `create_rewards_epoch`.
 /// Must be called once before create can succeed. Only callable by the program upgrade
-/// authority. Subsequent creates require exact succession (`last.index + 1`).
+/// authority. Requires `epoch_caps_config` so init can reject a floor that would deadlock
+/// create (`start_index + 1 < first_capped_epoch`). Subsequent creates require exact
+/// succession (`last.index + 1`).
 #[derive(Accounts)]
 pub struct InitializeLastRewardsEpoch<'info> {
     #[account(
@@ -414,6 +416,13 @@ pub struct InitializeLastRewardsEpoch<'info> {
         bump = config.bump
     )]
     pub config: Account<'info, Config>,
+
+    /// Cap boundary used to reject a start_index that would brick create_rewards_epoch.
+    #[account(
+        seeds = [b"epoch_caps_config"],
+        bump = epoch_caps_config.bump
+    )]
+    pub epoch_caps_config: Account<'info, EpochCapsConfig>,
 
     #[account(
         init,
@@ -434,6 +443,40 @@ pub struct InitializeLastRewardsEpoch<'info> {
     pub program_data: UncheckedAccount<'info>,
 
     pub system_program: Program<'info, System>,
+}
+
+/// Corrects the LastRewardsEpoch floor (upgrade authority only). Recovery path when
+/// `start_index` was seeded wrongly; enforces the same first_capped_epoch floor as init
+/// so an update cannot re-introduce a create deadlock.
+#[derive(Accounts)]
+pub struct UpdateLastRewardsEpoch<'info> {
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Account<'info, Config>,
+
+    #[account(
+        seeds = [b"epoch_caps_config"],
+        bump = epoch_caps_config.bump
+    )]
+    pub epoch_caps_config: Account<'info, EpochCapsConfig>,
+
+    #[account(
+        mut,
+        seeds = [b"last_rewards_epoch"],
+        bump = last_rewards_epoch.bump
+    )]
+    pub last_rewards_epoch: Account<'info, LastRewardsEpoch>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: Program data account that contains the upgrade authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
 }
 
 /// Updates the global max epoch cap (upgrade authority only). Affects future creates only.

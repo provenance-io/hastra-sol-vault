@@ -637,14 +637,32 @@ pub fn initialize_epoch_caps(
     Ok(())
 }
 
+/// Ensures the next create index (`floor + 1`) is at or above `first_capped_epoch`.
+/// Without this, contiguous succession would permanently fail against the cap boundary.
+fn require_next_epoch_at_or_above_first_capped(floor: u64, first_capped_epoch: u64) -> Result<()> {
+    let next = floor
+        .checked_add(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    require!(
+        next >= first_capped_epoch,
+        CustomErrorCode::EpochIndexBelowFirstCapped
+    );
+    Ok(())
+}
+
 /// Initializes the LastRewardsEpoch PDA with `start_index` as the floor for future creates.
 /// Must be called once before `create_rewards_epoch` can succeed. The next create must use
 /// `start_index + 1`, then contiguous indices. Only callable by the program upgrade authority.
+/// Rejects a floor that would deadlock create (`start_index + 1 < first_capped_epoch`).
 pub fn initialize_last_rewards_epoch(
     ctx: Context<InitializeLastRewardsEpoch>,
     start_index: u64,
 ) -> Result<()> {
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    require_next_epoch_at_or_above_first_capped(
+        start_index,
+        ctx.accounts.epoch_caps_config.first_capped_epoch,
+    )?;
 
     let last = &mut ctx.accounts.last_rewards_epoch;
     last.index = start_index;
@@ -654,6 +672,35 @@ pub fn initialize_last_rewards_epoch(
 
     msg!("LastRewardsEpoch initialized");
     msg!("start_index: {}", start_index);
+
+    Ok(())
+}
+
+/// Corrects the LastRewardsEpoch floor. Recovery for a wrongly seeded start_index; enforces
+/// the same first_capped_epoch check as init so create cannot be deadlocked. Upgrade
+/// authority only.
+pub fn update_last_rewards_epoch(
+    ctx: Context<UpdateLastRewardsEpoch>,
+    new_index: u64,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    require_next_epoch_at_or_above_first_capped(
+        new_index,
+        ctx.accounts.epoch_caps_config.first_capped_epoch,
+    )?;
+
+    let last = &mut ctx.accounts.last_rewards_epoch;
+    let old_index = last.index;
+    last.index = new_index;
+
+    emit!(LastRewardsEpochUpdated {
+        old_index,
+        new_index,
+    });
+
+    msg!("LastRewardsEpoch updated");
+    msg!("old_index: {}", old_index);
+    msg!("new_index: {}", new_index);
 
     Ok(())
 }

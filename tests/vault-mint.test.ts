@@ -472,6 +472,7 @@ describe("vault-mint", () => {
                 .initializeLastRewardsEpoch(new BN(0))
                 .accountsStrict({
                     config: configPda,
+                    epochCapsConfig,
                     lastRewardsEpoch,
                     signer: provider.wallet.publicKey,
                     programData: programDataPda,

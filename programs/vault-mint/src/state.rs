@@ -57,6 +57,8 @@ impl EpochCapsConfig {
 /// Singleton tracking the highest rewards-epoch index accepted so far.
 /// Separated from `EpochCapsConfig` so create cannot mutate cap fields — only this counter.
 /// Must be initialized before `create_rewards_epoch`; each create requires `index == last + 1`.
+/// Init and `update_last_rewards_epoch` both require `index + 1 >= first_capped_epoch` so the
+/// succession counter cannot deadlock against the cap boundary.
 #[account]
 pub struct LastRewardsEpoch {
     /// Highest accepted epoch index so far (floor for the next create).

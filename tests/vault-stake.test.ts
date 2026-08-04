@@ -2529,6 +2529,81 @@ describe("vault-stake", () => {
                 assert.equal(lastAfter.id, nextId, "counter must advance to the published id");
             });
 
+            it("rejects last reward publication update from a non-upgrade authority", async () => {
+                const last = await program.account.lastRewardPublication.fetch(lastRewardPublicationPda);
+                try {
+                    await program.methods
+                        .updateLastRewardPublication(last.id + 1)
+                        .accountsStrict({
+                            stakeConfig: stakeConfigPda,
+                            lastRewardPublication: lastRewardPublicationPda,
+                            signer: rewardsAdmin.publicKey,
+                            programData: programDataPda,
+                        })
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown error");
+                } catch (err) {
+                    expect(String(err)).to.match(
+                        /InvalidUpgradeAuthority|custom program error:\s*0x12\b/i
+                    );
+                }
+            });
+
+            // Recovery path: a wrongly seeded (or too-low) floor can be corrected so the next
+            // publish uses the new floor + 1 under exact succession.
+            it("update_last_reward_publication corrects the floor for subsequent publishes", async () => {
+                const lastBefore = await program.account.lastRewardPublication.fetch(
+                    lastRewardPublicationPda
+                );
+                const correctedFloor = lastBefore.id + 10;
+                const staleNextId = lastBefore.id + 1;
+
+                await program.methods
+                    .updateLastRewardPublication(correctedFloor)
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        lastRewardPublication: lastRewardPublicationPda,
+                        signer: provider.wallet.publicKey,
+                        programData: programDataPda,
+                    })
+                    .rpc();
+
+                const lastMid = await program.account.lastRewardPublication.fetch(
+                    lastRewardPublicationPda
+                );
+                assert.equal(lastMid.id, correctedFloor, "floor must be updated to new_id");
+
+                const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+                const amount = (totalAssets * BigInt(50)) / BigInt(10_000);
+
+                try {
+                    await program.methods
+                        .publishRewards(staleNextId, new BN(amount.toString()))
+                        .accountsStrict(publishRewardsAccounts(makeRewardsRecordPda(staleNextId, amount)))
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown RewardPublicationIdNotMonotonic");
+                } catch (err) {
+                    expect(String(err)).to.match(
+                        /RewardPublicationIdNotMonotonic|custom program error:\s*0x34\b/i
+                    );
+                }
+
+                const nextId = correctedFloor + 1;
+                publishRewardsId = nextId;
+                await program.methods
+                    .publishRewards(nextId, new BN(amount.toString()))
+                    .accountsStrict(publishRewardsAccounts(makeRewardsRecordPda(nextId, amount)))
+                    .signers([rewardsAdmin])
+                    .rpc();
+
+                const lastAfter = await program.account.lastRewardPublication.fetch(
+                    lastRewardPublicationPda
+                );
+                assert.equal(lastAfter.id, nextId, "publish after update must advance from the new floor");
+            });
+
         });
 
         // ── Default 0.75% cap enforcement ─────────────────────────────────────

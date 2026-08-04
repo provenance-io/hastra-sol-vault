@@ -247,6 +247,15 @@ pub mod vault_stake {
         processor::initialize_last_reward_publication(ctx, start_id)
     }
 
+    /// Corrects the LastRewardPublication floor (upgrade authority). Recovery when start_id
+    /// was seeded wrongly so exact succession cannot deadlock future publishes.
+    pub fn update_last_reward_publication(
+        ctx: Context<UpdateLastRewardPublication>,
+        new_id: u32,
+    ) -> Result<()> {
+        processor::update_last_reward_publication(ctx, new_id)
+    }
+
     /// Updates the maximum reward distribution cap on an existing StakeRewardConfig.
     /// Only callable by the program upgrade authority.
     pub fn update_max_reward_bps(ctx: Context<UpdateMaxRewardBps>, new_bps: u64) -> Result<()> {

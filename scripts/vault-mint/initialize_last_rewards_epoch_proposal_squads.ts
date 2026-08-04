@@ -91,6 +91,10 @@ async function main() {
         [Buffer.from("config")],
         program.programId
     );
+    const [epochCapsConfigPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch_caps_config")],
+        program.programId
+    );
     const [lastRewardsEpochPda] = PublicKey.findProgramAddressSync(
         [Buffer.from("last_rewards_epoch")],
         program.programId
@@ -121,6 +125,7 @@ async function main() {
     console.log("Program ID:              ", program.programId.toBase58());
     console.log("Multisig PDA:            ", msPDA.toBase58());
     console.log("Vault PDA (signer):      ", vaultPda.toBase58());
+    console.log("EpochCapsConfig PDA:     ", epochCapsConfigPda.toBase58());
     console.log("LastRewardsEpoch PDA:    ", lastRewardsEpochPda.toBase58());
     console.log("start_index:             ", startIndex);
     console.log("Proposal index:          ", transactionIndex.toString());
@@ -130,6 +135,7 @@ async function main() {
         .initializeLastRewardsEpoch(new anchor.BN(startIndex))
         .accountsStrict({
             config: configPda,
+            epochCapsConfig: epochCapsConfigPda,
             lastRewardsEpoch: lastRewardsEpochPda,
             signer: vaultPda,
             programData: programDataPda,

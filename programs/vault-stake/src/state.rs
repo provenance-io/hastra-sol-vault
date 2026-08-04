@@ -107,6 +107,7 @@ impl StakeRewardConfig {
 // Separated from StakeRewardConfig so the live reward-cap account layout stays unchanged.
 // Must be initialized (with start_id at or above the historical maximum) before publish_rewards
 // can succeed; from then on publish_rewards requires each new id to equal last.id + 1.
+// `update_last_reward_publication` recovers from a wrongly seeded floor under exact succession.
 #[account]
 pub struct LastRewardPublication {
     pub id: u32, // highest reward publication id accepted so far
