@@ -66,7 +66,7 @@ declare_id!("5uJgCDrQHfA58fPqLsuU14Srg9quxXNHz91cZ54cq4pK");
 declare_id!("B8FDo5EGA2hZ7YMugcw8wPHUYDBQJfNkEYpduXFLHfdZ");
 
 #[cfg(feature = "pool-smb")]
-declare_id!("44R9Eri2bkL9ATxEvTJFjsppQQ5rjdKsrAk3kddPwb27");
+declare_id!("CZ5wfMUEFV1XdYd3U4dgUsqEFYbPANLZJPJtbV4ZgPXh");
 
 #[cfg(not(any(
     feature = "pool-prime",
