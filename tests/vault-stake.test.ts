@@ -34,6 +34,21 @@ describe("vault-stake", () => {
     const mintProgram = anchor.workspace.VaultMint as Program<VaultMint>;
     const program = anchor.workspace.VaultStake as Program<VaultStake>;
 
+    // Must match LastRewardPublication::MAX_GAP in programs/vault-stake/src/state.rs.
+    const LAST_REWARD_PUBLICATION_MAX_GAP = 255;
+
+    // 52 = 0x34, 53 = 0x35. Match name or raw code; Anchor surfaces either depending on client path.
+    const expectRewardPublicationIdNotMonotonic = (err: unknown) => {
+        const logs = (err as { logs?: string[] }).logs ?? [];
+        const msg = `${err}\n${logs.join("\n")}`;
+        expect(msg).to.match(/RewardPublicationIdNotMonotonic|custom program error:\s*0x34\b/i);
+    };
+    const expectRewardPublicationIdGapTooLarge = (err: unknown) => {
+        const logs = (err as { logs?: string[] }).logs ?? [];
+        const msg = `${err}\n${logs.join("\n")}`;
+        expect(msg).to.match(/RewardPublicationIdGapTooLarge|custom program error:\s*0x35\b/i);
+    };
+
     // Helper: parse events from a confirmed transaction's log messages.
     // Derives the actual on-chain program ID from the transaction logs rather
     // than relying on the workspace program ID, making this robust to
@@ -291,9 +306,10 @@ describe("vault-stake", () => {
     };
 
     /**
-     * Next contiguous publication id from on-chain LastRewardPublication.
+     * Next publication id from on-chain LastRewardPublication (last.id + 1).
      * Prefer this over a free-running ++ counter — failed publishes roll back the
      * on-chain floor but would still advance a JS-only counter and desync later tests.
+     * Any id in (last.id, last.id + MAX_GAP] is valid; +1 is the minimal advance.
      */
     const allocNextPublishId = async (): Promise<number> => {
         const last = await program.account.lastRewardPublication.fetch(lastRewardPublicationPda);
@@ -2045,13 +2061,6 @@ describe("vault-stake", () => {
             }
         });
 
-        // 52 = 0x34. Match name or raw code; Anchor surfaces either depending on client path.
-        const expectRewardPublicationIdNotMonotonic = (err: unknown) => {
-            const logs = (err as { logs?: string[] }).logs ?? [];
-            const msg = `${err}\n${logs.join("\n")}`;
-            expect(msg).to.match(/RewardPublicationIdNotMonotonic|custom program error:\s*0x34\b/i);
-        };
-
         it("publish rewards", async () => {
 
             const rateBefore = await exchangeRate();
@@ -2489,27 +2498,47 @@ describe("vault-stake", () => {
                 }
             });
 
-            it("rejects publish_rewards when id skips ahead of last.id + 1", async () => {
+            it("rejects publish_rewards when id gap exceeds MAX_GAP", async () => {
                 const last = await program.account.lastRewardPublication.fetch(lastRewardPublicationPda);
                 const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
                 const amount = (totalAssets * BigInt(50)) / BigInt(10_000);
-                const gappedId = last.id + 2;
-                const rewardsRecordPda = makeRewardsRecordPda(gappedId, amount);
+                const tooFarId = last.id + LAST_REWARD_PUBLICATION_MAX_GAP + 1;
+                const rewardsRecordPda = makeRewardsRecordPda(tooFarId, amount);
                 try {
                     await program.methods
-                        .publishRewards(gappedId, new BN(amount.toString()))
+                        .publishRewards(tooFarId, new BN(amount.toString()))
                         .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
                         .signers([rewardsAdmin])
                         .rpc();
-                    assert.fail("Should have thrown RewardPublicationIdNotMonotonic");
+                    assert.fail("Should have thrown RewardPublicationIdGapTooLarge");
                 } catch (err) {
-                    expect(String(err)).to.match(
-                        /RewardPublicationIdNotMonotonic|custom program error:\s*0x34\b/i
-                    );
+                    expectRewardPublicationIdGapTooLarge(err);
                 }
             });
 
+            it("accepts publish_rewards when id is exactly MAX_GAP ahead", async () => {
+                await ensureShortRewardCooldownForTests();
+                const lastBefore = await program.account.lastRewardPublication.fetch(
+                    lastRewardPublicationPda
+                );
+                const totalAssets = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+                const amount = (totalAssets * BigInt(50)) / BigInt(10_000);
+                const boundaryId = lastBefore.id + LAST_REWARD_PUBLICATION_MAX_GAP;
+                publishRewardsId = boundaryId;
+                const rewardsRecordPda = makeRewardsRecordPda(boundaryId, amount);
+                await program.methods
+                    .publishRewards(boundaryId, new BN(amount.toString()))
+                    .accountsStrict(publishRewardsAccounts(rewardsRecordPda))
+                    .signers([rewardsAdmin])
+                    .rpc();
+                const lastAfter = await program.account.lastRewardPublication.fetch(
+                    lastRewardPublicationPda
+                );
+                assert.equal(lastAfter.id, boundaryId, "counter must advance to the boundary id");
+            });
+
             it("advances last reward publication id on a successful publish", async () => {
+                await ensureShortRewardCooldownForTests();
                 const lastBefore = await program.account.lastRewardPublication.fetch(
                     lastRewardPublicationPda
                 );
@@ -2551,7 +2580,7 @@ describe("vault-stake", () => {
             });
 
             // Recovery path: a wrongly seeded (or too-low) floor can be corrected so the next
-            // publish uses the new floor + 1 under exact succession.
+            // publish uses an id within MAX_GAP of the new floor.
             it("update_last_reward_publication corrects the floor for subsequent publishes", async () => {
                 const lastBefore = await program.account.lastRewardPublication.fetch(
                     lastRewardPublicationPda
@@ -2592,6 +2621,7 @@ describe("vault-stake", () => {
 
                 const nextId = correctedFloor + 1;
                 publishRewardsId = nextId;
+                await ensureShortRewardCooldownForTests();
                 await program.methods
                     .publishRewards(nextId, new BN(amount.toString()))
                     .accountsStrict(publishRewardsAccounts(makeRewardsRecordPda(nextId, amount)))

@@ -2,7 +2,7 @@ use crate::account_structs::*;
 use crate::error::*;
 use crate::events::*;
 use crate::guard::validate_program_update_authority;
-use crate::state::{StakePriceConfig, StakeRewardConfig, MAX_ADMINISTRATORS};
+use crate::state::{LastRewardPublication, StakePriceConfig, StakeRewardConfig, MAX_ADMINISTRATORS};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::{get_return_data, invoke};
 use anchor_spl::token::spl_token::instruction::AuthorityType;
@@ -440,14 +440,19 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
     );
     require!(amount > 0, CustomErrorCode::InvalidAmount);
 
-    // Enforce exact succession: each publish must use last.id + 1. Init may seed a high
-    // floor (see `initialize_last_reward_publication`); after that, gaps are rejected so a
-    // publisher cannot jump to u32::MAX and brick future publications.
+    // Enforce bounded-gap succession: strictly increasing, and no more than MAX_GAP ahead of
+    // the last accepted id. Init may seed a high floor (see `initialize_last_reward_publication`);
+    // the gap bound stops a single publish from jumping to u32::MAX and bricking future
+    // publications, while still tolerating operational id skips.
     let last = &mut ctx.accounts.last_reward_publication;
-    let expected = last.id.checked_add(1).ok_or(CustomErrorCode::Overflow)?;
     require!(
-        id == expected,
+        id > last.id,
         CustomErrorCode::RewardPublicationIdNotMonotonic
+    );
+    let gap = id.checked_sub(last.id).ok_or(CustomErrorCode::Overflow)?;
+    require!(
+        gap <= LastRewardPublication::MAX_GAP,
+        CustomErrorCode::RewardPublicationIdGapTooLarge
     );
     last.id = id;
 
@@ -736,7 +741,7 @@ pub fn initialize_stake_reward_config(ctx: Context<InitializeStakeRewardConfig>)
 /// Initializes the LastRewardPublication PDA with `start_id` as the floor for future publishes.
 /// Must be called once before `publish_rewards` can succeed. Only callable by the program
 /// upgrade authority. Seed at or above the highest historical publication id for the pool;
-/// the next publish must use `start_id + 1`, then contiguous ids.
+/// subsequent publishes must use an id greater than `start_id` and within `MAX_GAP` of it.
 pub fn initialize_last_reward_publication(
     ctx: Context<InitializeLastRewardPublication>,
     start_id: u32,
@@ -758,8 +763,8 @@ pub fn initialize_last_reward_publication(
     Ok(())
 }
 
-/// Corrects the LastRewardPublication floor. Recovery for a wrongly seeded start_id so
-/// exact succession cannot leave the pool permanently unable to publish. Upgrade
+/// Corrects the LastRewardPublication floor. Recovery for a wrongly seeded start_id so the
+/// pool is not left unable to publish within MAX_GAP of the next legitimate id. Upgrade
 /// authority only.
 pub fn update_last_reward_publication(
     ctx: Context<UpdateLastRewardPublication>,
