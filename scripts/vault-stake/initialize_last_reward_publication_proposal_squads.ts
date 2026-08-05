@@ -47,7 +47,7 @@ const args = yargs(process.argv.slice(2))
     .option("start_id", {
         type: "number",
         description:
-            "Floor for future publish_rewards ids; must be >= highest historical publication id; next publish uses start_id + 1",
+            "Floor for future publish_rewards ids; must be >= highest historical publication id; next publish must be > start_id and within MAX_GAP (10)",
         required: true,
     })
     .option("program_id", {

@@ -129,7 +129,7 @@ Staking rewards are published via `publish_rewards`, which CPIs into **vault-min
 3. **Cooldown (`reward_period_seconds`)**: default `3540` seconds (59 minutes).
 4. **Lifetime cap (`max_total_rewards`)**: default `10,000,000` wYLDS (6-decimal raw units: `10_000_000_000_000`).
 
-Publication ids must be contiguous: each `--reward_id` must equal the per-pool `LastRewardPublication.id` + 1 (`RewardPublicationIdNotMonotonic` otherwise). Initialize that PDA once with `scripts/vault-stake/initialize_last_reward_publication.ts` (or the Squads proposal variant) before the first publish — seed `start_id` at or above the highest historical publication id for the pool. A wrongly seeded floor can be corrected with `update_last_reward_publication` (upgrade authority only).
+Publication ids must advance with a bounded gap: each `--reward_id` must be greater than the per-pool `LastRewardPublication.id` and within `MAX_GAP` of it (`RewardPublicationIdNotMonotonic` / `RewardPublicationIdGapTooLarge` otherwise). Initialize that PDA once with `scripts/vault-stake/initialize_last_reward_publication.ts` (or the Squads proposal variant) before the first publish — seed `start_id` at or above the highest historical publication id for the pool. A wrongly seeded floor can be corrected with `update_last_reward_publication` (upgrade authority only).
 
 The guard state is stored at PDA:
 

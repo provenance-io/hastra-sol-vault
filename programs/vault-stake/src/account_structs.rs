@@ -730,7 +730,7 @@ pub struct InitializeStakeRewardConfig<'info> {
 /// Creates the LastRewardPublication PDA, seeding the id floor for `publish_rewards`.
 /// Must be called once before `publish_rewards` can succeed. Only callable by the program
 /// upgrade authority. `start_id` should be at or above the highest historical publication id;
-/// subsequent publishes require exact succession (`last.id + 1`).
+/// subsequent publishes require `id > last.id` and `id - last.id <= MAX_GAP`.
 #[derive(Accounts)]
 pub struct InitializeLastRewardPublication<'info> {
     #[account(
@@ -764,8 +764,8 @@ pub struct InitializeLastRewardPublication<'info> {
 }
 
 /// Corrects the LastRewardPublication floor (upgrade authority only). Recovery path when
-/// `start_id` was seeded wrongly — without this, a too-high floor permanently skips ids
-/// under exact succession, and a floor of `u32::MAX` deadlocks all future publishes.
+/// `start_id` was seeded wrongly — without this, a too-high floor can leave the next
+/// legitimate id outside MAX_GAP, and a floor of `u32::MAX` deadlocks all future publishes.
 #[derive(Accounts)]
 pub struct UpdateLastRewardPublication<'info> {
     #[account(

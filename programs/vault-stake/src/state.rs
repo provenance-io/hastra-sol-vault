@@ -106,8 +106,10 @@ impl StakeRewardConfig {
 // Singleton per pool tracking the highest reward publication id accepted so far.
 // Separated from StakeRewardConfig so the live reward-cap account layout stays unchanged.
 // Must be initialized (with start_id at or above the historical maximum) before publish_rewards
-// can succeed; from then on publish_rewards requires each new id to equal last.id + 1.
-// `update_last_reward_publication` recovers from a wrongly seeded floor under exact succession.
+// can succeed; from then on publish_rewards requires each new id to be strictly greater than the
+// stored id and within MAX_GAP of it. The gap bound stops a single publish from jumping to
+// u32::MAX and deadlocking future publications, while still tolerating operational id skips.
+// `update_last_reward_publication` recovers from a wrongly seeded floor.
 #[account]
 pub struct LastRewardPublication {
     pub id: u32, // highest reward publication id accepted so far
@@ -117,6 +119,8 @@ pub struct LastRewardPublication {
 impl LastRewardPublication {
     // discriminator + id (u32) + bump (u8)
     pub const LEN: usize = 8 + 4 + 1;
+    // Maximum allowed distance between consecutive published ids.
+    pub const MAX_GAP: u32 = 255;
 }
 
 // Price config is a separate account (not part of StakeConfig) so that the deployed program's

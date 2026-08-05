@@ -70,7 +70,8 @@ async function main() {
     console.log("\nSuggested --start_id:     ", maxId);
     console.log(
         "(Err high if unsure — ids skipped by a high init floor stay unused; " +
-            "after init, publish_rewards requires last.id + 1. Seeding too low leaves a reusable gap.)"
+            "after init, publish_rewards requires id > last.id and within MAX_GAP (10). " +
+            "Seeding too low leaves a reusable gap.)"
     );
 }
 
