@@ -977,15 +977,15 @@ describe("vault-stake", () => {
 
                 const priceConfig = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
                 assert.equal(priceConfig.priceMaxStaleness.toString(), "7200");
-                // feed_id and price_scale unchanged: stored price and timestamp are preserved
-                // (changing feed_id or price_scale invalidates; see next test)
+                // Semantic fields unchanged: stored price and timestamp are preserved
+                // (changing any field other than staleness invalidates; see next test)
                 assert.ok(priceConfig.price.toString() === TEST_PRICE_1TO1.toString(), "price unchanged");
                 assert.ok(priceConfig.priceTimestamp.toNumber() > 0, "price_timestamp unchanged");
 
                 const ev = (await parseEvents(sig)).find(e => e.name === "priceInvalidated");
                 assert.isUndefined(
                     ev,
-                    "PriceInvalidated is emitted only when feed_id or price_scale semantics change"
+                    "PriceInvalidated is emitted only when semantic config fields change"
                 );
             } finally {
                 // Always restore price_max_staleness so a failed fetch/assertion cannot strand the suite
@@ -1009,7 +1009,7 @@ describe("vault-stake", () => {
             }
         });
 
-        it("clears price and price_timestamp when feed_id or price_scale changes", async () => {
+        it("clears price and price_timestamp when semantic config fields change", async () => {
             const upgradeAccounts = {
                 stakeConfig: stakeConfigPda,
                 stakePriceConfig: stakePriceConfigPda,
@@ -1110,6 +1110,40 @@ describe("vault-stake", () => {
                 assert.equal(cfg.price.toString(), "0", "price cleared when price_scale changes");
                 assert.equal(cfg.priceTimestamp.toString(), "0", "price_timestamp cleared when price_scale changes");
                 assert.equal(cfg.priceScale.toString(), altScale.toString(), "new price_scale is stored");
+
+                await program.methods
+                    .updatePriceConfig(
+                        chainlinkPlaceholders.chainlinkProgram,
+                        chainlinkPlaceholders.chainlinkVerifierAccount,
+                        chainlinkPlaceholders.chainlinkAccessController,
+                        TEST_FEED_ID,
+                        TEST_PRICE_SCALE,
+                        new BN(3600)
+                    )
+                    .accountsStrict(upgradeAccounts)
+                    .rpc();
+                await setPriceForTesting(TEST_PRICE_1TO1);
+
+                const altChainlinkProgram = Keypair.generate().publicKey;
+                const sigProgram = await program.methods
+                    .updatePriceConfig(
+                        altChainlinkProgram,
+                        chainlinkPlaceholders.chainlinkVerifierAccount,
+                        chainlinkPlaceholders.chainlinkAccessController,
+                        TEST_FEED_ID,
+                        TEST_PRICE_SCALE,
+                        new BN(3600)
+                    )
+                    .accountsStrict(upgradeAccounts)
+                    .rpc();
+                const programChangeEvents = await parseEvents(sigProgram);
+                const evProgram = programChangeEvents.find(e => e.name === "priceInvalidated");
+                assert.isDefined(evProgram, "PriceInvalidated must be emitted when chainlink_program changes");
+
+                cfg = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
+                assert.equal(cfg.price.toString(), "0", "price cleared when chainlink_program changes");
+                assert.equal(cfg.priceTimestamp.toString(), "0", "price_timestamp cleared when chainlink_program changes");
+                assert.isTrue(cfg.chainlinkProgram.equals(altChainlinkProgram), "new chainlink_program is stored");
             } finally {
                 // Restore default feed, scale, staleness, and a fresh test price for the rest of the suite
                 // even when an earlier assertion or RPC fails mid-test.

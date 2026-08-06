@@ -686,7 +686,12 @@ pub fn update_price_config(
     // invalidate the price; deposit/redeem already require price > 0
     // and price_timestamp > 0, so the protocol auto-quiesces until the
     // next verify_price succeeds under the new configuration.
-    let semantics_changed = config.feed_id != feed_id || config.price_scale != price_scale;
+    // Staleness alone does not change price semantics, so it is excluded.
+    let semantics_changed = config.chainlink_program != chainlink_program
+        || config.chainlink_verifier_account != chainlink_verifier_account
+        || config.chainlink_access_controller != chainlink_access_controller
+        || config.feed_id != feed_id
+        || config.price_scale != price_scale;
 
     config.chainlink_program = chainlink_program;
     config.chainlink_verifier_account = chainlink_verifier_account;
@@ -703,7 +708,7 @@ pub fn update_price_config(
     if semantics_changed {
         config.price = 0;
         config.price_timestamp = 0;
-        msg!("Stored price invalidated due to feed_id/price_scale change");
+        msg!("Stored price invalidated due to semantic config change");
         emit!(PriceInvalidated {
             verifier: ctx.accounts.signer.key(),
             feed_id: feed_id,
