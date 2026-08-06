@@ -73,6 +73,14 @@ const main = async () => {
         program.programId
     );
 
+    const [lastRewardPublicationPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("last_reward_publication"),
+            stakeConfigPda.toBuffer()
+        ],
+        program.programId
+    );
+
     const [vaultAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("vault_authority")],
         program.programId
@@ -110,6 +118,7 @@ const main = async () => {
         mintProgramId
     );
 
+    // Addressed by (id, amount); uniqueness of id is enforced by LastRewardPublication.
     const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [
             Buffer.from("reward_record"),
@@ -150,6 +159,7 @@ const main = async () => {
             mint: mint,
             rewardRecord: rewardsRecordPda,
             stakeRewardConfig: stakeRewardConfigPda,
+            lastRewardPublication: lastRewardPublicationPda,
             tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
             systemProgram: anchor.web3.SystemProgram.programId,
         }).rpc();

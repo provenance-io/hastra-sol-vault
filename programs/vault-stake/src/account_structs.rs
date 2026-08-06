@@ -456,7 +456,8 @@ pub struct PublishRewards<'info> {
     )]
     pub mint: Box<Account<'info, Mint>>,
 
-    /// Reward record PDA to prevent duplicates
+    /// Per-publication record. Seeds `(id, amount)` are addressing only; uniqueness of the
+    /// publication id is enforced by `last_reward_publication` in the handler.
     #[account(
         init,
         payer = admin,
@@ -480,6 +481,18 @@ pub struct PublishRewards<'info> {
         bump = stake_reward_config.bump,
     )]
     pub stake_reward_config: Box<Account<'info, StakeRewardConfig>>,
+
+    /// Highest accepted reward publication id — must exist (see `initialize_last_reward_publication`).
+    /// Typed and required so a missing account fails closed rather than materializing at zero.
+    #[account(
+        mut,
+        seeds = [
+            b"last_reward_publication",
+            stake_config.key().as_ref(),
+        ],
+        bump = last_reward_publication.bump,
+    )]
+    pub last_reward_publication: Box<Account<'info, LastRewardPublication>>,
 
     pub system_program: Program<'info, System>,
 
@@ -712,6 +725,73 @@ pub struct InitializeStakeRewardConfig<'info> {
     pub program_data: UncheckedAccount<'info>,
 
     pub system_program: Program<'info, System>,
+}
+
+/// Creates the LastRewardPublication PDA, seeding the id floor for `publish_rewards`.
+/// Must be called once before `publish_rewards` can succeed. Only callable by the program
+/// upgrade authority. `start_id` should be at or above the highest historical publication id;
+/// subsequent publishes require `id > last.id` and `id - last.id <= MAX_GAP`.
+#[derive(Accounts)]
+pub struct InitializeLastRewardPublication<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        init,
+        payer = signer,
+        space = LastRewardPublication::LEN,
+        seeds = [
+            b"last_reward_publication",
+            stake_config.key().as_ref(),
+        ],
+        bump
+    )]
+    pub last_reward_publication: Account<'info, LastRewardPublication>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Corrects the LastRewardPublication floor (upgrade authority only). Recovery path when
+/// `start_id` was seeded wrongly — without this, a too-high floor can leave the next
+/// legitimate id outside MAX_GAP, and a floor of `u32::MAX` deadlocks all future publishes.
+#[derive(Accounts)]
+pub struct UpdateLastRewardPublication<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"last_reward_publication",
+            stake_config.key().as_ref(),
+        ],
+        bump = last_reward_publication.bump,
+    )]
+    pub last_reward_publication: Account<'info, LastRewardPublication>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
 }
 
 /// Updates max_reward_bps on an existing StakeRewardConfig.

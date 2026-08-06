@@ -135,6 +135,8 @@ pub mod vault_stake {
         processor::update_rewards_administrators(ctx, new_administrators)
     }
 
+    /// Publishes a reward distribution. `id` must be greater than the pool's
+    /// `LastRewardPublication.id` and within `LastRewardPublication::MAX_GAP` of it.
     pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Result<()> {
         processor::publish_rewards(ctx, id, amount)
     }
@@ -234,6 +236,26 @@ pub mod vault_stake {
     /// Only callable by the program upgrade authority.
     pub fn initialize_stake_reward_config(ctx: Context<InitializeStakeRewardConfig>) -> Result<()> {
         processor::initialize_stake_reward_config(ctx)
+    }
+
+    /// Creates the LastRewardPublication PDA, seeding the id floor for publish_rewards.
+    /// Must be called once before `publish_rewards` can succeed. Only callable by the program
+    /// upgrade authority. Pass `start_id` at or above the highest historical publication id;
+    /// subsequent publishes must use an id greater than the floor and within `MAX_GAP`.
+    pub fn initialize_last_reward_publication(
+        ctx: Context<InitializeLastRewardPublication>,
+        start_id: u32,
+    ) -> Result<()> {
+        processor::initialize_last_reward_publication(ctx, start_id)
+    }
+
+    /// Corrects the LastRewardPublication floor (upgrade authority). Recovery when start_id
+    /// was seeded wrongly so the pool can publish within MAX_GAP of the next legitimate id.
+    pub fn update_last_reward_publication(
+        ctx: Context<UpdateLastRewardPublication>,
+        new_id: u32,
+    ) -> Result<()> {
+        processor::update_last_reward_publication(ctx, new_id)
     }
 
     /// Updates the maximum reward distribution cap on an existing StakeRewardConfig.

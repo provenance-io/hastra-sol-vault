@@ -43,13 +43,31 @@ pub struct EpochCapsConfig {
     /// Ceiling on `create_rewards_epoch.total` for future epochs.
     pub max_epoch_cap: u64,
     /// Epochs with `index >= first_capped_epoch` enforce aggregate claim caps.
-    /// Lower indices only require a valid Merkle proof and `ClaimRecord`.
+    /// Lower indices only require a valid Merkle proof and `ClaimRecord`, and are
+    /// reserved for epochs created before the caps upgrade: `create_rewards_epoch`
+    /// rejects any index below this boundary.
     pub first_capped_epoch: u64,
     pub bump: u8,
 }
 
 impl EpochCapsConfig {
     pub const LEN: usize = 8 + 8 + 8 + 1;
+}
+
+/// Singleton tracking the highest rewards-epoch index accepted so far.
+/// Separated from `EpochCapsConfig` so create cannot mutate cap fields — only this counter.
+/// Must be initialized before `create_rewards_epoch`; each create requires `index == last + 1`.
+/// Init and `update_last_rewards_epoch` both require `index + 1 >= first_capped_epoch` so the
+/// succession counter cannot deadlock against the cap boundary.
+#[account]
+pub struct LastRewardsEpoch {
+    /// Highest accepted epoch index so far (floor for the next create).
+    pub index: u64,
+    pub bump: u8,
+}
+
+impl LastRewardsEpoch {
+    pub const LEN: usize = 8 + 8 + 1;
 }
 
 /// Tracks cumulative wYLDS minted via `claim_rewards` for one epoch.

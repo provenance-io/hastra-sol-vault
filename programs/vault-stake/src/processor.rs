@@ -2,7 +2,7 @@ use crate::account_structs::*;
 use crate::error::*;
 use crate::events::*;
 use crate::guard::validate_program_update_authority;
-use crate::state::{StakePriceConfig, StakeRewardConfig, MAX_ADMINISTRATORS};
+use crate::state::{LastRewardPublication, StakePriceConfig, StakeRewardConfig, MAX_ADMINISTRATORS};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::{get_return_data, invoke};
 use anchor_spl::token::spl_token::instruction::AuthorityType;
@@ -440,6 +440,22 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
     );
     require!(amount > 0, CustomErrorCode::InvalidAmount);
 
+    // Enforce bounded-gap succession: strictly increasing, and no more than MAX_GAP ahead of
+    // the last accepted id. Init may seed a high floor (see `initialize_last_reward_publication`);
+    // the gap bound stops a single publish from jumping to u32::MAX and bricking future
+    // publications, while still tolerating operational id skips.
+    let last = &mut ctx.accounts.last_reward_publication;
+    require!(
+        id > last.id,
+        CustomErrorCode::RewardPublicationIdNotMonotonic
+    );
+    let gap = id.checked_sub(last.id).ok_or(CustomErrorCode::Overflow)?;
+    require!(
+        gap <= LastRewardPublication::MAX_GAP,
+        CustomErrorCode::RewardPublicationIdGapTooLarge
+    );
+    last.id = id;
+
     let config = &mut ctx.accounts.stake_reward_config;
 
     // Enforce reward cap: amount must not exceed max_reward_bps % of current total_assets.
@@ -586,7 +602,8 @@ pub fn shares_to_assets(ctx: Context<ConversionView>, shares: u64) -> Result<u64
         .checked_mul(price_config.price as u128)
         .ok_or(CustomErrorCode::Overflow)?
         .checked_div(price_config.price_scale as u128)
-        .ok_or(CustomErrorCode::DivisionByZero)? as u64;
+        .ok_or(CustomErrorCode::DivisionByZero)?;
+    let assets: u64 = assets.try_into().map_err(|_| CustomErrorCode::Overflow)?;
 
     msg!("shares_to_assets: {} shares = {} assets", shares, assets);
 
@@ -606,7 +623,8 @@ pub fn assets_to_shares(ctx: Context<ConversionView>, assets: u64) -> Result<u64
         .checked_mul(price_config.price_scale as u128)
         .ok_or(CustomErrorCode::Overflow)?
         .checked_div(price_config.price as u128)
-        .ok_or(CustomErrorCode::DivisionByZero)? as u64;
+        .ok_or(CustomErrorCode::DivisionByZero)?;
+    let shares: u64 = shares.try_into().map_err(|_| CustomErrorCode::Overflow)?;
 
     msg!("assets_to_shares: {} assets = {} shares", assets, shares);
 
@@ -668,7 +686,12 @@ pub fn update_price_config(
     // invalidate the price; deposit/redeem already require price > 0
     // and price_timestamp > 0, so the protocol auto-quiesces until the
     // next verify_price succeeds under the new configuration.
-    let semantics_changed = config.feed_id != feed_id || config.price_scale != price_scale;
+    // Staleness alone does not change price semantics, so it is excluded.
+    let semantics_changed = config.chainlink_program != chainlink_program
+        || config.chainlink_verifier_account != chainlink_verifier_account
+        || config.chainlink_access_controller != chainlink_access_controller
+        || config.feed_id != feed_id
+        || config.price_scale != price_scale;
 
     config.chainlink_program = chainlink_program;
     config.chainlink_verifier_account = chainlink_verifier_account;
@@ -685,7 +708,7 @@ pub fn update_price_config(
     if semantics_changed {
         config.price = 0;
         config.price_timestamp = 0;
-        msg!("Stored price invalidated due to feed_id/price_scale change");
+        msg!("Stored price invalidated due to semantic config change");
         emit!(PriceInvalidated {
             verifier: ctx.accounts.signer.key(),
             feed_id: feed_id,
@@ -716,6 +739,57 @@ pub fn initialize_stake_reward_config(ctx: Context<InitializeStakeRewardConfig>)
     msg!("max_period_rewards: {}", config.max_period_rewards);
     msg!("reward_period_seconds: {}", config.reward_period_seconds);
     msg!("max_total_rewards: {}", config.max_total_rewards);
+
+    Ok(())
+}
+
+/// Initializes the LastRewardPublication PDA with `start_id` as the floor for future publishes.
+/// Must be called once before `publish_rewards` can succeed. Only callable by the program
+/// upgrade authority. Seed at or above the highest historical publication id for the pool;
+/// subsequent publishes must use an id greater than `start_id` and within `MAX_GAP` of it.
+pub fn initialize_last_reward_publication(
+    ctx: Context<InitializeLastRewardPublication>,
+    start_id: u32,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+
+    let last = &mut ctx.accounts.last_reward_publication;
+    last.id = start_id;
+    last.bump = ctx.bumps.last_reward_publication;
+
+    emit!(LastRewardPublicationInitialized {
+        start_id,
+        stake_config: ctx.accounts.stake_config.key(),
+    });
+
+    msg!("LastRewardPublication initialized");
+    msg!("start_id: {}", start_id);
+
+    Ok(())
+}
+
+/// Corrects the LastRewardPublication floor. Recovery for a wrongly seeded start_id so the
+/// pool is not left unable to publish within MAX_GAP of the next legitimate id. Upgrade
+/// authority only.
+pub fn update_last_reward_publication(
+    ctx: Context<UpdateLastRewardPublication>,
+    new_id: u32,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+
+    let last = &mut ctx.accounts.last_reward_publication;
+    let old_id = last.id;
+    last.id = new_id;
+
+    emit!(LastRewardPublicationUpdated {
+        old_id,
+        new_id,
+        stake_config: ctx.accounts.stake_config.key(),
+    });
+
+    msg!("LastRewardPublication updated");
+    msg!("old_id: {}", old_id);
+    msg!("new_id: {}", new_id);
 
     Ok(())
 }
@@ -958,8 +1032,13 @@ pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result
         ],
     )?;
 
-    // Decode the verified report from return data
-    let (_, return_data) = get_return_data().ok_or(CustomErrorCode::ChainlinkVerifyFailed)?;
+    // Decode the verified report from return data — require it came from Chainlink.
+    let (return_program_id, return_data) =
+        get_return_data().ok_or(CustomErrorCode::ChainlinkVerifyFailed)?;
+    require!(
+        return_program_id == ctx.accounts.chainlink_program.key(),
+        CustomErrorCode::ChainlinkVerifyFailed
+    );
     let report =
         ReportDataV7::decode(&return_data).map_err(|_| CustomErrorCode::ChainlinkVerifyFailed)?;
 
@@ -1012,7 +1091,8 @@ pub fn exchange_rate(ctx: Context<ConversionView>) -> Result<u64> {
         .checked_mul(SCALE)
         .ok_or(CustomErrorCode::Overflow)?
         .checked_div(price_config.price_scale as u128)
-        .ok_or(CustomErrorCode::DivisionByZero)? as u64;
+        .ok_or(CustomErrorCode::DivisionByZero)?;
+    let rate: u64 = rate.try_into().map_err(|_| CustomErrorCode::Overflow)?;
 
     msg!("exchange_rate: {} (scaled by 1e9)", rate);
 

@@ -17,7 +17,11 @@ export function deriveRewardsEpochAccounts(programId: PublicKey, index: number) 
         [Buffer.from("epoch_caps_config")],
         programId
     );
-    return { epoch, epochClaimed, epochCapsConfig };
+    const [lastRewardsEpoch] = PublicKey.findProgramAddressSync(
+        [Buffer.from("last_rewards_epoch")],
+        programId
+    );
+    return { epoch, epochClaimed, epochCapsConfig, lastRewardsEpoch };
 }
 
 /** Default `StakeRewardConfig` numeric fields (matches on-chain `state::StakeRewardConfig`). */

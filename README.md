@@ -46,7 +46,7 @@ Rewards are distributed on-chain using a merkle tree-based claim system to ensur
 - Administrators can create epochs with a merkle root summarizing user rewards
 - Users claim rewards by providing a merkle proof against the stored root
 - Rewards are minted as additional mint tokens (e.g. wYLDS)
-- After upgrade, `initialize_epoch_caps` is required on-chain before create/claim. New epochs (`index >= first_capped_epoch`) enforce an aggregate claim cap; creates also require `total <= max_epoch_cap`. Epochs with a lower index stay uncapped.
+- After upgrade, `initialize_epoch_caps` and `initialize_last_rewards_epoch` are required on-chain before create/claim. New epochs (`index >= first_capped_epoch`) enforce an aggregate claim cap; creates also require `total <= max_epoch_cap` and exact succession (`index == last_rewards_epoch.index + 1`). Epochs created before the upgrade stay uncapped, and no new epoch can be created at an index below `first_capped_epoch`, so every epoch created from now on is capped.
 
 **Merkle Tree Structure:**
 
@@ -57,9 +57,10 @@ Rewards are distributed on-chain using a merkle tree-based claim system to ensur
 **Administrative Posting Process:**
 
 1. Upgrade authority calls `initialize_epoch_caps(first_capped_epoch, max_epoch_cap)` once after program upgrade — use `scripts/vault-mint/initialize_epoch_caps_proposal_squads.ts` when the upgrade authority is a Squads vault PDA (or `initialize_epoch_caps.ts` for a local keypair)
-2. Authorized reward admin computes user rewards off-chain
-3. Constructs merkle tree and computes root; `total` must be `> 0` and `<= max_epoch_cap`
-4. Calls `create_rewards_epoch()` with epoch index, merkle root, and total:
+2. Upgrade authority calls `initialize_last_rewards_epoch(start_index)` once (requires caps already initialized). Must satisfy `start_index + 1 >= first_capped_epoch` or init rejects (`EpochIndexBelowFirstCapped`) — typically `start_index = first_capped_epoch - 1`. Use `scripts/vault-mint/initialize_last_rewards_epoch_proposal_squads.ts` (or the non-Squads script). Wrong floor can be corrected later with `update_last_rewards_epoch` (upgrade authority only; same boundary check).
+3. Authorized reward admin computes user rewards off-chain
+4. Constructs merkle tree and computes root; `total` must be `> 0` and `<= max_epoch_cap`, and `index` must equal `last_rewards_epoch.index + 1` (and therefore be `>= first_capped_epoch`)
+5. Calls `create_rewards_epoch()` with epoch index, merkle root, and total:
 ```rust
 pub fn create_rewards_epoch(
     ctx: Context<CreateRewardsEpoch>,
@@ -128,9 +129,13 @@ Staking rewards are published via `publish_rewards`, which CPIs into **vault-min
 3. **Cooldown (`reward_period_seconds`)**: default `3540` seconds (59 minutes).
 4. **Lifetime cap (`max_total_rewards`)**: default `10,000,000` wYLDS (6-decimal raw units: `10_000_000_000_000`).
 
+Publication ids must advance with a bounded gap: each `--reward_id` must be greater than the per-pool `LastRewardPublication.id` and within `MAX_GAP` of it (`RewardPublicationIdNotMonotonic` / `RewardPublicationIdGapTooLarge` otherwise). Initialize that PDA once with `scripts/vault-stake/initialize_last_reward_publication.ts` (or the Squads proposal variant) before the first publish — seed `start_id` at or above the highest historical publication id for the pool. A wrongly seeded floor can be corrected with `update_last_reward_publication` (upgrade authority only).
+
 The guard state is stored at PDA:
 
 `[b"stake_reward_config", stake_config.key()]`
+
+`LastRewardPublication` is a separate PDA at `[b"last_reward_publication", stake_config.key()]`.
 
 #### Updating reward caps (Squads v4)
 
@@ -195,7 +200,7 @@ Price configuration lives in a dedicated PDA with seeds `[b"stake_price_config",
 | Instruction               | Authority                 | Description                                                                                                                                                                                                                                                      |
 | ------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `initialize_price_config` | Program upgrade authority | Creates the `StakePriceConfig` PDA. Must be called once after each program deployment before any deposit or redeem.                                                                                                                                              |
-| `update_price_config`     | Program upgrade authority | Updates Chainlink addresses, feed ID, price scale, or staleness. If `feed_id` or `price_scale` changes, the stored `price` and `price_timestamp` are cleared, so deposits/redeems halt until the next `verify_price`; otherwise the stored price remains intact. |
+| `update_price_config`     | Program upgrade authority | Updates Chainlink addresses, feed ID, price scale, or staleness. If any field other than staleness changes, the stored `price` and `price_timestamp` are cleared, so deposits/redeems halt until the next `verify_price`; a staleness-only update leaves the stored price intact. |
 | `verify_price`            | Rewards administrators    | Submits a signed Chainlink report for on-chain verification via CPI. On success, stores the verified price and the report’s `observations_timestamp` (staleness anchor).                                                                                         |
 | `set_price_for_testing`   | Program upgrade authority | Directly sets `price` and `price_timestamp`. For localnet testing only — not for production use.                                                                                                                                                                 |
 
@@ -761,8 +766,11 @@ $ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
     ANCHOR_WALLET=~/.config/solana/hastra-devnet-id.json
     yarn run ts-node scripts/complete_redeem.ts \
     --user <USER_PUBLIC_KEY_WHO_REQUESTED_REDEEM> \
+    --expected_amount <RAW_AMOUNT_THAT_WAS_APPROVED> \
     --mint AVpS6aTBQyCFBA4jymYRWqDyL7ipurn24PZVdjbbWT3X
 ```
+
+`--expected_amount` must come from the approval record, not from re-reading the request: the program rejects with `RedemptionAmountMismatch` if it does not match the amount recorded on-chain. This is what keeps a request the user replaced after approval from being settled by an already-signed completion.
 
 ## Testing
 
@@ -1117,7 +1125,7 @@ Compressed report:          308 bytes (compressed) 0xa0058000090d9e8d96765a0c49e
 
 #### `update_price_config` — via Squads transaction proposal
 
-`update_price_config` has the same upgrade-authority requirement as `initialize_price_config` and must also go through a Squads vault transaction proposal. It modifies the Chainlink addresses, feed ID, price scale, or staleness window on the existing `StakePriceConfig` account — it does **not** reset the stored price or timestamp, and no new account is created so no rent is required from the vault.
+`update_price_config` has the same upgrade-authority requirement as `initialize_price_config` and must also go through a Squads vault transaction proposal. It modifies the Chainlink addresses, feed ID, price scale, or staleness window on the existing `StakePriceConfig` account. Changing any field other than staleness clears the stored price and timestamp (deposits/redeems halt until the next `verify_price`); a staleness-only update leaves them intact. No new account is created, so no rent is required from the vault.
 
 Use `scripts/vault-stake/update_price_config_proposal.ts` to build and submit the proposal. The pattern is identical to `initialize_price_config_proposal.ts` except it calls `.updatePriceConfig()` and omits `system_program` from the accounts.
 

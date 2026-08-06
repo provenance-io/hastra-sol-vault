@@ -89,8 +89,27 @@ pub mod vault_mint {
         processor::request_redeem(ctx, amount)
     }
 
-    pub fn complete_redeem(ctx: Context<CompleteRedeem>) -> Result<()> {
-        processor::complete_redeem(ctx)
+    /// Settles a pending redemption request, burning the user's mint tokens and paying out the
+    /// corresponding vault tokens. Only callable by a rewards administrator.
+    ///
+    /// `expected_amount` must equal the amount recorded on the request, failing with
+    /// `RedemptionAmountMismatch` otherwise. The request PDA is keyed on the user alone, so a user
+    /// can cancel a reviewed request and open a replacement for a different amount at the same
+    /// address; restating the approved amount keeps an already-signed completion bound to the
+    /// request that was reviewed.
+    pub fn complete_redeem(ctx: Context<CompleteRedeem>, expected_amount: u64) -> Result<()> {
+        processor::complete_redeem(ctx, expected_amount)
+    }
+
+    /// Lets a user withdraw their own pending redemption request:
+    /// - Clears the burn delegate granted by `request_redeem`, if still set to that authority
+    /// - Closes the request account, refunding its rent to the user
+    ///
+    /// Needed because `complete_redeem` requires the full requested amount to still be held, so a
+    /// user who moved their mint tokens after requesting can clear the stale request and submit a
+    /// new one.
+    pub fn cancel_redeem(ctx: Context<CancelRedeem>) -> Result<()> {
+        processor::cancel_redeem(ctx)
     }
 
     pub fn update_freeze_administrators(
@@ -147,13 +166,36 @@ pub mod vault_mint {
 
     /// One-shot: enables epoch caps (upgrade authority).
     /// Must be executed after program upgrade before create/claim rewards.
-    /// Sets `first_capped_epoch` and `max_epoch_cap`. Epochs below that index stay uncapped.
+    /// Sets `first_capped_epoch` and `max_epoch_cap`. Epochs already created below that
+    /// index stay uncapped; new epochs cannot be created there. Contiguous create indices
+    /// are enforced separately by `LastRewardsEpoch` (see `initialize_last_rewards_epoch`).
     pub fn initialize_epoch_caps(
         ctx: Context<InitializeEpochCaps>,
         first_capped_epoch: u64,
         max_epoch_cap: u64,
     ) -> Result<()> {
         processor::initialize_epoch_caps(ctx, first_capped_epoch, max_epoch_cap)
+    }
+
+    /// Creates the LastRewardsEpoch PDA, seeding the index floor for create_rewards_epoch.
+    /// Must be called once before create can succeed. Only callable by the program upgrade
+    /// authority. Requires epoch caps already initialized; rejects a floor that would deadlock
+    /// create (`start_index + 1 < first_capped_epoch`). Subsequent creates must use exact
+    /// succession (`start_index + 1`, then contiguous).
+    pub fn initialize_last_rewards_epoch(
+        ctx: Context<InitializeLastRewardsEpoch>,
+        start_index: u64,
+    ) -> Result<()> {
+        processor::initialize_last_rewards_epoch(ctx, start_index)
+    }
+
+    /// Corrects the LastRewardsEpoch floor (upgrade authority). Recovery when start_index was
+    /// seeded wrongly; enforces the same first_capped_epoch check as init.
+    pub fn update_last_rewards_epoch(
+        ctx: Context<UpdateLastRewardsEpoch>,
+        new_index: u64,
+    ) -> Result<()> {
+        processor::update_last_rewards_epoch(ctx, new_index)
     }
 
     /// Updates the global max epoch cap (upgrade authority). Affects future creates only.

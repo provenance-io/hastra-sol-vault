@@ -6,6 +6,7 @@ use crate::state::{AllowedExternalMintPrograms, EpochClaimedAmount, ProofNode};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::hash::hashv;
 use anchor_lang::solana_program::program::invoke;
+use anchor_lang::solana_program::program_option::COption;
 use anchor_lang::solana_program::system_instruction;
 use anchor_spl::token::spl_token::instruction::AuthorityType;
 use anchor_spl::token::{self, MintTo, Transfer};
@@ -196,7 +197,61 @@ pub fn request_redeem(ctx: Context<RequestRedeem>, amount: u64) -> Result<()> {
     Ok(())
 }
 
-pub fn complete_redeem(ctx: Context<CompleteRedeem>) -> Result<()> {
+/// Withdraws the caller's own pending redemption request.
+///
+/// `complete_redeem` requires the user to still hold the full requested amount, so a request whose
+/// owner has since moved wYLDS out cannot be completed. Without this instruction that request would
+/// stay open indefinitely and block new ones, since `request_redeem` allows only one
+/// `RedemptionRequest` PDA per user. Closes the request, refunding its rent to the user, and clears
+/// the burn delegate granted at request time when that delegate is still in place.
+///
+/// Not gated on `paused`: cancelling releases a protocol obligation and moves no protocol funds, so
+/// blocking it during a pause would only trap users.
+pub fn cancel_redeem(ctx: Context<CancelRedeem>) -> Result<()> {
+    let amount = ctx.accounts.redemption_request.amount;
+
+    // Only clear the allowance if it is still the one `request_redeem` granted. SPL token accounts
+    // hold a single delegate, so a user who re-delegated afterwards already invalidated the burn
+    // approval; cancelling must not silently revoke that unrelated grant.
+    let delegate_is_redeem_authority = matches!(
+        ctx.accounts.user_mint_token_account.delegate,
+        COption::Some(delegate) if delegate == ctx.accounts.redeem_vault_authority.key()
+    );
+
+    if delegate_is_redeem_authority {
+        token::revoke(CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            token::Revoke {
+                source: ctx.accounts.user_mint_token_account.to_account_info(),
+                authority: ctx.accounts.signer.to_account_info(),
+            },
+        ))?;
+    }
+
+    msg!("Cancelled redemption request for {} tokens", amount);
+
+    emit!(RedemptionCancelled {
+        user: ctx.accounts.signer.key(),
+        amount,
+        mint: ctx.accounts.config.mint,
+        vault: ctx.accounts.config.vault,
+    });
+
+    // Anchor closes redemption_request to `signer` per the accounts attr
+    Ok(())
+}
+
+/// Settles a pending redemption request: burns the user's mint tokens and pays out the
+/// corresponding vault tokens.
+///
+/// `expected_amount` is the amount the administrator approved. The `RedemptionRequest` PDA is
+/// derived from the user alone, so its address does not change when the recorded amount does: a
+/// user can `cancel_redeem` a reviewed request and open a replacement for a different amount at the
+/// same address, and an already-signed completion would otherwise settle whatever it finds there.
+/// Requiring the caller to restate the approved amount binds this settlement to the request that
+/// was actually reviewed. Solvency was never at risk — the full recorded amount is burned and paid
+/// to the same user either way — but amount-specific operational and compliance approval was.
+pub fn complete_redeem(ctx: Context<CompleteRedeem>, expected_amount: u64) -> Result<()> {
     // Admin gate
     require!(
         ctx.accounts
@@ -207,16 +262,22 @@ pub fn complete_redeem(ctx: Context<CompleteRedeem>) -> Result<()> {
     );
 
     let req = &ctx.accounts.redemption_request;
-
-    // The request redeem function will set the redeem amount to the min
-    // of the requested amount and the user's mint balance at the request.
-    // This prevents program from burning more than their balance at the time.
-    // However, we also do the same here to prevent error in the situation where
-    // the user transfers mint out of their account before this complete request
-    // executes.
-    let user_mint_balance = ctx.accounts.user_mint_token_account.amount;
-    let amount_to_redeem = std::cmp::min(user_mint_balance, req.amount);
+    let amount_to_redeem = req.amount;
     require!(amount_to_redeem > 0, CustomErrorCode::InvalidAmount);
+
+    // Reject a request that was substituted after the administrator approved this amount.
+    require!(
+        amount_to_redeem == expected_amount,
+        CustomErrorCode::RedemptionAmountMismatch
+    );
+
+    // Fail closed if the user no longer holds the full requested amount.
+    // Partial completion would close the request and silently under-deliver USDC.
+    let user_mint_balance = ctx.accounts.user_mint_token_account.amount;
+    require!(
+        user_mint_balance >= amount_to_redeem,
+        CustomErrorCode::InsufficientRedemptionBalance
+    );
 
     // check vault has enough USDC
     require!(
@@ -402,10 +463,30 @@ pub fn create_rewards_epoch(
     require!(total > 0, CustomErrorCode::InvalidAmount);
 
     let caps = &ctx.accounts.epoch_caps_config;
+    // Indices below `first_capped_epoch` are reserved for epochs that predate the caps
+    // upgrade, which `claim_rewards` exempts from aggregate cap enforcement. Creating a new
+    // epoch at an unused index down there would make its declared `total` unenforceable and
+    // allow unbounded minting against the Merkle root, so the boundary is closed here.
+    require!(
+        index >= caps.first_capped_epoch,
+        CustomErrorCode::EpochIndexBelowFirstCapped
+    );
+    // Exact succession via LastRewardsEpoch (separate from cap config so create cannot
+    // mutate first_capped_epoch / max_epoch_cap). Overflow of u64 is the natural ceiling.
+    let last = &mut ctx.accounts.last_rewards_epoch;
+    let expected = last
+        .index
+        .checked_add(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    require!(
+        index == expected,
+        CustomErrorCode::EpochIndexNotContiguous
+    );
     require!(
         total <= caps.max_epoch_cap,
         CustomErrorCode::EpochCapAboveGlobal
     );
+    last.index = index;
 
     let e = &mut ctx.accounts.epoch;
     e.index = index;
@@ -472,6 +553,8 @@ pub fn claim_rewards(ctx: Context<ClaimRewards>, amount: u64, proof: Vec<ProofNo
 
     // Cap enforcement for epochs at or after `first_capped_epoch`.
     // Epochs below that index skip the aggregate counter; ClaimRecord still prevents double-claim.
+    // Only epochs predating the caps upgrade can sit below the boundary, because
+    // `create_rewards_epoch` refuses those indices.
     // `epoch_caps_config` must already be initialized (typed Account constraint).
     let epoch_index = ctx.accounts.epoch.index;
     let enforce_cap = epoch_index >= ctx.accounts.epoch_caps_config.first_capped_epoch;
@@ -550,6 +633,74 @@ pub fn initialize_epoch_caps(
         old_cap: 0,
         new_cap: max_epoch_cap,
     });
+
+    Ok(())
+}
+
+/// Ensures the next create index (`floor + 1`) is at or above `first_capped_epoch`.
+/// Without this, contiguous succession would permanently fail against the cap boundary.
+fn require_next_epoch_at_or_above_first_capped(floor: u64, first_capped_epoch: u64) -> Result<()> {
+    let next = floor
+        .checked_add(1)
+        .ok_or(ProgramError::ArithmeticOverflow)?;
+    require!(
+        next >= first_capped_epoch,
+        CustomErrorCode::EpochIndexBelowFirstCapped
+    );
+    Ok(())
+}
+
+/// Initializes the LastRewardsEpoch PDA with `start_index` as the floor for future creates.
+/// Must be called once before `create_rewards_epoch` can succeed. The next create must use
+/// `start_index + 1`, then contiguous indices. Only callable by the program upgrade authority.
+/// Rejects a floor that would deadlock create (`start_index + 1 < first_capped_epoch`).
+pub fn initialize_last_rewards_epoch(
+    ctx: Context<InitializeLastRewardsEpoch>,
+    start_index: u64,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    require_next_epoch_at_or_above_first_capped(
+        start_index,
+        ctx.accounts.epoch_caps_config.first_capped_epoch,
+    )?;
+
+    let last = &mut ctx.accounts.last_rewards_epoch;
+    last.index = start_index;
+    last.bump = ctx.bumps.last_rewards_epoch;
+
+    emit!(LastRewardsEpochInitialized { start_index });
+
+    msg!("LastRewardsEpoch initialized");
+    msg!("start_index: {}", start_index);
+
+    Ok(())
+}
+
+/// Corrects the LastRewardsEpoch floor. Recovery for a wrongly seeded start_index; enforces
+/// the same first_capped_epoch check as init so create cannot be deadlocked. Upgrade
+/// authority only.
+pub fn update_last_rewards_epoch(
+    ctx: Context<UpdateLastRewardsEpoch>,
+    new_index: u64,
+) -> Result<()> {
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
+    require_next_epoch_at_or_above_first_capped(
+        new_index,
+        ctx.accounts.epoch_caps_config.first_capped_epoch,
+    )?;
+
+    let last = &mut ctx.accounts.last_rewards_epoch;
+    let old_index = last.index;
+    last.index = new_index;
+
+    emit!(LastRewardsEpochUpdated {
+        old_index,
+        new_index,
+    });
+
+    msg!("LastRewardsEpoch updated");
+    msg!("old_index: {}", old_index);
+    msg!("new_index: {}", new_index);
 
     Ok(())
 }

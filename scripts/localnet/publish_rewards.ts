@@ -10,11 +10,11 @@
 import * as anchor from "@coral-xyz/anchor";
 import {AnchorProvider, Program, Wallet} from "@coral-xyz/anchor";
 import BN from "bn.js";
-import {createBigInt} from "@metaplex-foundation/umi";
 import {Connection} from "@solana/web3.js";
 import yargs from "yargs";
 import {VaultStake} from "../../target/types/vault_stake";
 import {VaultStakeAuto} from "../../target/types/vault_stake_auto";
+import {createBigInt} from "@metaplex-foundation/umi";
 import {
     defaultLocalValidatorConfigPath,
     defaultLocalValidatorEnvPath,
@@ -213,6 +213,11 @@ async function main() {
         thisProgramId
     );
 
+    const [lastRewardPublicationPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [Buffer.from("last_reward_publication"), stakeConfigPda.toBuffer()],
+        thisProgramId
+    );
+
     const [vaultAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("vault_authority")],
         thisProgramId
@@ -245,6 +250,7 @@ async function main() {
             mintProgramId
         );
 
+    // Addressed by (id, amount); uniqueness of id is enforced by LastRewardPublication.
     const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [
             Buffer.from("reward_record"),
@@ -285,6 +291,7 @@ async function main() {
             mint: mint,
             rewardRecord: rewardsRecordPda,
             stakeRewardConfig: stakeRewardConfigPda,
+            lastRewardPublication: lastRewardPublicationPda,
             tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
             systemProgram: anchor.web3.SystemProgram.programId,
         })

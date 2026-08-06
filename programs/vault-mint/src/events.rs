@@ -34,6 +34,16 @@ pub struct RedeemCompleted {
     pub vault: Pubkey,
 }
 
+/// Emitted when a user withdraws their own pending redemption request before it is completed.
+#[event]
+pub struct RedemptionCancelled {
+    pub user: Pubkey,
+    /// Amount the cancelled request had reserved for burning.
+    pub amount: u64,
+    pub mint: Pubkey,
+    pub vault: Pubkey,
+}
+
 #[event]
 pub struct ExternalProgramMintEvent {
     pub admin: Pubkey,
@@ -69,4 +79,15 @@ pub struct MaxEpochCapUpdated {
 #[event]
 pub struct FirstCappedEpochSet {
     pub epoch_index: u64,
+}
+
+#[event]
+pub struct LastRewardsEpochInitialized {
+    pub start_index: u64,
+}
+
+#[event]
+pub struct LastRewardsEpochUpdated {
+    pub old_index: u64,
+    pub new_index: u64,
 }

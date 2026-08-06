@@ -255,6 +255,8 @@ pub struct ThawTokenAccount<'info> {
 
 // Admin posts an epoch Merkle root. Requires epoch caps initialized; enforces the global
 // max epoch cap and creates the per-epoch claimed counter. Claims mint wYLDS on demand.
+// `index` must equal `last_rewards_epoch.index + 1` and be at or above `first_capped_epoch`
+// so lower indices remain exclusive to pre-upgrade epochs. Cap fields stay read-only here.
 #[derive(Accounts)]
 #[instruction(index: u64)]
 pub struct CreateRewardsEpoch<'info> {
@@ -269,6 +271,14 @@ pub struct CreateRewardsEpoch<'info> {
         bump = epoch_caps_config.bump
     )]
     pub epoch_caps_config: Account<'info, EpochCapsConfig>,
+
+    /// Contiguous-index counter — the only account create is allowed to mutate for succession.
+    #[account(
+        mut,
+        seeds = [b"last_rewards_epoch"],
+        bump = last_rewards_epoch.bump
+    )]
+    pub last_rewards_epoch: Account<'info, LastRewardsEpoch>,
 
     #[account(mut)]
     pub admin: Signer<'info>,
@@ -298,6 +308,8 @@ pub struct CreateRewardsEpoch<'info> {
 // User claims via Merkle proof; wYLDS are minted on demand.
 // Requires `epoch_caps_config` to be initialized. Cap enforcement runs when
 // `index >= first_capped_epoch`; `epoch_claimed` may still be empty for lower indices.
+// Only pre-upgrade epochs can occupy those lower indices, since `create_rewards_epoch`
+// rejects them — the uncapped branch is therefore unreachable for newly created epochs.
 #[derive(Accounts)]
 pub struct ClaimRewards<'info> {
     #[account(
@@ -392,6 +404,81 @@ pub struct InitializeEpochCaps<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// Creates the LastRewardsEpoch PDA, seeding the index floor for `create_rewards_epoch`.
+/// Must be called once before create can succeed. Only callable by the program upgrade
+/// authority. Requires `epoch_caps_config` so init can reject a floor that would deadlock
+/// create (`start_index + 1 < first_capped_epoch`). Subsequent creates require exact
+/// succession (`last.index + 1`).
+#[derive(Accounts)]
+pub struct InitializeLastRewardsEpoch<'info> {
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Account<'info, Config>,
+
+    /// Cap boundary used to reject a start_index that would brick create_rewards_epoch.
+    #[account(
+        seeds = [b"epoch_caps_config"],
+        bump = epoch_caps_config.bump
+    )]
+    pub epoch_caps_config: Account<'info, EpochCapsConfig>,
+
+    #[account(
+        init,
+        payer = signer,
+        space = LastRewardsEpoch::LEN,
+        seeds = [b"last_rewards_epoch"],
+        bump
+    )]
+    pub last_rewards_epoch: Account<'info, LastRewardsEpoch>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: Program data account that contains the upgrade authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Corrects the LastRewardsEpoch floor (upgrade authority only). Recovery path when
+/// `start_index` was seeded wrongly; enforces the same first_capped_epoch floor as init
+/// so an update cannot re-introduce a create deadlock.
+#[derive(Accounts)]
+pub struct UpdateLastRewardsEpoch<'info> {
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Account<'info, Config>,
+
+    #[account(
+        seeds = [b"epoch_caps_config"],
+        bump = epoch_caps_config.bump
+    )]
+    pub epoch_caps_config: Account<'info, EpochCapsConfig>,
+
+    #[account(
+        mut,
+        seeds = [b"last_rewards_epoch"],
+        bump = last_rewards_epoch.bump
+    )]
+    pub last_rewards_epoch: Account<'info, LastRewardsEpoch>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: Program data account that contains the upgrade authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+}
+
 /// Updates the global max epoch cap (upgrade authority only). Affects future creates only.
 #[derive(Accounts)]
 pub struct UpdateMaxEpochCap<'info> {
@@ -459,6 +546,44 @@ pub struct RequestRedeem<'info> {
     pub config: Account<'info, Config>,
 
     pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+}
+
+// Lets a user withdraw their own pending redemption request. The `redemption_request` seeds are
+// derived from `signer`, so a caller can only ever cancel their own request.
+#[derive(Accounts)]
+pub struct CancelRedeem<'info> {
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    #[account(
+        mut,
+        constraint = user_mint_token_account.mint == config.mint @ CustomErrorCode::InvalidMint,
+        constraint = user_mint_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner
+    )]
+    pub user_mint_token_account: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        close = signer,   // refund rent to the requesting user
+        seeds = [b"redemption_request", signer.key().as_ref()],
+        bump = redemption_request.bump
+    )]
+    pub redemption_request: Account<'info, RedemptionRequest>,
+
+    /// CHECK: PDA recorded as the burn delegate by `request_redeem`; compared against, never signed.
+    #[account(
+        seeds = [b"redeem_vault_authority"],
+        bump
+    )]
+    pub redeem_vault_authority: AccountInfo<'info>,
+
+    #[account(
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Account<'info, Config>,
+
     pub token_program: Program<'info, Token>,
 }
 

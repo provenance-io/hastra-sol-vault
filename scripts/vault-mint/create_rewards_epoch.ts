@@ -59,6 +59,10 @@ const main = async () => {
         [Buffer.from("epoch_caps_config")],
         program.programId
     );
+    const [lastRewardsEpochPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("last_rewards_epoch")],
+        program.programId
+    );
     const indexLe = new anchor.BN(epochIndex).toArrayLike(Buffer, "le", 8);
     const [epochPda] = PublicKey.findProgramAddressSync(
         [Buffer.from("epoch"), indexLe],
@@ -74,6 +78,7 @@ const main = async () => {
         .accountsStrict({
             config: configPda,
             epochCapsConfig: epochCapsConfigPda,
+            lastRewardsEpoch: lastRewardsEpochPda,
             admin: provider.wallet.publicKey,
             epoch: epochPda,
             epochClaimed: epochClaimedPda,

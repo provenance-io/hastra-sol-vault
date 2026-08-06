@@ -34,10 +34,13 @@ impl UnbondingTicket {
     pub const LEN: usize = 8 + 32 + 8 + 8 + 8;
 }
 
+// One record per reward publication, created by `publish_rewards` and never closed. PDA seeds are
+// `(id, amount)` for addressing; uniqueness of the publication id is enforced by
+// `LastRewardPublication`, not by these seeds.
 #[account]
 pub struct RewardPublicationRecord {
-    pub id: u32,           // Unique identifier
-    pub amount: u64,       // Reward amount
+    pub id: u32,           // Reward publication id (also a PDA seed)
+    pub amount: u64,       // Reward amount (also a PDA seed)
     pub published_at: i64, // Timestamp when published
     pub bump: u8,          // PDA bump seed
 }
@@ -98,6 +101,26 @@ impl StakeRewardConfig {
     pub const DEFAULT_MAX_PERIOD_REWARDS: u64 = 1_000_000_000_000; // 1,000,000 wYLDS at 6 decimals
     pub const DEFAULT_REWARD_PERIOD_SECONDS: i64 = 3540; // 59 minutes
     pub const DEFAULT_MAX_TOTAL_REWARDS: u64 = 10_000_000_000_000; // 10,000,000 wYLDS at 6 decimals
+}
+
+// Singleton per pool tracking the highest reward publication id accepted so far.
+// Separated from StakeRewardConfig so the live reward-cap account layout stays unchanged.
+// Must be initialized (with start_id at or above the historical maximum) before publish_rewards
+// can succeed; from then on publish_rewards requires each new id to be strictly greater than the
+// stored id and within MAX_GAP of it. The gap bound stops a single publish from jumping to
+// u32::MAX and deadlocking future publications, while still tolerating operational id skips.
+// `update_last_reward_publication` recovers from a wrongly seeded floor.
+#[account]
+pub struct LastRewardPublication {
+    pub id: u32, // highest reward publication id accepted so far
+    pub bump: u8,
+}
+
+impl LastRewardPublication {
+    // discriminator + id (u32) + bump (u8)
+    pub const LEN: usize = 8 + 4 + 1;
+    // Maximum allowed distance between consecutive published ids.
+    pub const MAX_GAP: u32 = 255;
 }
 
 // Price config is a separate account (not part of StakeConfig) so that the deployed program's

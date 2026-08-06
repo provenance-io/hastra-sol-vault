@@ -6,11 +6,13 @@ import {Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram} from "@solana/web3.
 import * as fs from "fs";
 import * as path from "path";
 import {
+    approve,
     createAccount,
     createMint,
     getAccount,
     getMint,
     mintTo,
+    revoke,
     TOKEN_PROGRAM_ID,
     transfer,
 } from "@solana/spl-token";
@@ -450,9 +452,12 @@ describe("vault-mint", () => {
             assert.ok(config.rewardsAdministrators[0].equals(rewardsAdmin.publicKey));
             assert.ok(!config.paused);
 
-            // Initialize epoch caps for subsequent create/claim tests.
-            // first_capped_epoch = 1: all epochs in this suite (starting at 1) are capped.
-            const { epochCapsConfig } = deriveRewardsEpochAccounts(program.programId, 0);
+            // Initialize epoch caps + last-index floor for subsequent create/claim tests.
+            // first_capped_epoch = 1; LastRewardsEpoch start_index = 0 so the first create is 1.
+            const { epochCapsConfig, lastRewardsEpoch } = deriveRewardsEpochAccounts(
+                program.programId,
+                0
+            );
             await program.methods
                 .initializeEpochCaps(new BN(1), new BN("1000000000000"))
                 .accountsStrict({
@@ -463,9 +468,22 @@ describe("vault-mint", () => {
                     systemProgram: SystemProgram.programId,
                 })
                 .rpc();
+            await program.methods
+                .initializeLastRewardsEpoch(new BN(0))
+                .accountsStrict({
+                    config: configPda,
+                    epochCapsConfig,
+                    lastRewardsEpoch,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPda,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
             const caps = await program.account.epochCapsConfig.fetch(epochCapsConfig);
             assert.equal(caps.firstCappedEpoch.toNumber(), 1);
             assert.equal(caps.maxEpochCap.toString(), "1000000000000");
+            const last = await program.account.lastRewardsEpoch.fetch(lastRewardsEpoch);
+            assert.equal(last.index.toNumber(), 0, "start_index floor for first create at 1");
         });
 
         it("fails when called twice", async () => {
@@ -743,6 +761,34 @@ describe("vault-mint", () => {
             );
         });
 
+        // One open RedemptionRequest PDA per user — a mid-test failure that leaves it
+        // allocated makes every later requestRedeem fail with "account already in use".
+        async function clearOpenRedemptionRequest() {
+            const info = await provider.connection.getAccountInfo(redemptionRequestPda);
+            if (!info) return;
+            await program.methods
+                .cancelRedeem()
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    config: configPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .signers([user])
+                .rpc();
+        }
+
+        beforeEach(async () => {
+            await clearOpenRedemptionRequest();
+        });
+
+        after(async () => {
+            // Don't leave a wedged request for later suites that share the same user PDA.
+            await clearOpenRedemptionRequest();
+        });
+
         it("redeems vault tokens for mint tokens (1:1 ratio)", async () => {
             const redeemAmount = createBigInt(50_000_000); // 50 tokens
             const redeemVaultBalanceBefore = (await getAccount(provider.connection, redeemVaultTokenAccount)).amount;
@@ -773,7 +819,7 @@ describe("vault-mint", () => {
 
             // Now perform the redeem
             await program.methods
-                .completeRedeem() // Amount is calculated in the function
+                .completeRedeem(new BN(redeemAmount))
                 .accountsStrict({
                     admin: rewardsAdmin.publicKey,
                     user: user.publicKey,
@@ -809,10 +855,177 @@ describe("vault-mint", () => {
             }
         });
 
+        it("complete rejects an amount the administrator did not approve", async () => {
+            // Small amounts keep the suite's running balances untouched; only the equality
+            // check is under test here.
+            const approvedAmount = new BN(1_000);
+
+            await program.methods
+                .requestRedeem(approvedAmount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            try {
+                await program.methods
+                    .completeRedeem(approvedAmount.add(new BN(1)))
+                    .accountsStrict({
+                        admin: rewardsAdmin.publicKey,
+                        user: user.publicKey,
+                        userMintTokenAccount: userMintTokenAccount,
+                        userVaultTokenAccount: userVaultTokenAccount,
+                        redemptionRequest: redemptionRequestPda,
+                        redeemVaultTokenAccount: redeemVaultTokenAccount,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        mint: mintedToken,
+                        config: configPda,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown RedemptionAmountMismatch");
+            } catch (err) {
+                expect(err.toString()).to.match(
+                    /RedemptionAmountMismatch|custom program error/i
+                );
+            }
+
+            // Fails closed: the request survives and still settles for the approved amount.
+            const openRequest = await program.account.redemptionRequest.fetch(
+                redemptionRequestPda
+            );
+            assert.equal(openRequest.amount.toNumber(), approvedAmount.toNumber());
+
+            await program.methods
+                .completeRedeem(approvedAmount)
+                .accountsStrict({
+                    admin: rewardsAdmin.publicKey,
+                    user: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    userVaultTokenAccount: userVaultTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultTokenAccount: redeemVaultTokenAccount,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .signers([rewardsAdmin])
+                .rpc();
+        });
+
+        it("complete rejects a request substituted after approval", async () => {
+            const approvedAmount = new BN(1_000);
+            const substitutedAmount = new BN(2_000);
+
+            await program.methods
+                .requestRedeem(approvedAmount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            // The request PDA is keyed on the user alone, so cancelling and re-requesting puts a
+            // different amount at the very address the administrator already reviewed.
+            await program.methods
+                .cancelRedeem()
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    config: configPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .signers([user])
+                .rpc();
+
+            await program.methods
+                .requestRedeem(substitutedAmount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            // A completion signed against the reviewed amount must not settle the replacement.
+            try {
+                await program.methods
+                    .completeRedeem(approvedAmount)
+                    .accountsStrict({
+                        admin: rewardsAdmin.publicKey,
+                        user: user.publicKey,
+                        userMintTokenAccount: userMintTokenAccount,
+                        userVaultTokenAccount: userVaultTokenAccount,
+                        redemptionRequest: redemptionRequestPda,
+                        redeemVaultTokenAccount: redeemVaultTokenAccount,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        mint: mintedToken,
+                        config: configPda,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown RedemptionAmountMismatch");
+            } catch (err) {
+                expect(err.toString()).to.match(
+                    /RedemptionAmountMismatch|custom program error/i
+                );
+            }
+
+            const openRequest = await program.account.redemptionRequest.fetch(
+                redemptionRequestPda
+            );
+            assert.equal(openRequest.amount.toNumber(), substitutedAmount.toNumber());
+
+            // The replacement only settles once an administrator approves it explicitly.
+            await program.methods
+                .completeRedeem(substitutedAmount)
+                .accountsStrict({
+                    admin: rewardsAdmin.publicKey,
+                    user: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    userVaultTokenAccount: userVaultTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultTokenAccount: redeemVaultTokenAccount,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .signers([rewardsAdmin])
+                .rpc();
+        });
+
         it("complete fails with no open redemption request", async () => {
             try {
                 await program.methods
-                    .completeRedeem()
+                    // No request exists, so the account constraint rejects before the amount check.
+                    .completeRedeem(new BN(1))
                     .accountsStrict({
                         admin: rewardsAdmin.publicKey,
                         user: user.publicKey,
@@ -863,7 +1076,7 @@ describe("vault-mint", () => {
 
             try {
                 await program.methods
-                    .completeRedeem()
+                    .completeRedeem(redeemAmount)
                     .accountsStrict({
                         admin: rewardsAdmin.publicKey,
                         user: user.publicKey,
@@ -887,7 +1100,7 @@ describe("vault-mint", () => {
 
             // Clean up: complete with the correct user-owned destination account.
             await program.methods
-                .completeRedeem()
+                .completeRedeem(redeemAmount)
                 .accountsStrict({
                     admin: rewardsAdmin.publicKey,
                     user: user.publicKey,
@@ -902,6 +1115,356 @@ describe("vault-mint", () => {
                 })
                 .signers([rewardsAdmin])
                 .rpc();
+        });
+
+        it("complete fails when user mint balance is below the request amount", async () => {
+            const redeemAmount = new BN(20_000_000);
+
+            await program.methods
+                .requestRedeem(redeemAmount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            // Drain below the recorded request amount. Earlier suite deposits leave the
+            // user holding far more than redeemAmount, so a fixed transfer-out is not enough.
+            const balanceAfterRequest = (
+                await getAccount(provider.connection, userMintTokenAccount)
+            ).amount;
+            const transferOut =
+                balanceAfterRequest - BigInt(redeemAmount.toString()) + BigInt(1);
+            assert.ok(
+                transferOut > BigInt(0),
+                "expected balance at or above the request amount after requestRedeem"
+            );
+
+            // Park under a fresh owner so createAccount derives a distinct ATA (the user's
+            // mint ATA already exists as userMintTokenAccount).
+            const parkingOwner = Keypair.generate();
+            const parkingAccount = await createAccount(
+                provider.connection,
+                provider.wallet.payer,
+                mintedToken,
+                parkingOwner.publicKey
+            );
+            await transfer(
+                provider.connection,
+                user,
+                userMintTokenAccount,
+                parkingAccount,
+                user,
+                transferOut
+            );
+
+            try {
+                try {
+                    await program.methods
+                        .completeRedeem(redeemAmount)
+                        .accountsStrict({
+                            admin: rewardsAdmin.publicKey,
+                            user: user.publicKey,
+                            userMintTokenAccount: userMintTokenAccount,
+                            userVaultTokenAccount: userVaultTokenAccount,
+                            redemptionRequest: redemptionRequestPda,
+                            redeemVaultTokenAccount: redeemVaultTokenAccount,
+                            redeemVaultAuthority: redeemVaultAuthorityPda,
+                            mint: mintedToken,
+                            config: configPda,
+                            tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                        })
+                        .signers([rewardsAdmin])
+                        .rpc();
+                    assert.fail("Should have thrown error");
+                } catch (err: unknown) {
+                    if (err instanceof Error && err.message === "Should have thrown error") {
+                        throw err;
+                    }
+                    expect(String(err)).to.match(
+                        /InsufficientRedemptionBalance|custom program error/i
+                    );
+                }
+
+                // Request must remain open (fail closed — no partial complete).
+                const redemptionRequest = await program.account.redemptionRequest.fetch(
+                    redemptionRequestPda
+                );
+                assert.equal(redemptionRequest.amount.toNumber(), redeemAmount.toNumber());
+            } finally {
+                // Always return parked tokens and settle/cancel so later tests keep a usable balance.
+                const parked = (await getAccount(provider.connection, parkingAccount)).amount;
+                if (parked > BigInt(0)) {
+                    await transfer(
+                        provider.connection,
+                        provider.wallet.payer,
+                        parkingAccount,
+                        userMintTokenAccount,
+                        parkingOwner,
+                        parked
+                    );
+                }
+                const open = await provider.connection.getAccountInfo(redemptionRequestPda);
+                if (open) {
+                    await program.methods
+                        .completeRedeem(redeemAmount)
+                        .accountsStrict({
+                            admin: rewardsAdmin.publicKey,
+                            user: user.publicKey,
+                            userMintTokenAccount: userMintTokenAccount,
+                            userVaultTokenAccount: userVaultTokenAccount,
+                            redemptionRequest: redemptionRequestPda,
+                            redeemVaultTokenAccount: redeemVaultTokenAccount,
+                            redeemVaultAuthority: redeemVaultAuthorityPda,
+                            mint: mintedToken,
+                            config: configPda,
+                            tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                        })
+                        .signers([rewardsAdmin])
+                        .rpc();
+                }
+            }
+        });
+
+        it("user can cancel a request that can no longer be completed", async () => {
+            const redeemAmount = new BN(20_000_000);
+
+            await program.methods
+                .requestRedeem(redeemAmount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            // Drain below the request so complete would fail closed; then cancel instead.
+            const balanceAfterRequest = (
+                await getAccount(provider.connection, userMintTokenAccount)
+            ).amount;
+            const transferOut =
+                balanceAfterRequest - BigInt(redeemAmount.toString()) + BigInt(1);
+            assert.ok(transferOut > BigInt(0));
+
+            // Park under a fresh owner so createAccount derives a distinct ATA.
+            const parkingOwner = Keypair.generate();
+            const parkingAccount = await createAccount(
+                provider.connection,
+                provider.wallet.payer,
+                mintedToken,
+                parkingOwner.publicKey
+            );
+            await transfer(
+                provider.connection,
+                user,
+                userMintTokenAccount,
+                parkingAccount,
+                user,
+                transferOut
+            );
+
+            try {
+                await program.methods
+                    .cancelRedeem()
+                    .accountsStrict({
+                        signer: user.publicKey,
+                        userMintTokenAccount: userMintTokenAccount,
+                        redemptionRequest: redemptionRequestPda,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        config: configPda,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    })
+                    .signers([user])
+                    .rpc();
+
+                // Request account is closed and the burn delegate is released.
+                const closedRequest = await provider.connection.getAccountInfo(redemptionRequestPda);
+                assert.isNull(closedRequest);
+                const mintTokenAccount = await getAccount(provider.connection, userMintTokenAccount);
+                assert.isNull(mintTokenAccount.delegate);
+                assert.equal(mintTokenAccount.delegatedAmount.toString(), "0");
+            } finally {
+                const parked = (await getAccount(provider.connection, parkingAccount)).amount;
+                if (parked > BigInt(0)) {
+                    await transfer(
+                        provider.connection,
+                        provider.wallet.payer,
+                        parkingAccount,
+                        userMintTokenAccount,
+                        parkingOwner,
+                        parked
+                    );
+                }
+            }
+
+            // Cancelling unblocks the user: a fresh request can be submitted.
+            await program.methods
+                .requestRedeem(redeemAmount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            // Complete to leave the suite state clean for following tests.
+            await program.methods
+                .completeRedeem(redeemAmount)
+                .accountsStrict({
+                    admin: rewardsAdmin.publicKey,
+                    user: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    userVaultTokenAccount: userVaultTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultTokenAccount: redeemVaultTokenAccount,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .signers([rewardsAdmin])
+                .rpc();
+        });
+
+        it("another user cannot cancel someone else's request", async () => {
+            const redeemAmount = new BN(5_000_000);
+
+            await program.methods
+                .requestRedeem(redeemAmount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            // The request PDA is seeded by the signer, so an attacker cannot target another
+            // user's request even while supplying that user's token account.
+            try {
+                await program.methods
+                    .cancelRedeem()
+                    .accountsStrict({
+                        signer: rewardsAdmin.publicKey,
+                        userMintTokenAccount: userMintTokenAccount,
+                        redemptionRequest: redemptionRequestPda,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        config: configPda,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.match(
+                    /ConstraintSeeds|InvalidTokenOwner|custom program error/i
+                );
+            }
+
+            // Request remains intact for its owner.
+            const redemptionRequest = await program.account.redemptionRequest.fetch(
+                redemptionRequestPda
+            );
+            assert.equal(redemptionRequest.amount.toNumber(), redeemAmount.toNumber());
+
+            await program.methods
+                .completeRedeem(redeemAmount)
+                .accountsStrict({
+                    admin: rewardsAdmin.publicKey,
+                    user: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    userVaultTokenAccount: userVaultTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultTokenAccount: redeemVaultTokenAccount,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .signers([rewardsAdmin])
+                .rpc();
+        });
+
+        it("cancel leaves an unrelated delegate in place", async () => {
+            const redeemAmount = new BN(5_000_000);
+            const thirdPartyAllowance = BigInt(1_000_000);
+
+            await program.methods
+                .requestRedeem(redeemAmount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            // Re-delegating replaces the program's burn approval (SPL tokens hold one delegate),
+            // which is itself one way a request becomes uncompletable.
+            await approve(
+                provider.connection,
+                user,
+                userMintTokenAccount,
+                rewardsAdmin.publicKey,
+                user,
+                thirdPartyAllowance
+            );
+
+            await program.methods
+                .cancelRedeem()
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    config: configPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .signers([user])
+                .rpc();
+
+            // Request is cleared, but the user's unrelated approval is untouched.
+            const closedRequest = await provider.connection.getAccountInfo(redemptionRequestPda);
+            assert.isNull(closedRequest);
+            const mintTokenAccount = await getAccount(provider.connection, userMintTokenAccount);
+            assert.ok(mintTokenAccount.delegate?.equals(rewardsAdmin.publicKey));
+            assert.equal(
+                mintTokenAccount.delegatedAmount.toString(),
+                thirdPartyAllowance.toString()
+            );
+
+            // Restore a clean delegate state for following tests.
+            await revoke(provider.connection, user, userMintTokenAccount, user);
         });
 
         it("handles multiple redeems correctly", async () => {
@@ -945,7 +1508,7 @@ describe("vault-mint", () => {
 
             // clean up by completing the redeem
             await program.methods
-                .completeRedeem() // Amount is calculated in the function
+                .completeRedeem(firstRedeem)
                 .accountsStrict({
                     admin: rewardsAdmin.publicKey,
                     user: user.publicKey,
@@ -1056,7 +1619,7 @@ describe("vault-mint", () => {
 
             try {
                 await program.methods
-                    .completeRedeem() // Amount is calculated in the function
+                    .completeRedeem(excessiveAmount)
                     .accountsStrict({
                         admin: rewardsAdmin.publicKey,
                         user: user.publicKey,
@@ -1088,7 +1651,7 @@ describe("vault-mint", () => {
 
             // clean up by completing the redeem
             await program.methods
-                .completeRedeem() // Amount is calculated in the function
+                .completeRedeem(excessiveAmount)
                 .accountsStrict({
                     admin: rewardsAdmin.publicKey,
                     user: user.publicKey,
@@ -1204,6 +1767,7 @@ describe("vault-mint", () => {
                     .accountsStrict({
                         config: configPda,
                         epochCapsConfig: deriveRewardsEpochAccounts(program.programId, pausedEpochIndex).epochCapsConfig,
+                        lastRewardsEpoch: deriveRewardsEpochAccounts(program.programId, 0).lastRewardsEpoch,
                         admin: rewardsAdmin.publicKey,
                         epoch: pausedEpochPda,
                         epochClaimed: deriveRewardsEpochAccounts(program.programId, pausedEpochIndex).epochClaimed,
@@ -1403,7 +1967,7 @@ describe("vault-mint", () => {
                 .rpc();
 
             await program.methods
-                .completeRedeem() // Amount is calculated in the function
+                .completeRedeem(amount)
                 .accountsStrict({
                     admin: rewardsAdmin.publicKey,
                     user: user.publicKey,
@@ -1562,6 +2126,7 @@ describe("vault-mint", () => {
         let stakeVaultTokenAccountConfigPdaAuto: PublicKey;
         let stakePriceConfigPdaAuto: PublicKey;
         let stakeRewardConfigPdaAuto: PublicKey;
+        let lastRewardPublicationPdaAuto: PublicKey;
         let programDataPdaAuto: PublicKey;
         let externalMintAuthorityPdaAuto: PublicKey;
         let autoShareMint: PublicKey;
@@ -1615,12 +2180,13 @@ describe("vault-mint", () => {
                 .rpc();
         };
 
-        const makeAutoRewardsRecordPda = (id: number, amount: bigint) =>
+        // Record PDA is addressed by (id, amount); uniqueness of id is the LastRewardPublication counter.
+        const makeAutoRewardsRecordPda = (id: number, amount: number | bigint | BN) =>
             PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("reward_record"),
                     Buffer.from(new Uint32Array([id]).buffer),
-                    Buffer.from(new BigUint64Array([amount]).buffer),
+                    Buffer.from(new BigUint64Array([BigInt(amount.toString())]).buffer),
                 ],
                 stakeAutoProgram.programId
             )[0];
@@ -1642,6 +2208,7 @@ describe("vault-mint", () => {
             mint: autoShareMint,
             rewardRecord,
             stakeRewardConfig: stakeRewardConfigPdaAuto,
+            lastRewardPublication: lastRewardPublicationPdaAuto,
             tokenProgram: TOKEN_PROGRAM_ID,
             systemProgram: SystemProgram.programId,
         });
@@ -1695,6 +2262,13 @@ describe("vault-mint", () => {
             [stakeRewardConfigPdaAuto] = PublicKey.findProgramAddressSync(
                 [
                     Buffer.from("stake_reward_config"),
+                    stakeConfigPdaAuto.toBuffer(),
+                ],
+                stakeAutoProgram.programId
+            );
+            [lastRewardPublicationPdaAuto] = PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("last_reward_publication"),
                     stakeConfigPdaAuto.toBuffer(),
                 ],
                 stakeAutoProgram.programId
@@ -1814,7 +2388,27 @@ describe("vault-mint", () => {
                 })
                 .rpc();
 
-            // stake_reward_config for AUTO is created lazily on first publish_rewards.
+            // Cap + monotonic-id accounts must exist before publish_rewards (no lazy init).
+            await stakeAutoProgram.methods
+                .initializeStakeRewardConfig()
+                .accountsStrict({
+                    stakeConfig: stakeConfigPdaAuto,
+                    stakeRewardConfig: stakeRewardConfigPdaAuto,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPdaAuto,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
+            await stakeAutoProgram.methods
+                .initializeLastRewardPublication(0)
+                .accountsStrict({
+                    stakeConfig: stakeConfigPdaAuto,
+                    lastRewardPublication: lastRewardPublicationPdaAuto,
+                    signer: provider.wallet.publicKey,
+                    programData: programDataPdaAuto,
+                    systemProgram: SystemProgram.programId,
+                })
+                .rpc();
 
             await setPriceForTestingAuto();
         });
@@ -1827,11 +2421,9 @@ describe("vault-mint", () => {
             );
         });
 
-        it("rejects CPI when calling_program is not legacy and not on the allow-list", async function () {
-            if (!autoProgramDeployed) {
-                this.skip();
-                return;
-            }
+        // Requires a deployed vault-stake AUTO binary (pool-auto feature). Skipped until that is
+        // part of the default local/CI deploy path.
+        it.skip("rejects CPI when calling_program is not legacy and not on the allow-list", async function () {
             const vaultBal = (await getAccount(provider.connection, stakeAutoVaultTokenAccount))
                 .amount;
             const amount = (vaultBal * BigInt(50)) / BigInt(10_000);
@@ -1852,11 +2444,7 @@ describe("vault-mint", () => {
             }
         });
 
-        it("allows CPI after register_allowed_external_mint_program adds the caller", async function () {
-            if (!autoProgramDeployed) {
-                this.skip();
-                return;
-            }
+        it.skip("allows CPI after register_allowed_external_mint_program adds the caller", async function () {
             await (program.methods as any)
                 .registerAllowedExternalMintProgram()
                 .accountsStrict({
@@ -2090,6 +2678,7 @@ describe("vault-mint", () => {
                 .accountsStrict({
                     config: configPda,
                     epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epochIndex).epochCapsConfig,
+                    lastRewardsEpoch: deriveRewardsEpochAccounts(program.programId, 0).lastRewardsEpoch,
                     admin: rewardsAdmin.publicKey,
                     epoch: epochPda,
                     epochClaimed: deriveRewardsEpochAccounts(program.programId, epochIndex).epochClaimed,
@@ -2109,6 +2698,7 @@ describe("vault-mint", () => {
                     .accountsStrict({
                         config: configPda,
                         epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epochIndex).epochCapsConfig,
+                        lastRewardsEpoch: deriveRewardsEpochAccounts(program.programId, 0).lastRewardsEpoch,
                         admin: rewardsAdmin.publicKey,
                         epoch: epochPda,
                         epochClaimed: deriveRewardsEpochAccounts(program.programId, epochIndex).epochClaimed,
@@ -2129,6 +2719,7 @@ describe("vault-mint", () => {
                     .accountsStrict({
                         config: configPda,
                         epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epochIndex).epochCapsConfig,
+                        lastRewardsEpoch: deriveRewardsEpochAccounts(program.programId, 0).lastRewardsEpoch,
                         admin: provider.wallet.publicKey,
                         epoch: epochPda,
                         epochClaimed: deriveRewardsEpochAccounts(program.programId, epochIndex).epochClaimed,
@@ -2175,6 +2766,16 @@ describe("vault-mint", () => {
 
             const userMintBalanceAfter = (await getAccount(provider.connection, userMintTokenAccount)).amount;
             assert.equal(userMintBalanceAfter, userMintBalanceBefore + createBigInt(userAllocation!.amount.toNumber()));
+
+            // epochIndex is at first_capped_epoch, so the aggregate counter must track the claim.
+            const claimed = await program.account.epochClaimedAmount.fetch(
+                deriveRewardsEpochAccounts(program.programId, epochIndex).epochClaimed
+            );
+            assert.equal(
+                claimed.claimedTotal.toString(),
+                userAllocation!.amount.toString(),
+                "claim must be recorded in epoch_claimed for capped epochs"
+            );
         });
 
         it("prevents double claim", async () => {
@@ -2275,6 +2876,7 @@ describe("vault-mint", () => {
                 .accountsStrict({
                     config: configPda,
                     epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epoch2Index).epochCapsConfig,
+                    lastRewardsEpoch: deriveRewardsEpochAccounts(program.programId, 0).lastRewardsEpoch,
                     admin: rewardsAdmin.publicKey,
                     epoch: epoch2Pda,
                     epochClaimed: deriveRewardsEpochAccounts(program.programId, epoch2Index).epochClaimed,
@@ -2323,12 +2925,14 @@ describe("vault-mint", () => {
         });
 
         it("rejects create when total exceeds max_epoch_cap", async () => {
-            const overIndex = 10;
-            const { epoch, epochClaimed, epochCapsConfig } = deriveRewardsEpochAccounts(
-                program.programId,
-                overIndex
-            );
+            // After epochs 1 and 2, last.index is 2 so the next create is 3.
+            const overIndex = 3;
+            const { epoch, epochClaimed, epochCapsConfig, lastRewardsEpoch } =
+                deriveRewardsEpochAccounts(program.programId, overIndex);
+            const last = await program.account.lastRewardsEpoch.fetch(lastRewardsEpoch);
+            assert.equal(last.index.toNumber() + 1, overIndex);
             const caps = await program.account.epochCapsConfig.fetch(epochCapsConfig);
+            const firstCappedBefore = caps.firstCappedEpoch.toString();
             const overTotal = caps.maxEpochCap.add(new BN(1));
             const overAlloc = {
                 allocations: [{ account: user.publicKey.toBase58(), amount: 1 }],
@@ -2345,6 +2949,7 @@ describe("vault-mint", () => {
                     .accountsStrict({
                         config: configPda,
                         epochCapsConfig,
+                        lastRewardsEpoch,
                         admin: rewardsAdmin.publicKey,
                         epoch,
                         epochClaimed,
@@ -2356,17 +2961,23 @@ describe("vault-mint", () => {
             } catch (err) {
                 expect(err.toString()).to.match(/EpochCapAboveGlobal|custom program error: 0x28/i);
             }
+            const capsAfter = await program.account.epochCapsConfig.fetch(epochCapsConfig);
+            assert.equal(
+                capsAfter.firstCappedEpoch.toString(),
+                firstCappedBefore,
+                "failed create must not mutate first_capped_epoch"
+            );
         });
 
-        it("claims succeed for epochs below first_capped_epoch without reading epoch_claimed", async () => {
-            // first_capped_epoch is 1 (suite init). Epoch 0 is grandfathered.
-            // create_rewards_epoch still allocates epoch_claimed (current API), but claim
-            // must skip the aggregate counter — claimed_total stays 0. That is the same
-            // processor branch used for pre-upgrade epochs whose epoch_claimed PDA was
-            // never created (UncheckedAccount + empty data is never read when uncapped).
+        it("rejects create for an index below first_capped_epoch", async () => {
+            // first_capped_epoch is 1 (suite init), so index 0 is an unused grandfathered slot.
+            // claim_rewards exempts indices below the boundary from the aggregate counter, so an
+            // epoch created there could mint past its declared total. Creation must be refused,
+            // leaving those indices exclusive to epochs that predate the caps upgrade.
             const legacyIndex = 0;
-            const capsAccount = deriveRewardsEpochAccounts(program.programId, 0).epochCapsConfig;
-            const caps = await program.account.epochCapsConfig.fetch(capsAccount);
+            const { epoch, epochClaimed, epochCapsConfig, lastRewardsEpoch } =
+                deriveRewardsEpochAccounts(program.programId, legacyIndex);
+            const caps = await program.account.epochCapsConfig.fetch(epochCapsConfig);
             assert.isTrue(
                 legacyIndex < caps.firstCappedEpoch.toNumber(),
                 "legacyIndex must be below first_capped_epoch"
@@ -2383,24 +2994,102 @@ describe("vault-mint", () => {
                 (acc, a) => acc.add(a.amount),
                 new BN(0)
             );
-            const { epoch, epochClaimed, epochCapsConfig } = deriveRewardsEpochAccounts(
+
+            try {
+                await program.methods
+                    .createRewardsEpoch(
+                        new BN(legacyIndex),
+                        Array.from(legacyMerkle.tree.getRoot()),
+                        legacyTotal
+                    )
+                    .accountsStrict({
+                        config: configPda,
+                        epochCapsConfig,
+                        lastRewardsEpoch,
+                        admin: rewardsAdmin.publicKey,
+                        epoch,
+                        epochClaimed,
+                        systemProgram: SystemProgram.programId,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                // Message deliberately omits the error name so it cannot satisfy the match below.
+                assert.fail("create below the cap boundary should have been rejected");
+            } catch (err) {
+                expect(err.toString()).to.match(
+                    /EpochIndexBelowFirstCapped|custom program error: 0x2d/i
+                );
+            }
+
+            // Nothing may be left behind: neither PDA is initialized by the failed create.
+            const epochInfo = await provider.connection.getAccountInfo(epoch);
+            assert.isNull(epochInfo, "epoch PDA must not be created below the boundary");
+            const claimedInfo = await provider.connection.getAccountInfo(epochClaimed);
+            assert.isNull(claimedInfo, "epoch_claimed PDA must not be created below the boundary");
+        });
+
+        it("rejects create when index skips ahead of last.index + 1", async () => {
+            const { epochCapsConfig, lastRewardsEpoch } = deriveRewardsEpochAccounts(program.programId, 0);
+            const last = await program.account.lastRewardsEpoch.fetch(lastRewardsEpoch);
+            const gappedIndex = last.index.toNumber() + 2;
+            const { epoch, epochClaimed } = deriveRewardsEpochAccounts(
                 program.programId,
-                legacyIndex
+                gappedIndex
             );
-            const [legacyClaimPda] = PublicKey.findProgramAddressSync(
-                [Buffer.from("claim"), epoch.toBuffer(), user.publicKey.toBuffer()],
-                program.programId
+            const gappedAlloc = {
+                allocations: [{ account: user.publicKey.toBase58(), amount: 1 }],
+            };
+            const gappedMerkle = allocationsToMerkleTree(
+                JSON.stringify(gappedAlloc),
+                gappedIndex
             );
 
+            try {
+                await program.methods
+                    .createRewardsEpoch(
+                        new BN(gappedIndex),
+                        Array.from(gappedMerkle.tree.getRoot()),
+                        new BN(1)
+                    )
+                    .accountsStrict({
+                        config: configPda,
+                        epochCapsConfig,
+                        lastRewardsEpoch,
+                        admin: rewardsAdmin.publicKey,
+                        epoch,
+                        epochClaimed,
+                        systemProgram: SystemProgram.programId,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown EpochIndexNotContiguous");
+            } catch (err) {
+                expect(err.toString()).to.match(
+                    /EpochIndexNotContiguous|custom program error: 0x2f/i
+                );
+            }
+        });
+
+        it("create_rewards_epoch does not mutate EpochCapsConfig", async () => {
+            const { epochCapsConfig, lastRewardsEpoch } = deriveRewardsEpochAccounts(
+                program.programId,
+                0
+            );
+            const capsBefore = await program.account.epochCapsConfig.fetch(epochCapsConfig);
+            const lastBefore = await program.account.lastRewardsEpoch.fetch(lastRewardsEpoch);
+            const index = lastBefore.index.toNumber() + 1;
+            const { epoch, epochClaimed } = deriveRewardsEpochAccounts(program.programId, index);
+            const alloc = {
+                allocations: [{ account: user.publicKey.toBase58(), amount: 1 }],
+            };
+            const merkle = allocationsToMerkleTree(JSON.stringify(alloc), index);
+
             await program.methods
-                .createRewardsEpoch(
-                    new BN(legacyIndex),
-                    Array.from(legacyMerkle.tree.getRoot()),
-                    legacyTotal
-                )
+                .createRewardsEpoch(new BN(index), Array.from(merkle.tree.getRoot()), new BN(1))
                 .accountsStrict({
                     config: configPda,
                     epochCapsConfig,
+                    lastRewardsEpoch,
                     admin: rewardsAdmin.publicKey,
                     epoch,
                     epochClaimed,
@@ -2409,63 +3098,34 @@ describe("vault-mint", () => {
                 .signers([rewardsAdmin])
                 .rpc();
 
-            const claimedBefore = await program.account.epochClaimedAmount.fetch(epochClaimed);
-            assert.equal(claimedBefore.claimedTotal.toNumber(), 0);
-
-            const userAlloc = legacyMerkle.allocations[0];
-            const leaf = makeLeaf(user.publicKey, userAlloc.amount, legacyIndex);
-            const proof = legacyMerkle.tree.getProof(leaf).map(p => ({
-                sibling: Array.from(p.data),
-                isLeft: p.position === "left",
-            }));
-
-            const userMintBalanceBefore = (await getAccount(provider.connection, userMintTokenAccount)).amount;
-
-            await program.methods
-                .claimRewards(userAlloc.amount, proof)
-                .accountsStrict({
-                    config: configPda,
-                    user: user.publicKey,
-                    epoch,
-                    epochCapsConfig,
-                    epochClaimed,
-                    claimRecord: legacyClaimPda,
-                    mintAuthority: mintAuthorityPda,
-                    mint: mintedToken,
-                    userMintTokenAccount: userMintTokenAccount,
-                    systemProgram: SystemProgram.programId,
-                    tokenProgram: TOKEN_PROGRAM_ID,
-                })
-                .signers([user])
-                .rpc();
-
-            const userMintBalanceAfter = (await getAccount(provider.connection, userMintTokenAccount)).amount;
+            const capsAfter = await program.account.epochCapsConfig.fetch(epochCapsConfig);
             assert.equal(
-                userMintBalanceAfter,
-                userMintBalanceBefore + createBigInt(userAlloc.amount.toNumber())
+                capsAfter.firstCappedEpoch.toString(),
+                capsBefore.firstCappedEpoch.toString(),
+                "first_capped_epoch must not change across create_rewards_epoch"
             );
-
-            // Cap path skipped: counter must not move for grandfathered indices.
-            const claimedAfter = await program.account.epochClaimedAmount.fetch(epochClaimed);
             assert.equal(
-                claimedAfter.claimedTotal.toNumber(),
-                0,
-                "claim must not update epoch_claimed when index < first_capped_epoch"
+                capsAfter.maxEpochCap.toString(),
+                capsBefore.maxEpochCap.toString(),
+                "max_epoch_cap must not change across create_rewards_epoch"
             );
+            assert.equal(capsAfter.bump, capsBefore.bump, "bump must not change");
+            const lastAfter = await program.account.lastRewardsEpoch.fetch(lastRewardsEpoch);
+            assert.equal(lastAfter.index.toNumber(), index, "counter advances on successful create");
         });
 
         it("rejects claim that exceeds epoch cap (EpochCapExceeded)", async () => {
             // Declared total is 500 but the Merkle tree allocates 1000.
-            const capEpochIndex = 11;
+            const { lastRewardsEpoch: lastPda } = deriveRewardsEpochAccounts(program.programId, 0);
+            const lastBefore = await program.account.lastRewardsEpoch.fetch(lastPda);
+            const capEpochIndex = lastBefore.index.toNumber() + 1;
             const capAllocations = {
                 allocations: [{ account: user.publicKey.toBase58(), amount: 1000 }],
             };
             const capMerkle = allocationsToMerkleTree(JSON.stringify(capAllocations), capEpochIndex);
             const declaredTotal = new BN(500);
-            const { epoch, epochClaimed, epochCapsConfig } = deriveRewardsEpochAccounts(
-                program.programId,
-                capEpochIndex
-            );
+            const { epoch, epochClaimed, epochCapsConfig, lastRewardsEpoch } =
+                deriveRewardsEpochAccounts(program.programId, capEpochIndex);
             const [capClaimPda] = PublicKey.findProgramAddressSync(
                 [Buffer.from("claim"), epoch.toBuffer(), user.publicKey.toBuffer()],
                 program.programId
@@ -2480,6 +3140,7 @@ describe("vault-mint", () => {
                 .accountsStrict({
                     config: configPda,
                     epochCapsConfig,
+                    lastRewardsEpoch,
                     admin: rewardsAdmin.publicKey,
                     epoch,
                     epochClaimed,
@@ -2744,7 +3405,7 @@ describe("vault-mint", () => {
 
             // Now perform the redeem
             await program.methods
-                .completeRedeem() // Amount is calculated in the function
+                .completeRedeem(new BN(1))
                 .accountsStrict({
                     admin: addRewardsAdmin.publicKey,
                     user: user.publicKey,

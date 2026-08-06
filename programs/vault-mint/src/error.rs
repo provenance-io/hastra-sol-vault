@@ -80,4 +80,10 @@ pub enum CustomErrorCode {
     CapsNotInitialized = 43,
     #[msg("Epoch claimed account required for capped epoch claim")]
     EpochClaimedRequired = 44,
+    #[msg("Epoch index is below first_capped_epoch and reserved for pre-upgrade epochs")]
+    EpochIndexBelowFirstCapped = 45,
+    #[msg("Redemption request amount does not match the amount the administrator approved")]
+    RedemptionAmountMismatch = 46,
+    #[msg("Epoch index must equal last accepted index + 1")]
+    EpochIndexNotContiguous = 47,
 }
