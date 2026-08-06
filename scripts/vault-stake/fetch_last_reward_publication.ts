@@ -64,7 +64,7 @@ async function main() {
         const cfg = await program.account.lastRewardPublication.fetch(lastRewardPublicationPda);
         line("id (floor)", String(cfg.id));
         line("next publish_rewards id must be >", String(cfg.id));
-        line("and <= floor + MAX_GAP (10)", String(cfg.id + 10));
+        line("and <= floor + MAX_GAP", String(cfg.id + 255));
         line("bump", String(cfg.bump));
     } catch {
         line("Status", "Not initialized");
