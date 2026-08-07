@@ -86,4 +86,6 @@ pub enum CustomErrorCode {
     RedemptionAmountMismatch = 46,
     #[msg("Epoch index must equal last accepted index + 1")]
     EpochIndexNotContiguous = 47,
+    #[msg("Redeem vault token account does not match config.redeem_vault")]
+    InvalidRedeemVault = 48,
 }

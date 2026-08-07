@@ -40,6 +40,7 @@ const main = async () => {
     console.log("Freeze Administrators:                 ", config.freezeAdministrators.map(a => a.toBase58()).join(", "));
     console.log("Rewards Administrators:                ", config.rewardsAdministrators.map(a => a.toBase58()).join(", "));
     console.log("Vault Authority:                       ", config.vaultAuthority.toBase58());
+    console.log("Redeem Vault:                          ", config.redeemVault.toBase58());
     console.log("Paused:                                ", config.paused);
     console.log("Allowed External Mint Program:         ", config.allowedExternalMintProgram.toBase58());
 

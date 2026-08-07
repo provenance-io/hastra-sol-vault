@@ -235,6 +235,12 @@ pub mod vault_mint {
         processor::update_vault_token_account(ctx)
     }
 
+    /// Sets `config.redeem_vault` to a PDA-owned vault-mint token account.
+    /// Call once after upgrade on deployments initialized before this field was written.
+    pub fn update_redeem_vault(ctx: Context<UpdateRedeemVault>) -> Result<()> {
+        processor::update_redeem_vault(ctx)
+    }
+
     pub fn sweep_redeem_vault_funds(
         ctx: Context<SweepRedeemVaultFunds>,
         amount: u64,
