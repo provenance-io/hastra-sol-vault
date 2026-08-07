@@ -1,7 +1,7 @@
 name: Program CI
 
 # Tests and reproducible builds use the same pipeline for every supported event.
-# Version tags additionally publish the exact uploaded build artifact as a draft release.
+# Version tags additionally publish the verified build tree as a zipped draft release asset.
 on:
   workflow_dispatch:
   pull_request:
@@ -257,30 +257,28 @@ jobs:
         name: verified-program-builds-${{ github.sha }}
         path: artifacts
 
+    # GitHub Release assets are basename-only, so ship one zip that preserves
+    # the same programs/ idl/ client/ verify/ layout as the CI artifact.
+    - name: Package release archive
+      run: |
+        ARCHIVE="verified-program-builds-${{ github.ref_name }}.zip"
+        (cd artifacts && zip -r "../${ARCHIVE}" .)
+        ls -la "${ARCHIVE}"
+        echo "RELEASE_ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+
     - name: Create draft GitHub Release
       uses: softprops/action-gh-release@v2
       with:
         name: ${{ github.ref_name }}
         tag_name: ${{ github.ref_name }}
         draft: true
-        files: |
-          artifacts/programs/vault_mint.so
-          artifacts/programs/vault_stake_prime.so
-          artifacts/programs/vault_stake_auto.so
-          artifacts/programs/vault_stake_smb.so
-          artifacts/idl/vault_mint.json
-          artifacts/idl/vault_stake.json
-          artifacts/client/vault_mint.ts
-          artifacts/client/vault_stake.ts
-          artifacts/verify/pda-tx-*.txt
-          artifacts/verify/pda-msg-*.txt
-          artifacts/checksums.txt
+        files: ${{ env.RELEASE_ARCHIVE }}
         body: |
           ## Program Artifacts — ${{ github.ref_name }}
 
           Built with [solana-verify](https://solana.com/docs/programs/verified-builds) from commit `${{ github.sha }}`.
 
-          Layout (CI artifact zip preserves directories; release assets use the same basenames):
+          Download `verified-program-builds-${{ github.ref_name }}.zip` — it preserves the same layout as the CI artifact:
 
           ```text
           programs/   *.so
