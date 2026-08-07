@@ -261,7 +261,7 @@ jobs:
     # the same programs/ idl/ client/ verify/ layout as the CI artifact.
     - name: Package release archive
       run: |
-        ARCHIVE="verified-program-builds-${{ github.ref_name }}.zip"
+        ARCHIVE="hastra-sol-vault-${{ github.ref_name }}.zip"
         (cd artifacts && zip -r "../${ARCHIVE}" .)
         ls -la "${ARCHIVE}"
         echo "RELEASE_ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
@@ -278,7 +278,7 @@ jobs:
 
           Built with [solana-verify](https://solana.com/docs/programs/verified-builds) from commit `${{ github.sha }}`.
 
-          Download `verified-program-builds-${{ github.ref_name }}.zip` — it preserves the same layout as the CI artifact:
+          Download `hastra-sol-vault-${{ github.ref_name }}.zip` — it preserves the same layout as the CI artifact:
 
           ```text
           programs/   *.so
