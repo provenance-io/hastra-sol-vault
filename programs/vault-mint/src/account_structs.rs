@@ -624,7 +624,8 @@ pub struct CompleteRedeem<'info> {
     #[account(
         mut,
         constraint = redeem_vault_token_account.mint == config.vault @ CustomErrorCode::InvalidVaultMint,
-        constraint = redeem_vault_token_account.owner == redeem_vault_authority.key() @ CustomErrorCode::InvalidVaultAuthority
+        constraint = redeem_vault_token_account.owner == redeem_vault_authority.key() @ CustomErrorCode::InvalidVaultAuthority,
+        constraint = redeem_vault_token_account.key() == config.redeem_vault @ CustomErrorCode::InvalidRedeemVault
     )]
     pub redeem_vault_token_account: Account<'info, TokenAccount>, // USDC source
 
@@ -835,6 +836,39 @@ pub struct UpdateVaultTokenAccount<'info> {
     pub signer: Signer<'info>,
 }
 
+/// Sets the canonical redeem vault on Config. Upgrade authority only — used for post-upgrade
+/// migration when `config.redeem_vault` was never written at initialize.
+#[derive(Accounts)]
+pub struct UpdateRedeemVault<'info> {
+    #[account(
+        mut,
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Account<'info, Config>,
+
+    /// CHECK: PDA that must own the new redeem vault token account
+    #[account(
+        seeds = [b"redeem_vault_authority"],
+        bump
+    )]
+    pub redeem_vault_authority: UncheckedAccount<'info>,
+
+    #[account(
+        constraint = redeem_vault_token_account.mint == config.vault @ CustomErrorCode::InvalidVaultMint,
+        constraint = redeem_vault_token_account.owner == redeem_vault_authority.key() @ CustomErrorCode::InvalidVaultAuthority
+    )]
+    pub redeem_vault_token_account: Account<'info, TokenAccount>,
+
+    /// CHECK: Program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub signer: Signer<'info>,
+}
+
 #[derive(Accounts)]
 pub struct SweepRedeemVaultFunds<'info> {
     #[account(
@@ -842,6 +876,16 @@ pub struct SweepRedeemVaultFunds<'info> {
         bump = config.bump
     )]
     pub config: Account<'info, Config>,
+
+    // Same pin as Deposit: swept funds may only return to the configured deposit vault.
+    #[account(
+        seeds = [
+            b"vault_token_account_config",
+            config.key().as_ref(),
+        ],
+        bump = vault_token_account_config.bump,
+    )]
+    pub vault_token_account_config: Account<'info, VaultTokenAccountConfig>,
 
     /// CHECK: This is a PDA that acts as the redeem vault authority, validated by seeds constraint
     #[account(
@@ -854,7 +898,8 @@ pub struct SweepRedeemVaultFunds<'info> {
     #[account(
         mut,
         constraint = redeem_vault_token_account.mint == config.vault @ CustomErrorCode::InvalidVaultMint,
-        constraint = redeem_vault_token_account.owner == redeem_vault_authority.key() @ CustomErrorCode::InvalidVaultAuthority
+        constraint = redeem_vault_token_account.owner == redeem_vault_authority.key() @ CustomErrorCode::InvalidVaultAuthority,
+        constraint = redeem_vault_token_account.key() == config.redeem_vault @ CustomErrorCode::InvalidRedeemVault
     )]
     pub redeem_vault_token_account: Account<'info, TokenAccount>,
 
@@ -862,7 +907,8 @@ pub struct SweepRedeemVaultFunds<'info> {
         mut,
         token::mint = config.vault,
         constraint = vault_token_account.mint == config.vault @ CustomErrorCode::InvalidVaultMint,
-        constraint = vault_token_account.owner == config.vault_authority @ CustomErrorCode::InvalidVaultAuthority
+        constraint = vault_token_account.owner == config.vault_authority @ CustomErrorCode::InvalidVaultAuthority,
+        constraint = vault_token_account.key() == vault_token_account_config.vault_token_account @ CustomErrorCode::InvalidVaultTokenAccount
     )]
     pub vault_token_account: Account<'info, TokenAccount>,
 

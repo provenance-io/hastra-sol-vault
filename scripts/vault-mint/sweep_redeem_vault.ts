@@ -46,11 +46,16 @@ const main = async () => {
         [Buffer.from("redeem_vault_authority")],
         program.programId
     );
+    const [vaultTokenAccountConfigPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("vault_token_account_config"), configPda.toBuffer()],
+        program.programId
+    );
     const redeemVaultTokenAccount = new PublicKey(args.redeem_vault_token_account);
     const vaultTokenAccount = new PublicKey(args.vault_token_account);
     console.log("Amount to transfer:", args.amount);
     console.log("Redeem Vault Authority PDA:", redeemVaultAuthorityPda.toBase58());
     console.log("Config PDA:", configPda.toBase58());
+    console.log("Vault Token Account Config PDA:", vaultTokenAccountConfigPda.toBase58());
     console.log("ProgramData PDA:", programData.toBase58());
     console.log("Vault Token Account:", vaultTokenAccount.toBase58());
 
@@ -58,6 +63,7 @@ const main = async () => {
         .sweepRedeemVaultFunds(new anchor.BN(args.amount))
         .accountsStrict({
             config: configPda,
+            vaultTokenAccountConfig: vaultTokenAccountConfigPda,
             signer: provider.wallet.publicKey,
             redeemVaultAuthority: redeemVaultAuthorityPda,
             redeemVaultTokenAccount: redeemVaultTokenAccount,

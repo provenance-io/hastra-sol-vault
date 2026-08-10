@@ -446,6 +446,7 @@ describe("vault-mint", () => {
             assert.ok(config.vault.equals(vaultedToken));
             assert.ok(config.vaultAuthority.equals(vaultTokenAccountOwnerPublicKey));
             assert.ok(config.mint.equals(mintedToken));
+            assert.ok(config.redeemVault.equals(redeemVaultTokenAccount));
             assert.equal(config.freezeAdministrators.length, 1);
             assert.ok(config.freezeAdministrators[0].equals(freezeAdmin.publicKey));
             assert.equal(config.rewardsAdministrators.length, 1);
@@ -1005,6 +1006,82 @@ describe("vault-mint", () => {
             // The replacement only settles once an administrator approves it explicitly.
             await program.methods
                 .completeRedeem(substitutedAmount)
+                .accountsStrict({
+                    admin: rewardsAdmin.publicKey,
+                    user: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    userVaultTokenAccount: userVaultTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultTokenAccount: redeemVaultTokenAccount,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .signers([rewardsAdmin])
+                .rpc();
+        });
+
+        it("complete fails with a non-canonical redeem vault token account", async () => {
+            const redeemAmount = new BN(1_000);
+
+            await program.methods
+                .requestRedeem(redeemAmount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            // Same mint and PDA owner as the canonical redeem vault, but a different account.
+            const nonCanonicalRedeemVault = await createAccount(
+                provider.connection,
+                provider.wallet.payer,
+                vaultedToken,
+                redeemVaultAuthorityPda,
+                Keypair.generate()
+            );
+            await mintTo(
+                provider.connection,
+                provider.wallet.payer,
+                vaultedToken,
+                nonCanonicalRedeemVault,
+                provider.wallet.publicKey,
+                1_000_000
+            );
+
+            try {
+                await program.methods
+                    .completeRedeem(redeemAmount)
+                    .accountsStrict({
+                        admin: rewardsAdmin.publicKey,
+                        user: user.publicKey,
+                        userMintTokenAccount: userMintTokenAccount,
+                        userVaultTokenAccount: userVaultTokenAccount,
+                        redemptionRequest: redemptionRequestPda,
+                        redeemVaultTokenAccount: nonCanonicalRedeemVault,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        mint: mintedToken,
+                        config: configPda,
+                        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown InvalidRedeemVault");
+            } catch (err) {
+                expect(String(err)).to.match(/InvalidRedeemVault|custom program error/i);
+            }
+
+            // Settle against the canonical vault so the suite stays clean.
+            await program.methods
+                .completeRedeem(redeemAmount)
                 .accountsStrict({
                     admin: rewardsAdmin.publicKey,
                     user: user.publicKey,
@@ -3512,6 +3589,64 @@ describe("vault-mint", () => {
             }
         });
 
+        it("redeem vault can be updated by upgrade authority", async () => {
+            const alternateRedeemVault = await createAccount(
+                provider.connection,
+                provider.wallet.payer,
+                vaultedToken,
+                redeemVaultAuthorityPda,
+                Keypair.generate()
+            );
+
+            await program.methods
+                .updateRedeemVault()
+                .accountsStrict({
+                    config: configPda,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    redeemVaultTokenAccount: alternateRedeemVault,
+                    programData: programData,
+                    signer: provider.wallet.publicKey,
+                })
+                .rpc();
+
+            let config = await program.account.config.fetch(configPda);
+            assert.ok(config.redeemVault.equals(alternateRedeemVault));
+
+            // Restore the suite's canonical redeem vault.
+            await program.methods
+                .updateRedeemVault()
+                .accountsStrict({
+                    config: configPda,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    redeemVaultTokenAccount: redeemVaultTokenAccount,
+                    programData: programData,
+                    signer: provider.wallet.publicKey,
+                })
+                .rpc();
+
+            config = await program.account.config.fetch(configPda);
+            assert.ok(config.redeemVault.equals(redeemVaultTokenAccount));
+        });
+
+        it("disallows redeem vault update by non upgrade authority", async () => {
+            try {
+                await program.methods
+                    .updateRedeemVault()
+                    .accountsStrict({
+                        config: configPda,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        redeemVaultTokenAccount: redeemVaultTokenAccount,
+                        programData: programData,
+                        signer: rewardsAdmin.publicKey,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+            }
+        });
+
         it("allows sweep redeem vault token account by rewards admin", async () => {
             const redeemVaultBalanceBefore = (await getAccount(provider.connection, redeemVaultTokenAccount)).amount;
             const vaultTokenAccountBefore = (await getAccount(provider.connection, vaultTokenAccount)).amount;
@@ -3521,6 +3656,7 @@ describe("vault-mint", () => {
                 .sweepRedeemVaultFunds(new BN(amount))
                 .accountsStrict({
                     config: configPda,
+                    vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                     signer: rewardsAdmin.publicKey,
                     redeemVaultAuthority: redeemVaultAuthorityPda,
                     redeemVaultTokenAccount: redeemVaultTokenAccount,
@@ -3553,6 +3689,7 @@ describe("vault-mint", () => {
                     .sweepRedeemVaultFunds(new BN(5_000_000))
                     .accountsStrict({
                         config: configPda,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                         signer: rewardsAdmin.publicKey,
                         redeemVaultAuthority: redeemVaultAuthorityPda,
                         redeemVaultTokenAccount: redeemVaultTokenAccount,
@@ -3567,6 +3704,37 @@ describe("vault-mint", () => {
             }
         });
 
+        it("disallows sweep to a vault-authority-owned account that is not the configured deposit vault", async () => {
+            // Same mint and owner as the deposit vault, but a different token account — the gap
+            // Deposit already closed and SweepRedeemVaultFunds previously left open.
+            const nonCanonicalDestination = await createAccount(
+                provider.connection,
+                provider.wallet.payer,
+                vaultedToken,
+                vaultTokenAccountOwnerPublicKey,
+                Keypair.generate()
+            );
+
+            try {
+                await program.methods
+                    .sweepRedeemVaultFunds(new BN(5_000_000))
+                    .accountsStrict({
+                        config: configPda,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
+                        signer: rewardsAdmin.publicKey,
+                        redeemVaultAuthority: redeemVaultAuthorityPda,
+                        redeemVaultTokenAccount: redeemVaultTokenAccount,
+                        vaultTokenAccount: nonCanonicalDestination,
+                        tokenProgram: TOKEN_PROGRAM_ID,
+                    })
+                    .signers([rewardsAdmin])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(String(err)).to.match(/InvalidVaultTokenAccount|custom program error/i);
+            }
+        });
+
         it("disallows sweep redeem vault by upgrade authority who is not a rewards admin", async () => {
             // upgrade authority (provider.wallet) is not in rewards_administrators — must be rejected
             try {
@@ -3574,6 +3742,7 @@ describe("vault-mint", () => {
                     .sweepRedeemVaultFunds(new BN(5_000_000))
                     .accountsStrict({
                         config: configPda,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                         signer: provider.wallet.publicKey,
                         redeemVaultAuthority: redeemVaultAuthorityPda,
                         redeemVaultTokenAccount: redeemVaultTokenAccount,
@@ -3593,6 +3762,7 @@ describe("vault-mint", () => {
                     .sweepRedeemVaultFunds(new BN(0))
                     .accountsStrict({
                         config: configPda,
+                        vaultTokenAccountConfig: vaultTokenAccountConfigPda,
                         signer: rewardsAdmin.publicKey,
                         redeemVaultAuthority: redeemVaultAuthorityPda,
                         redeemVaultTokenAccount: redeemVaultTokenAccount,
