@@ -102,6 +102,11 @@ const main = async () => {
         [Buffer.from("epoch_claimed"), indexLe],
         program.programId
     );
+    const BPF_LOADER_UPGRADEABLE_ID = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
+    const [programDataPda] = PublicKey.findProgramAddressSync(
+        [program.programId.toBuffer()],
+        BPF_LOADER_UPGRADEABLE_ID
+    );
 
     const tx = await program.methods
         .createRewardsEpoch(new anchor.BN(epochIndex), Array.from(root), total)
@@ -110,6 +115,7 @@ const main = async () => {
             epochCapsConfig: epochCapsConfigPda,
             lastRewardsEpoch: lastRewardsEpochPda,
             admin: provider.wallet.publicKey,
+            programData: programDataPda,
             epoch: epochPda,
             epochClaimed: epochClaimedPda,
             systemProgram: anchor.web3.SystemProgram.programId,
