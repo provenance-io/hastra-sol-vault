@@ -1845,12 +1845,12 @@ describe("vault-mint", () => {
                         config: configPda,
                         epochCapsConfig: deriveRewardsEpochAccounts(program.programId, pausedEpochIndex).epochCapsConfig,
                         lastRewardsEpoch: deriveRewardsEpochAccounts(program.programId, 0).lastRewardsEpoch,
-                        admin: rewardsAdmin.publicKey,
+                        admin: provider.wallet.publicKey,
+                        programData: programDataPda,
                         epoch: pausedEpochPda,
                         epochClaimed: deriveRewardsEpochAccounts(program.programId, pausedEpochIndex).epochClaimed,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
-                    .signers([rewardsAdmin])
                     .rpc();
                 assert.fail("Should have thrown ProtocolPaused");
             } catch (err) {
@@ -2756,12 +2756,12 @@ describe("vault-mint", () => {
                     config: configPda,
                     epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epochIndex).epochCapsConfig,
                     lastRewardsEpoch: deriveRewardsEpochAccounts(program.programId, 0).lastRewardsEpoch,
-                    admin: rewardsAdmin.publicKey,
+                    admin: provider.wallet.publicKey,
+                    programData: programDataPda,
                     epoch: epochPda,
                     epochClaimed: deriveRewardsEpochAccounts(program.programId, epochIndex).epochClaimed,
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
-                .signers([rewardsAdmin])
                 .rpc();
             const epochData = await program.account.rewardsEpoch.fetch(epochPda);
             assert.equal(epochIndex, epochData.index.toNumber());
@@ -2776,12 +2776,12 @@ describe("vault-mint", () => {
                         config: configPda,
                         epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epochIndex).epochCapsConfig,
                         lastRewardsEpoch: deriveRewardsEpochAccounts(program.programId, 0).lastRewardsEpoch,
-                        admin: rewardsAdmin.publicKey,
+                        admin: provider.wallet.publicKey,
+                        programData: programDataPda,
                         epoch: epochPda,
                         epochClaimed: deriveRewardsEpochAccounts(program.programId, epochIndex).epochClaimed,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
-                    .signers([rewardsAdmin])
                     .rpc();
                 assert.fail("Should have thrown error");
             } catch (err) {
@@ -2789,23 +2789,33 @@ describe("vault-mint", () => {
             }
         });
 
-        it("only redeem admin can create rewards epoch", async () => {
+        it("rejects create from a non-upgrade authority", async () => {
+            // Use a fresh index so account `init` succeeds and the processor's
+            // upgrade-authority check is what rejects the transaction.
+            const unauthorizedIndex = 997;
+            const unauthorizedAccounts = deriveRewardsEpochAccounts(
+                program.programId,
+                unauthorizedIndex
+            );
+
             try {
                 await program.methods
-                    .createRewardsEpoch(new anchor.BN(epochIndex), Array.from(root), total)
+                    .createRewardsEpoch(new anchor.BN(unauthorizedIndex), Array.from(root), total)
                     .accountsStrict({
                         config: configPda,
-                        epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epochIndex).epochCapsConfig,
-                        lastRewardsEpoch: deriveRewardsEpochAccounts(program.programId, 0).lastRewardsEpoch,
-                        admin: provider.wallet.publicKey,
-                        epoch: epochPda,
-                        epochClaimed: deriveRewardsEpochAccounts(program.programId, epochIndex).epochClaimed,
+                        epochCapsConfig: unauthorizedAccounts.epochCapsConfig,
+                        lastRewardsEpoch: unauthorizedAccounts.lastRewardsEpoch,
+                        admin: rewardsAdmin.publicKey,
+                        programData: programDataPda,
+                        epoch: unauthorizedAccounts.epoch,
+                        epochClaimed: unauthorizedAccounts.epochClaimed,
                         systemProgram: anchor.web3.SystemProgram.programId,
                     })
+                    .signers([rewardsAdmin])
                     .rpc();
-                assert.fail("Should have thrown error");
+                assert.fail("Should have thrown — only upgrade authority can create rewards epochs");
             } catch (err) {
-                expect(err).to.exist;
+                expect(err.toString()).to.match(/InvalidUpgradeAuthority|custom program error:\s*12\b/i);
             }
         });
 
@@ -2954,12 +2964,12 @@ describe("vault-mint", () => {
                     config: configPda,
                     epochCapsConfig: deriveRewardsEpochAccounts(program.programId, epoch2Index).epochCapsConfig,
                     lastRewardsEpoch: deriveRewardsEpochAccounts(program.programId, 0).lastRewardsEpoch,
-                    admin: rewardsAdmin.publicKey,
+                    admin: provider.wallet.publicKey,
+                    programData: programDataPda,
                     epoch: epoch2Pda,
                     epochClaimed: deriveRewardsEpochAccounts(program.programId, epoch2Index).epochClaimed,
                     systemProgram: anchor.web3.SystemProgram.programId,
                 })
-                .signers([rewardsAdmin])
                 .rpc();
 
             // user has a valid proof for epoch 1, but passes epoch 2's PDA.
@@ -3027,12 +3037,12 @@ describe("vault-mint", () => {
                         config: configPda,
                         epochCapsConfig,
                         lastRewardsEpoch,
-                        admin: rewardsAdmin.publicKey,
+                        admin: provider.wallet.publicKey,
+                        programData: programDataPda,
                         epoch,
                         epochClaimed,
                         systemProgram: SystemProgram.programId,
                     })
-                    .signers([rewardsAdmin])
                     .rpc();
                 assert.fail("Should have thrown EpochCapAboveGlobal");
             } catch (err) {
@@ -3083,12 +3093,12 @@ describe("vault-mint", () => {
                         config: configPda,
                         epochCapsConfig,
                         lastRewardsEpoch,
-                        admin: rewardsAdmin.publicKey,
+                        admin: provider.wallet.publicKey,
+                        programData: programDataPda,
                         epoch,
                         epochClaimed,
                         systemProgram: SystemProgram.programId,
                     })
-                    .signers([rewardsAdmin])
                     .rpc();
                 // Message deliberately omits the error name so it cannot satisfy the match below.
                 assert.fail("create below the cap boundary should have been rejected");
@@ -3132,12 +3142,12 @@ describe("vault-mint", () => {
                         config: configPda,
                         epochCapsConfig,
                         lastRewardsEpoch,
-                        admin: rewardsAdmin.publicKey,
+                        admin: provider.wallet.publicKey,
+                        programData: programDataPda,
                         epoch,
                         epochClaimed,
                         systemProgram: SystemProgram.programId,
                     })
-                    .signers([rewardsAdmin])
                     .rpc();
                 assert.fail("Should have thrown EpochIndexNotContiguous");
             } catch (err) {
@@ -3167,12 +3177,12 @@ describe("vault-mint", () => {
                     config: configPda,
                     epochCapsConfig,
                     lastRewardsEpoch,
-                    admin: rewardsAdmin.publicKey,
+                    admin: provider.wallet.publicKey,
+                    programData: programDataPda,
                     epoch,
                     epochClaimed,
                     systemProgram: SystemProgram.programId,
                 })
-                .signers([rewardsAdmin])
                 .rpc();
 
             const capsAfter = await program.account.epochCapsConfig.fetch(epochCapsConfig);
@@ -3218,12 +3228,12 @@ describe("vault-mint", () => {
                     config: configPda,
                     epochCapsConfig,
                     lastRewardsEpoch,
-                    admin: rewardsAdmin.publicKey,
+                    admin: provider.wallet.publicKey,
+                    programData: programDataPda,
                     epoch,
                     epochClaimed,
                     systemProgram: SystemProgram.programId,
                 })
-                .signers([rewardsAdmin])
                 .rpc();
 
             const userAlloc = capMerkle.allocations[0];
