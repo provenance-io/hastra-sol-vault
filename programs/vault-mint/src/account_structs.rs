@@ -253,10 +253,11 @@ pub struct ThawTokenAccount<'info> {
     pub token_program: Program<'info, Token>,
 }
 
-// Admin posts an epoch Merkle root. Requires epoch caps initialized; enforces the global
-// max epoch cap and creates the per-epoch claimed counter. Claims mint wYLDS on demand.
-// `index` must equal `last_rewards_epoch.index + 1` and be at or above `first_capped_epoch`
-// so lower indices remain exclusive to pre-upgrade epochs. Cap fields stay read-only here.
+// Upgrade authority posts an epoch Merkle root. Requires epoch caps initialized; enforces
+// the global max epoch cap and creates the per-epoch claimed counter. Claims mint wYLDS on
+// demand. `index` must equal `last_rewards_epoch.index + 1` and be at or above
+// `first_capped_epoch` so lower indices remain exclusive to pre-upgrade epochs. Cap fields
+// stay read-only here.
 #[derive(Accounts)]
 #[instruction(index: u64)]
 pub struct CreateRewardsEpoch<'info> {
@@ -282,6 +283,12 @@ pub struct CreateRewardsEpoch<'info> {
 
     #[account(mut)]
     pub admin: Signer<'info>,
+
+    /// CHECK: Program data account that contains the upgrade authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
 
     #[account(
         init,

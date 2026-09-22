@@ -454,13 +454,7 @@ pub fn create_rewards_epoch(
     total: u64,
 ) -> Result<()> {
     require!(!ctx.accounts.config.paused, CustomErrorCode::ProtocolPaused);
-    require!(
-        ctx.accounts
-            .config
-            .rewards_administrators
-            .contains(&ctx.accounts.admin.key()),
-        CustomErrorCode::InvalidRewardsAdministrator
-    );
+    validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.admin)?;
     require!(total > 0, CustomErrorCode::InvalidAmount);
 
     let caps = &ctx.accounts.epoch_caps_config;
