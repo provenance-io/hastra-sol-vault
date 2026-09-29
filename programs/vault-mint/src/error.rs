@@ -60,6 +60,32 @@ pub enum CustomErrorCode {
     InsufficientRedemptionBalance = 28,
     #[msg("Invalid vault token account")]
     InvalidVaultTokenAccount = 34,
-
-
+    #[msg("Too many allowed external mint programs.")]
+    TooManyAllowedExternalMintPrograms = 29,
+    #[msg("Invalid allowed external mint programs limit.")]
+    InvalidAllowedExternalMintProgramsLimit = 35,
+    #[msg("Claim would exceed the epoch's aggregate reward cap")]
+    EpochCapExceeded = 36,
+    #[msg("Administrator list must not be empty")]
+    EmptyAdministrators = 37,
+    #[msg("Administrator list contains duplicate keys")]
+    DuplicateAdministrators = 38,
+    #[msg("Deposit source and vault token accounts must differ")]
+    DepositSelfTransfer = 39,
+    #[msg("Declared epoch total exceeds the global max epoch cap")]
+    EpochCapAboveGlobal = 40,
+    #[msg("Global epoch cap must be non-zero")]
+    InvalidGlobalCap = 41,
+    #[msg("Epoch caps have not been initialized")]
+    CapsNotInitialized = 43,
+    #[msg("Epoch claimed account required for capped epoch claim")]
+    EpochClaimedRequired = 44,
+    #[msg("Epoch index is below first_capped_epoch and reserved for pre-upgrade epochs")]
+    EpochIndexBelowFirstCapped = 45,
+    #[msg("Redemption request amount does not match the amount the administrator approved")]
+    RedemptionAmountMismatch = 46,
+    #[msg("Epoch index must equal last accepted index + 1")]
+    EpochIndexNotContiguous = 47,
+    #[msg("Redeem vault token account does not match config.redeem_vault")]
+    InvalidRedeemVault = 48,
 }

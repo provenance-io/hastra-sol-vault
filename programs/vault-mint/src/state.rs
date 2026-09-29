@@ -10,7 +10,7 @@ pub struct Config {
     pub redeem_vault: Pubkey,
     pub bump: u8,
     pub paused: bool,
-    pub allowed_external_mint_program: Pubkey
+    pub allowed_external_mint_program: Pubkey,
 }
 
 impl Config {
@@ -22,8 +22,9 @@ impl Config {
 #[account]
 pub struct RewardsEpoch {
     pub index: u64,            // epoch id
-    pub merkle_root: [u8; 32], // sha256 root (sortPairs)
-    pub total: u64,            // optional: sum of all allocations
+    pub merkle_root: [u8; 32], // sha256 merkle root (sortPairs: false; position via ProofNode.is_left)
+    /// Declared epoch reward budget. Binding for epochs at or after `first_capped_epoch`.
+    pub total: u64,
     pub created_ts: i64,
 }
 impl RewardsEpoch {
@@ -34,6 +35,49 @@ impl RewardsEpoch {
 pub struct ClaimRecord {} // empty marker account, existence = already claimed
 impl ClaimRecord {
     pub const LEN: usize = 8;
+}
+
+/// Global configuration for rewards epoch caps.
+#[account]
+pub struct EpochCapsConfig {
+    /// Ceiling on `create_rewards_epoch.total` for future epochs.
+    pub max_epoch_cap: u64,
+    /// Epochs with `index >= first_capped_epoch` enforce aggregate claim caps.
+    /// Lower indices only require a valid Merkle proof and `ClaimRecord`, and are
+    /// reserved for epochs created before the caps upgrade: `create_rewards_epoch`
+    /// rejects any index below this boundary.
+    pub first_capped_epoch: u64,
+    pub bump: u8,
+}
+
+impl EpochCapsConfig {
+    pub const LEN: usize = 8 + 8 + 8 + 1;
+}
+
+/// Singleton tracking the highest rewards-epoch index accepted so far.
+/// Separated from `EpochCapsConfig` so create cannot mutate cap fields — only this counter.
+/// Must be initialized before `create_rewards_epoch`; each create requires `index == last + 1`.
+/// Init and `update_last_rewards_epoch` both require `index + 1 >= first_capped_epoch` so the
+/// succession counter cannot deadlock against the cap boundary.
+#[account]
+pub struct LastRewardsEpoch {
+    /// Highest accepted epoch index so far (floor for the next create).
+    pub index: u64,
+    pub bump: u8,
+}
+
+impl LastRewardsEpoch {
+    pub const LEN: usize = 8 + 8 + 1;
+}
+
+/// Tracks cumulative wYLDS minted via `claim_rewards` for one epoch.
+#[account]
+pub struct EpochClaimedAmount {
+    pub claimed_total: u64,
+}
+
+impl EpochClaimedAmount {
+    pub const LEN: usize = 8 + 8;
 }
 
 #[account]
@@ -73,3 +117,39 @@ impl VaultTokenAccountConfig {
     pub const LEN: usize = 8 + 32 + 1; // discriminator + pubkey + bump
 }
 
+// Stores additional external programs authorized to call external_program_mint via CPI,
+// extending the single allowed_external_mint_program field in Config without changing the
+// Config account layout. Follows the same additive PDA pattern used for
+// VaultTokenAccountConfig and StakePriceConfig — existing deployments upgrade cleanly
+// because the original Config account is never reallocated. The legacy single-program
+// field continues to authorize the first staking program; this PDA authorizes any
+// subsequent programs (e.g. vault-stake-auto).
+#[account]
+pub struct AllowedExternalMintPrograms {
+    pub programs: Vec<Pubkey>,
+    pub bump: u8,
+}
+
+impl AllowedExternalMintPrograms {
+    // Account allocations used with Anchor's `init_if_needed` must keep a stable
+    // configured size across repeated calls. Pre-allocate enough room for the full
+    // u8 domain so registration remains idempotent and doesn't trip ConstraintSpace
+    // when existing accounts were previously expanded.
+    pub const LEN: usize = 8 + 4 + (32 * (u8::MAX as usize)) + 1;
+
+    pub fn len_for_program_count(program_count: usize) -> usize {
+        8 + 4 + (32 * program_count) + 1
+    }
+}
+
+/// Stores the active registration cap for allowed external mint programs.
+/// Kept in a separate PDA to avoid reallocating the legacy Config account.
+#[account]
+pub struct ExternalMintProgramsLimitConfig {
+    pub max_programs: u8,
+    pub bump: u8,
+}
+
+impl ExternalMintProgramsLimitConfig {
+    pub const LEN: usize = 8 + 1 + 1;
+}

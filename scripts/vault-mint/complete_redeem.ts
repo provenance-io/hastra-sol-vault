@@ -1,6 +1,6 @@
 import * as anchor from "@coral-xyz/anchor";
 import yargs from "yargs";
-import { Program } from "@coral-xyz/anchor";
+import { BN, Program } from "@coral-xyz/anchor";
 import { VaultMint } from "../../target/types/vault_mint";
 import { PublicKey } from "@solana/web3.js";
 import { getAssociatedTokenAddress } from "@solana/spl-token";
@@ -8,7 +8,7 @@ import { getAssociatedTokenAddress } from "@solana/spl-token";
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
 
-const program = anchor.workspace.VaultMint as Program<VaultMint>;
+const workspaceProgram = anchor.workspace.VaultMint as Program<VaultMint>;
 
 const args = yargs(process.argv.slice(2))
     .option("user", {
@@ -31,17 +31,41 @@ const args = yargs(process.argv.slice(2))
         description: "Token account that will hold vaulted asset (e.g. USDC) used for redemptions.",
         required: true,
     })
+    // Must be supplied from the approval record, not read off-chain from the request, or the check
+    // it feeds is meaningless: the point is to reject a request substituted after that approval.
+    .option("expected_amount", {
+        type: "string",
+        description:
+            "Raw token amount the administrator approved. Must equal the amount recorded on the " +
+            "request or the program rejects with RedemptionAmountMismatch.",
+        required: true,
+    })
+    .option("program_id", {
+        type: "string",
+        description: "Optional vault-mint program id override",
+    })
     .parseSync();
 
 const main = async () => {
+    const resolvedIdl = JSON.parse(JSON.stringify(workspaceProgram.idl));
+    if (args.program_id) {
+        new PublicKey(args.program_id);
+        resolvedIdl.address = args.program_id;
+        if (resolvedIdl.metadata) {
+            resolvedIdl.metadata.address = args.program_id;
+        }
+    }
+    const program = new anchor.Program(resolvedIdl as anchor.Idl, provider) as Program<VaultMint>;
+
     const admin = provider.wallet.publicKey;
     const user = new PublicKey(args.user);
     const mint = new PublicKey(args.mint);
     const vaultMint = new PublicKey(args.vault_mint);
     const redeemVaultTokenAccount = new PublicKey(args.redeem_vault_token_account);
+    const expectedAmount = new BN(args.expected_amount);
 
     // Derive PDAs
-    const [configPda] = anchor.web3.PublicKey.findProgramAddressSync(
+    const [configPda] = PublicKey.findProgramAddressSync(
         [Buffer.from("config")],
         program.programId
     );
@@ -71,9 +95,20 @@ const main = async () => {
     console.log(`Redemption Request PDA:        ${redemptionRequestPda.toBase58()}`);
     console.log(`Redeem Vault Authority PDA:    ${redeemVaultAuthorityPda.toBase58()}`);
     console.log(`Token Program:                 ${anchor.utils.token.TOKEN_PROGRAM_ID.toBase58()}`);
+    console.log(`Approved Amount:               ${expectedAmount.toString()}`);
+
+    // Surfaced for the operator only; the program performs the authoritative comparison.
+    const request = await program.account.redemptionRequest.fetch(redemptionRequestPda);
+    console.log(`On-chain Request Amount:       ${request.amount.toString()}`);
+    if (!request.amount.eq(expectedAmount)) {
+        console.warn(
+            "WARNING: the on-chain request does not match the approved amount. The request was " +
+            "replaced after approval and the program will reject this transaction."
+        );
+    }
 
     const tx = await program.methods
-        .completeRedeem() // Amount is calculated in the function
+        .completeRedeem(expectedAmount)
         .accountsStrict({
             admin: admin,
             user: user,

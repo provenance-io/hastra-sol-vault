@@ -7,7 +7,7 @@ import {PublicKey} from "@solana/web3.js";
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
 
-const program = anchor.workspace.VaultStake as Program<VaultStake>;
+const workspaceProgram = anchor.workspace.VaultStake as Program<VaultStake>;
 
 const args = yargs(process.argv.slice(2))
     .option("vault", {
@@ -35,10 +35,23 @@ const args = yargs(process.argv.slice(2))
         description: "Comma separated list of administrator public keys that can execute user staking distribution rewards.",
         required: true,
     })
+    .option("program_id", {
+        type: "string",
+        description: "Optional program id override (use vault-stake script against stake-auto deployment).",
+    })
 
     .parseSync();
 
 const main = async () => {
+    const resolvedIdl = JSON.parse(JSON.stringify(workspaceProgram.idl));
+    if (args.program_id) {
+        resolvedIdl.address = args.program_id;
+        if (resolvedIdl.metadata) {
+            resolvedIdl.metadata.address = args.program_id;
+        }
+    }
+    const program = new anchor.Program(resolvedIdl as anchor.Idl, provider) as Program<VaultStake>;
+
     const [stakeConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("stake_config")],
         program.programId

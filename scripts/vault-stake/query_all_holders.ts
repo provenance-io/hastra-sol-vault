@@ -5,7 +5,6 @@ import yargs from "yargs";
 import {
     PublicKey,
 } from "@solana/web3.js";
-import {createBigInt} from "@metaplex-foundation/umi";
 import {Account, unpackAccount} from "@solana/spl-token";
 
 const provider = anchor.AnchorProvider.env();
@@ -20,6 +19,27 @@ const args = yargs(process.argv.slice(2))
         required: true,
     })
     .parseSync();
+
+/** 10^decimals as bigint without Number exponentiation (avoids overflow for large decimals). */
+function pow10BigInt(decimals: number): bigint {
+    let result = BigInt(1);
+    const ten = BigInt(10);
+    for (let i = 0; i < decimals; i += 1) {
+        result = result * ten;
+    }
+    return result;
+}
+
+/** Human-readable token amount using only bigint math; safe for full u64 raw amounts. */
+function formatUiAmount(raw: bigint, decimals: number): string {
+    if (decimals === 0) {
+        return raw.toString();
+    }
+    const divisor = pow10BigInt(decimals);
+    const whole = raw / divisor;
+    const frac = raw % divisor;
+    return `${whole}.${frac.toString().padStart(decimals, "0")}`;
+}
 
 const main = async () => {
 
@@ -52,13 +72,11 @@ const main = async () => {
         // fallback if account is not parsed
         0;
 
-    const divisor = BigInt(10 ** decimals);
-
     const results: Array<{
         tokenAccount: string;
         owner: string;
         rawAmount: bigint;
-        uiAmount: number;
+        uiAmount: string;
     }> = [];
 
     for (const { pubkey, account } of accounts) {
@@ -71,13 +89,11 @@ const main = async () => {
 
         const raw = tokenAccount.amount; // bigint
 
-        const ui = Number(raw) / Number(divisor);
-
         results.push({
             tokenAccount: pubkey.toBase58(),
             owner: tokenAccount.owner.toBase58(),
             rawAmount: raw,
-            uiAmount: ui,
+            uiAmount: formatUiAmount(raw, decimals),
         });
     }
 

@@ -102,7 +102,7 @@ pub struct Deposit<'info> {
         constraint = vault_token_account.key() == stake_vault_token_account_config.vault_token_account @ CustomErrorCode::InvalidVaultTokenAccount,
         constraint = vault_token_account.owner == stake_vault_token_account_config.vault_authority @ CustomErrorCode::InvalidVaultAuthority
     )]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: Box<Account<'info, TokenAccount>>,
 
     /// CHECK: This is a PDA that acts as vault authority, validated by seeds constraint
     #[account(
@@ -141,7 +141,7 @@ pub struct Deposit<'info> {
         constraint = user_vault_token_account.mint == stake_config.vault @ CustomErrorCode::InvalidVaultMint,
         constraint = user_vault_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner
     )]
-    pub user_vault_token_account: Account<'info, TokenAccount>,
+    pub user_vault_token_account: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -149,7 +149,16 @@ pub struct Deposit<'info> {
         constraint = user_mint_token_account.mint == stake_config.mint @ CustomErrorCode::InvalidMint,
         constraint = user_mint_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner
     )]
-    pub user_mint_token_account: Account<'info, TokenAccount>,
+    pub user_mint_token_account: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        seeds = [
+            b"stake_price_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_price_config.bump,
+    )]
+    pub stake_price_config: Box<Account<'info, StakePriceConfig>>,
 
     pub token_program: Program<'info, Token>,
 }
@@ -178,7 +187,7 @@ pub struct Redeem<'info> {
         constraint = vault_token_account.key() == stake_vault_token_account_config.vault_token_account @ CustomErrorCode::InvalidVaultTokenAccount,
         constraint = vault_token_account.owner == stake_vault_token_account_config.vault_authority @ CustomErrorCode::InvalidVaultAuthority,
     )]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: Box<Account<'info, TokenAccount>>,
 
     /// CHECK: This is a PDA vault authority, validated by seeds and token account owner constraint
     #[account(
@@ -208,7 +217,7 @@ pub struct Redeem<'info> {
         constraint = user_vault_token_account.mint == stake_config.vault @ CustomErrorCode::InvalidVaultMint,
         constraint = user_vault_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner
     )]
-    pub user_vault_token_account: Account<'info, TokenAccount>,
+    pub user_vault_token_account: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -216,7 +225,7 @@ pub struct Redeem<'info> {
         constraint = user_mint_token_account.mint == stake_config.mint @ CustomErrorCode::InvalidMint,
         constraint = user_mint_token_account.owner == signer.key() @ CustomErrorCode::InvalidTokenOwner
     )]
-    pub user_mint_token_account: Account<'info, TokenAccount>,
+    pub user_mint_token_account: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
@@ -229,6 +238,15 @@ pub struct Redeem<'info> {
         constraint = vault_mint.key() == stake_config.vault @ CustomErrorCode::InvalidVaultMint
     )]
     pub vault_mint: Account<'info, Mint>,
+
+    #[account(
+        seeds = [
+            b"stake_price_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_price_config.bump,
+    )]
+    pub stake_price_config: Box<Account<'info, StakePriceConfig>>,
 
     pub token_program: Program<'info, Token>,
 }
@@ -344,28 +362,50 @@ pub struct PublishRewards<'info> {
         seeds = [b"stake_config"], 
         bump = stake_config.bump
     )]
-    pub stake_config: Account<'info, StakeConfig>,
+    pub stake_config: Box<Account<'info, StakeConfig>>,
 
     #[account(
         seeds = [b"config"], 
         bump = mint_config.bump,
         seeds::program = mint_program.key()
     )]
-    pub mint_config: Account<'info, vault_mint::state::Config>,
+    pub mint_config: Box<Account<'info, vault_mint::state::Config>>,
 
-    /// PDA that proves this call is from vault-stake
-    /// This PDA is signed during the CPI call to vault-mint
-    /// Only vault-stake can sign for this PDA
-    /// CHECK: This is a PDA derived from vault-stake program, validated by seeds
+    /// PDA that proves this call is from this staking program.
+    /// Signed during the CPI to vault-mint. Only this program can produce a valid
+    /// signer for this address because it is derived from crate::id().
+    /// CHECK: This is a PDA derived from this program's id, validated by seeds
     #[account(
         seeds = [b"external_mint_authority"],
         bump
     )]
     pub external_mint_authority: UncheckedAccount<'info>,
-    
+
     /// CHECK: hastra vault-mint program's executable
     pub mint_program: AccountInfo<'info>,
-    
+
+    /// This program's own account, passed to vault-mint as the calling_program identifier
+    /// so vault-mint can verify the caller against its allowed-program list.
+    /// CHECK: Address is constrained to this program's deployed id
+    #[account(constraint = this_program.key() == crate::id() @ CustomErrorCode::InvalidAuthority)]
+    pub this_program: AccountInfo<'info>,
+
+    /// The AllowedExternalMintPrograms PDA from vault-mint, passed through during the CPI to
+    /// vault-mint::external_program_mint. vault-mint uses it to authorize callers beyond the
+    /// legacy single-program field. This account is required here and in vault-mint, so it
+    /// must already exist on-chain (typically created during vault-mint upgrade / migration
+    /// via register_allowed_external_mint_program, which uses init_if_needed) before
+    /// publish_rewards can succeed. Until any programs are registered, account data may be
+    /// empty or too short to deserialize; vault-mint then treats the extended list as empty
+    /// and only the legacy config field applies.
+    /// CHECK: Derived from vault-mint's config; list membership is enforced in vault-mint
+    #[account(
+        seeds = [b"allowed_external_mint_programs", mint_config.key().as_ref()],
+        seeds::program = mint_program.key(),
+        bump,
+    )]
+    pub vault_mint_allowed_external_programs: UncheckedAccount<'info>,
+
     #[account(mut)]
     pub admin: Signer<'info>,
 
@@ -374,8 +414,8 @@ pub struct PublishRewards<'info> {
         constraint = rewards_mint.key() == stake_config.vault @ CustomErrorCode::InvalidMint,
         constraint = rewards_mint.mint_authority.unwrap() == rewards_mint_authority.key() @ CustomErrorCode::InvalidMintAuthority
     )]
-    pub rewards_mint: Account<'info, Mint>, // this seems odd, but the rewards are in the vault token mint
-    
+    pub rewards_mint: Box<Account<'info, Mint>>, // this seems odd, but the rewards are in the vault token mint
+
     /// CHECK: This is a PDA that acts as mint authority, validated by seeds constraint
     #[account(
         seeds = [b"mint_authority"],
@@ -391,7 +431,7 @@ pub struct PublishRewards<'info> {
         ],
         bump = stake_vault_token_account_config.bump,
     )]
-    pub stake_vault_token_account_config: Account<'info, StakeVaultTokenAccountConfig>,
+    pub stake_vault_token_account_config: Box<Account<'info, StakeVaultTokenAccountConfig>>,
 
     #[account(
         mut,
@@ -400,7 +440,7 @@ pub struct PublishRewards<'info> {
         constraint = vault_token_account.key() == stake_vault_token_account_config.vault_token_account @ CustomErrorCode::InvalidVaultTokenAccount,
         constraint = vault_token_account.owner == stake_vault_token_account_config.vault_authority @ CustomErrorCode::InvalidVaultAuthority
     )]
-    pub vault_token_account: Account<'info, TokenAccount>,
+    pub vault_token_account: Box<Account<'info, TokenAccount>>,
 
     /// CHECK: This is a PDA that acts as vault authority, validated by seeds constraint
     #[account(
@@ -414,9 +454,10 @@ pub struct PublishRewards<'info> {
         mut,
         constraint = mint.key() == stake_config.mint @ CustomErrorCode::InvalidMint
     )]
-    pub mint: Account<'info, Mint>,
+    pub mint: Box<Account<'info, Mint>>,
 
-    /// Reward record PDA to prevent duplicates
+    /// Per-publication record. Seeds `(id, amount)` are addressing only; uniqueness of the
+    /// publication id is enforced by `last_reward_publication` in the handler.
     #[account(
         init,
         payer = admin,
@@ -428,17 +469,40 @@ pub struct PublishRewards<'info> {
         ],
         bump
     )]
-    pub reward_record: Account<'info, RewardPublicationRecord>,
+    pub reward_record: Box<Account<'info, RewardPublicationRecord>>,
+
+    /// Reward cap config — must exist (see `initialize_stake_reward_config`).
+    #[account(
+        mut,
+        seeds = [
+            b"stake_reward_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_reward_config.bump,
+    )]
+    pub stake_reward_config: Box<Account<'info, StakeRewardConfig>>,
+
+    /// Highest accepted reward publication id — must exist (see `initialize_last_reward_publication`).
+    /// Typed and required so a missing account fails closed rather than materializing at zero.
+    #[account(
+        mut,
+        seeds = [
+            b"last_reward_publication",
+            stake_config.key().as_ref(),
+        ],
+        bump = last_reward_publication.bump,
+    )]
+    pub last_reward_publication: Box<Account<'info, LastRewardPublication>>,
 
     pub system_program: Program<'info, System>,
-    
+
     pub token_program: Program<'info, Token>,
 }
 
 #[derive(Accounts)]
 pub struct ConversionView<'info> {
     #[account(
-        seeds = [b"stake_config"], 
+        seeds = [b"stake_config"],
         bump = stake_config.bump
     )]
     pub stake_config: Account<'info, StakeConfig>,
@@ -460,4 +524,392 @@ pub struct ConversionView<'info> {
         bump
     )]
     pub vault_authority: UncheckedAccount<'info>,
+
+    #[account(
+        seeds = [b"stake_price_config", stake_config.key().as_ref()],
+        bump = stake_price_config.bump,
+    )]
+    pub stake_price_config: Account<'info, StakePriceConfig>,
+}
+
+// ========== PRICE CONFIG ACCOUNT CONTEXTS ==========
+
+/// Creates the StakePriceConfig PDA.
+/// Only callable by the program upgrade authority.
+/// Must be called once after deployment before any deposit/redeem can occur.
+#[derive(Accounts)]
+pub struct InitializePriceConfig<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        init,
+        payer = signer,
+        space = StakePriceConfig::LEN,
+        seeds = [
+            b"stake_price_config",
+            stake_config.key().as_ref(),
+        ],
+        bump
+    )]
+    pub stake_price_config: Account<'info, StakePriceConfig>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Updates configuration parameters on an existing StakePriceConfig.
+/// Only callable by the program upgrade authority.
+/// Does NOT reset price or price_timestamp.
+#[derive(Accounts)]
+pub struct UpdatePriceConfig<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"stake_price_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_price_config.bump,
+    )]
+    pub stake_price_config: Account<'info, StakePriceConfig>,
+
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+}
+
+/// Submits a signed Chainlink Data Streams report for on-chain verification.
+/// On success, stores the verified price and the report’s observations timestamp (staleness anchor) in
+/// StakePriceConfig.
+/// Only callable by rewards administrators.
+#[derive(Accounts)]
+pub struct VerifyPrice<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"stake_price_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_price_config.bump,
+    )]
+    pub stake_price_config: Account<'info, StakePriceConfig>,
+
+    /// CHECK: Validated by the Chainlink verifier program during CPI
+    pub chainlink_verifier_account: AccountInfo<'info>,
+
+    /// CHECK: Validated by the Chainlink verifier program during CPI
+    pub chainlink_access_controller: AccountInfo<'info>,
+
+    /// CHECK: PDA derived from the report's feed ID; validated by the Chainlink verifier program
+    pub chainlink_config_account: UncheckedAccount<'info>,
+
+    /// CHECK: Must match stake_price_config.chainlink_program — enforced in processor
+    pub chainlink_program: AccountInfo<'info>,
+
+    pub signer: Signer<'info>,
+}
+
+/// FOR TESTING ONLY — applies an ABI-encoded ReportDataV7 through `verify_price` acceptance
+/// rules without the Chainlink verifier CPI. Rewards administrators only.
+#[cfg(feature = "testing")]
+#[derive(Accounts)]
+pub struct ApplyVerifiedReportForTesting<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"stake_price_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_price_config.bump,
+    )]
+    pub stake_price_config: Account<'info, StakePriceConfig>,
+
+    pub signer: Signer<'info>,
+}
+
+/// FOR TESTING ONLY — directly sets the stored price and timestamp on StakePriceConfig.
+/// This bypasses the Chainlink CPI and allows localnet tests to set an arbitrary price.
+/// Access is restricted to the program upgrade authority (same as initialize).
+/// DO NOT USE IN PRODUCTION — use verify_price with a real Chainlink report instead.
+#[cfg(feature = "testing")]
+#[derive(Accounts)]
+pub struct SetPriceForTesting<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"stake_price_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_price_config.bump,
+    )]
+    pub stake_price_config: Account<'info, StakePriceConfig>,
+
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+}
+
+/// Creates the StakeRewardConfig PDA with protocol default caps and cooldown.
+/// Must be called once before `publish_rewards` can enforce limits.
+/// Only callable by the program upgrade authority.
+#[derive(Accounts)]
+pub struct InitializeStakeRewardConfig<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        init,
+        payer = signer,
+        space = StakeRewardConfig::LEN,
+        seeds = [
+            b"stake_reward_config",
+            stake_config.key().as_ref(),
+        ],
+        bump
+    )]
+    pub stake_reward_config: Account<'info, StakeRewardConfig>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Creates the LastRewardPublication PDA, seeding the id floor for `publish_rewards`.
+/// Must be called once before `publish_rewards` can succeed. Only callable by the program
+/// upgrade authority. `start_id` should be at or above the highest historical publication id;
+/// subsequent publishes require `id > last.id` and `id - last.id <= MAX_GAP`.
+#[derive(Accounts)]
+pub struct InitializeLastRewardPublication<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        init,
+        payer = signer,
+        space = LastRewardPublication::LEN,
+        seeds = [
+            b"last_reward_publication",
+            stake_config.key().as_ref(),
+        ],
+        bump
+    )]
+    pub last_reward_publication: Account<'info, LastRewardPublication>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+
+    pub system_program: Program<'info, System>,
+}
+
+/// Corrects the LastRewardPublication floor (upgrade authority only). Recovery path when
+/// `start_id` was seeded wrongly — without this, a too-high floor can leave the next
+/// legitimate id outside MAX_GAP, and a floor of `u32::MAX` deadlocks all future publishes.
+#[derive(Accounts)]
+pub struct UpdateLastRewardPublication<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"last_reward_publication",
+            stake_config.key().as_ref(),
+        ],
+        bump = last_reward_publication.bump,
+    )]
+    pub last_reward_publication: Account<'info, LastRewardPublication>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+}
+
+/// Updates max_reward_bps on an existing StakeRewardConfig.
+/// Only callable by the program upgrade authority.
+#[derive(Accounts)]
+pub struct UpdateMaxRewardBps<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"stake_reward_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_reward_config.bump,
+    )]
+    pub stake_reward_config: Account<'info, StakeRewardConfig>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+}
+
+/// Updates max_period_rewards on an existing StakeRewardConfig.
+/// Only callable by the program upgrade authority.
+#[derive(Accounts)]
+pub struct UpdateMaxPeriodRewards<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"stake_reward_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_reward_config.bump,
+    )]
+    pub stake_reward_config: Account<'info, StakeRewardConfig>,
+
+    #[account()]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+}
+
+/// Updates reward_period_seconds on an existing StakeRewardConfig.
+/// Only callable by the program upgrade authority.
+#[derive(Accounts)]
+pub struct UpdateRewardPeriodSeconds<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"stake_reward_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_reward_config.bump,
+    )]
+    pub stake_reward_config: Account<'info, StakeRewardConfig>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
+}
+
+/// Updates max_total_rewards on an existing StakeRewardConfig.
+/// Only callable by the program upgrade authority.
+#[derive(Accounts)]
+pub struct UpdateMaxTotalRewards<'info> {
+    #[account(
+        seeds = [b"stake_config"],
+        bump = stake_config.bump
+    )]
+    pub stake_config: Account<'info, StakeConfig>,
+
+    #[account(
+        mut,
+        seeds = [
+            b"stake_reward_config",
+            stake_config.key().as_ref(),
+        ],
+        bump = stake_reward_config.bump,
+    )]
+    pub stake_reward_config: Account<'info, StakeRewardConfig>,
+
+    #[account(mut)]
+    pub signer: Signer<'info>,
+
+    /// CHECK: This is the program data account that contains the update authority
+    #[account(
+        constraint = program_data.key() == get_program_data_address(&crate::id()) @ CustomErrorCode::InvalidProgramData
+    )]
+    pub program_data: UncheckedAccount<'info>,
 }

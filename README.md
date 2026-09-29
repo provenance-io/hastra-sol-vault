@@ -1,10 +1,21 @@
 # Hastra Vault Protocol on Solana
 
-The Hastra Vault protocol is derived of 2 Solana programs that implement a deposit and mint protocol and a staking protocol. Hastra Vault protocol allows users to swap tokens like USDC for mint tokens (e.g. wYLDS) at a 1:1 ratio. Vaulted tokens are held in a vault, while mint tokens provide liquidity and transferability. Users can then use their mint tokens in DeFi applications, trade them, or hold them for rewards. The Hastra Vault protocol staking program allows mint token holders deposit to the staking program and earn larger off-chain yield but are bound to a bonding period.
+The Hastra Vault workspace ships **three** Anchor programs:
+
+
+| Program              | Crate              | Role                                                                                             |
+| -------------------- | ------------------ | ------------------------------------------------------------------------------------------------ |
+| **vault-mint**       | `vault_mint`       | USDC → wYLDS (1:1) mint/redeem, merkle reward epochs, `external_program_mint` for staking pools  |
+| **vault-stake**      | `vault_stake`      | **PRIME** pool: deposit wYLDS, mint PRIME, redeem with Chainlink-backed price, `publish_rewards` |
+| **vault-stake-auto** | `vault_stake_auto` | **AUTO** pool: same mechanics as PRIME under a separate program id and PDAs                      |
+
+
+Users swap vault tokens (e.g. USDC) for receipt tokens (wYLDS) through **vault-mint**. They stake wYLDS into **vault-stake** (PRIME) or **vault-stake-auto** (AUTO); rewards are minted into the pool via `publish_rewards`, which CPIs **vault-mint** so backing per share increases over time.
 
 ## Core Architecture
 
 **Deposit Mechanism:**
+
 - Users deposit vault tokens (e.g. USDC) into a program-controlled vault
 - Program mints equivalent mint tokens (e.g. wYLDS) that maintain 1:1 parity
 - Users can trade/transfer mint tokens freely
@@ -14,6 +25,7 @@ The **rewards process** in this Solana vault protocol involves off-chain yield g
 ## Off-Chain Yield Generation Process
 
 **Yield Generation Flow:**
+
 1. Vault tokens (e.g. USDC) deposited by users sits in the program-controlled vault
 2. Authorized business entities use vault tokens for external investment
 3. Vault tokens deployed into high-yield DeFi protocols, lending markets, or other investment vehicles
@@ -25,6 +37,7 @@ The **rewards process** in this Solana vault protocol involves off-chain yield g
 Rewards are distributed on-chain using a merkle tree-based claim system to ensure efficiency and security. The program is initialized with a list of reward administrators who can post new reward epochs. Each reward epoch contains a merkle root summarizing user rewards for that period.
 
 **Epoch-Based System:**
+
 - Rewards are distributed in discrete epochs (e.g., weekly)
 - Each epoch has a unique index and merkle root representing user rewards
 - Epoch duration and timing are configurable by program administrators
@@ -33,18 +46,21 @@ Rewards are distributed on-chain using a merkle tree-based claim system to ensur
 - Administrators can create epochs with a merkle root summarizing user rewards
 - Users claim rewards by providing a merkle proof against the stored root
 - Rewards are minted as additional mint tokens (e.g. wYLDS)
+- After upgrade, `initialize_epoch_caps` and `initialize_last_rewards_epoch` are required on-chain before create/claim. New epochs (`index >= first_capped_epoch`) enforce an aggregate claim cap; creates also require `total <= max_epoch_cap` and exact succession (`index == last_rewards_epoch.index + 1`). Epochs created before the upgrade stay uncapped, and no new epoch can be created at an index below `first_capped_epoch`, so every epoch created from now on is capped.
 
 **Merkle Tree Structure:**
-- **Leaf Node**: `sha256(user_pubkey || reward_amount_le_bytes || epoch_index_le_bytes)`
-- **Tree Construction**: All user rewards for an epoch are hashed and organized into a sorted binary merkle tree
+
+- **Leaf Format**: `sha256(user_pubkey || reward_amount_le_bytes || epoch_index_le_bytes)`
+- **Tree Construction**: Leaves are padded to a power of two and hashed into a binary merkle tree with `sortPairs: false` (sibling order is positional, not sorted)
 - **Root**: Final merkle root represents the entire reward distribution for that epoch
 
 **Administrative Posting Process:**
 
-1. Authorized reward admin computes user rewards off-chain
-2. Constructs merkle tree and computes root
-3. Calls `create_rewards_epoch()` with epoch index, merkle root, and total rewards:
-
+1. Upgrade authority calls `initialize_epoch_caps(first_capped_epoch, max_epoch_cap)` once after program upgrade — use `scripts/vault-mint/initialize_epoch_caps_proposal_squads.ts` when the upgrade authority is a Squads vault PDA (or `initialize_epoch_caps.ts` for a local keypair)
+2. Upgrade authority calls `initialize_last_rewards_epoch(start_index)` once (requires caps already initialized). Must satisfy `start_index + 1 >= first_capped_epoch` or init rejects (`EpochIndexBelowFirstCapped`) — typically `start_index = first_capped_epoch - 1`. Use `scripts/vault-mint/initialize_last_rewards_epoch_proposal_squads.ts` (or the non-Squads script). Wrong floor can be corrected later with `update_last_rewards_epoch` (upgrade authority only; same boundary check).
+3. Authorized reward admin computes user rewards off-chain
+4. Constructs merkle tree and computes root; `total` must be `> 0` and `<= max_epoch_cap`, and `index` must equal `last_rewards_epoch.index + 1` (and therefore be `>= first_capped_epoch`)
+5. Calls `create_rewards_epoch()` with epoch index, merkle root, and total:
 ```rust
 pub fn create_rewards_epoch(
     ctx: Context<CreateRewardsEpoch>,
@@ -55,25 +71,27 @@ pub fn create_rewards_epoch(
 ```
 
 ## User Claim Process
+
 Users claim their rewards by providing their allocated amount and a merkle proof. The program verifies the proof against the stored merkle root for the specified epoch.
 
 **Merkle Proof Verification:**
-1. User provides their allocated `amount` and merkle `proof` (array of sibling hashes)
-2. Program reconstructs leaf: `sha256(user || amount || epoch_index)`
-3. Program walks up the tree using proof siblings with sorted pair hashing
-4. Final computed root must match the stored epoch merkle root
 
+1. User provides their allocated `amount` and merkle `proof` (`Vec<ProofNode>` with sibling hash + `is_left`)
+2. Program reconstructs leaf: `sha256(user_pubkey || amount_le_bytes || epoch_index_le_bytes)`
+3. Program walks up the tree using each proof sibling; `is_left` selects `hash(sib || node)` vs `hash(node || sib)` (not sorted-pair hashing)
+4. Final computed root must match the stored epoch merkle root
 ```rust
 pub fn claim_rewards(
     ctx: Context<ClaimRewards>,
     amount: u64,
-    proof: Vec<[u8; 32]>
+    proof: Vec<ProofNode>
 ) -> Result<()>
 ```
 
 ## Double-Claim Prevention
 
 **Claim Record System:**
+
 - Each successful claim creates a `ClaimRecord` PDA with seeds: `[b"claim", epoch.key(), user.key()]`
 - Account creation constraint prevents duplicate claims:
   ```rust
@@ -88,6 +106,7 @@ pub fn claim_rewards(
   ```
 
 **Security Benefits:**
+
 - **Immutable Claims**: Once created, ClaimRecord cannot be deleted or modified
 - **Epoch Isolation**: Each epoch has separate claim records, preventing cross-epoch issues
 - **User Isolation**: Each user has individual claim records per epoch
@@ -97,20 +116,197 @@ This design ensures that yield generated from vault tokens is fairly distributed
 
 ## Staking Rewards
 
-The staking program allows mint token holders to stake their tokens for additional rewards. Staked tokens are locked for a bonding period, during which they cannot be transferred or redeemed. This incentivizes long-term holding and provides stability to the vault protocol. 
+The staking programs (`vault-stake` for PRIME and `vault-stake-auto` for AUTO) allow users to deposit wYLDS and mint share tokens. Rewards increase the value backing each share token by minting additional wYLDS into the pool vault.
 
-The staking program issues a staking token that represents your share of the staked mint tokens. As rewards are calculated off-chain and distributed on-chain, staking tokens do not increase in quantity but rather the value of each staking token increases relative to the underlying mint tokens.
+Staking rewards are published via `publish_rewards`, which CPIs into **vault-mint** (`external_program_mint`) to mint additional wYLDS into the pool vault. The mint program must authorize the caller: **PRIME** uses the legacy `allowed_external_mint_program` on `Config`; **AUTO** is registered on the `**AllowedExternalMintPrograms`** PDA (`register_allowed_external_mint_program`). The allow-list registration cap is managed separately via `update_external_mint_programs_limit` (script: `scripts/vault-mint/update_external_mint_programs_limit.ts`, range `0..=255`; `0` disables new registrations). Users realize rewards when they redeem: the stake program burns PRIME or AUTO and transfers wYLDS per the oracle price.
 
-Staking rewards are published by a rewards administrator to the staking program. The staking then calls the mint program to mint additional mint tokens (e.g. wYLDS) to the staking program pool. The value of the staker's stake tokens increases as the staking pool grows relative to the total staked mint tokens. Staking rewards are redeemed when the user unbonds their stake and redeems their share of mint tokens based on their stake token holdings.
+### Reward publication limits (`StakeRewardConfig`)
+
+`publish_rewards` is constrained by on-chain fields stored in the `StakeRewardConfig` PDA:
+
+1. **Relative cap (`max_reward_bps`)**: limits reward amount relative to local pool TVL (default 75 BPS = 0.75%).
+2. **Absolute per-call cap (`max_period_rewards`)**: default `1,000,000` wYLDS (6-decimal raw units: `1_000_000_000_000`).
+3. **Cooldown (`reward_period_seconds`)**: default `3540` seconds (59 minutes).
+4. **Lifetime cap (`max_total_rewards`)**: default `10,000,000` wYLDS (6-decimal raw units: `10_000_000_000_000`).
+
+Publication ids must advance with a bounded gap: each `--reward_id` must be greater than the per-pool `LastRewardPublication.id` and within `MAX_GAP` of it (`RewardPublicationIdNotMonotonic` / `RewardPublicationIdGapTooLarge` otherwise). Initialize that PDA once with `scripts/vault-stake/initialize_last_reward_publication.ts` (or the Squads proposal variant) before the first publish — seed `start_id` at or above the highest historical publication id for the pool. A wrongly seeded floor can be corrected with `update_last_reward_publication` (upgrade authority only).
+
+The guard state is stored at PDA:
+
+`[b"stake_reward_config", stake_config.key()]`
+
+`LastRewardPublication` is a separate PDA at `[b"last_reward_publication", stake_config.key()]`.
+
+#### Updating reward caps (Squads v4)
+
+After `StakeRewardConfig` exists, change caps or cooldown via the dedicated update instructions. When the program upgrade authority is a Squads vault PDA, batch one or more updates in a single proposal with `scripts/vault-stake/set_reward_config_proposal_squads.ts` (Squads v4 SDK: `vaultTransactionCreate` + `proposalCreate`).
+
+Create the PDA once with `scripts/vault-stake/initialize_stake_reward_config.ts` (wallet is upgrade authority) or `initialize_stake_reward_config_proposal_squads.ts` (Squads vault). `publish_rewards` requires the account to exist.
+
+Example (devnet Squads proposal to tune caps after init):
+
+```bash
+ANCHOR_PROVIDER_URL=https://api.devnet.solana.com ANCHOR_WALLET=~/.config/solana/squad-member.json \
+  yarn ts-node scripts/vault-stake/set_reward_config_proposal_squads.ts \
+    --multisig_pda xmWqhNJwNL4z4BcDo1Yh7BbStLU7omVafZNmg91y2Vg \
+    --program_id <VAULT_STAKE_OR_AUTO_PROGRAM_ID> \
+    --max_reward_bps 90 \
+    --reward_period_seconds 3600
+```
+
+Approve and execute at [backup.app.squads.so](https://backup.app.squads.so) (mainnet: [app.squads.so](https://app.squads.so)).
+
+## Staking Program Price Oracle
+
+Both **vault-stake** (PRIME) and **vault-stake-auto** (AUTO) use a [Chainlink Data Streams](https://docs.chain.link/data-streams) price feed for the share token vs wYLDS rate at deposit and redeem time. This replaces a pure vault-balance ratio with an externally verified price, decoupling the rate from pool balance movements (such as reward distributions).
+
+### Price Convention
+
+The stored price represents **wYLDS per 1 share** (PRIME or AUTO), scaled by `price_scale`:
+
+```
+price = (wYLDS per 1 PRIME) × price_scale
+```
+
+
+| Operation                | Formula                                                                        |
+| ------------------------ | ------------------------------------------------------------------------------ |
+| Deposit (wYLDS → shares) | `shares_minted = wYLDS_deposited × price_scale / price`                        |
+| Redeem (shares → wYLDS)  | `wYLDS_returned = shares_burned × price / price_scale`                         |
+| Exchange rate view       | `rate = price × 1_000_000_000 / price_scale` (assets per share, scaled by 1e9) |
+
+
+### `StakePriceConfig` Account
+
+Price configuration lives in a dedicated PDA with seeds `[b"stake_price_config", stake_config.key()]`, keeping the existing `StakeConfig` account layout unchanged.
+
+
+| Field                         | Type       | Description                                                                                               |
+| ----------------------------- | ---------- | --------------------------------------------------------------------------------------------------------- |
+| `chainlink_program`           | `Pubkey`   | Chainlink verifier program ID                                                                             |
+| `chainlink_verifier_account`  | `Pubkey`   | Verifier state account                                                                                    |
+| `chainlink_access_controller` | `Pubkey`   | Access controller account                                                                                 |
+| `feed_id`                     | `[u8; 32]` | Expected feed ID, validated on each `verify_price` call                                                   |
+| `price`                       | `i128`     | Last verified benchmark price                                                                             |
+| `price_scale`                 | `u64`      | Scale factor matching Chainlink feed precision (e.g. `1_000_000_000_000_000_000` for 1e18)                |
+| `price_timestamp`             | `i64`      | Report `observations_timestamp` from the last successful `verify_price` (staleness anchor; `0` = not set) |
+| `price_max_staleness`         | `i64`      | Maximum age of stored price in seconds before deposit/redeem reject it                                    |
+| `bump`                        | `u8`       | PDA bump                                                                                                  |
+
+
+### Price Instructions
+
+
+| Instruction               | Authority                 | Description                                                                                                                                                                                                                                                      |
+| ------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `initialize_price_config` | Program upgrade authority | Creates the `StakePriceConfig` PDA. Must be called once after each program deployment before any deposit or redeem.                                                                                                                                              |
+| `update_price_config`     | Program upgrade authority | Updates Chainlink addresses, feed ID, price scale, or staleness. If any field other than staleness changes, the stored `price` and `price_timestamp` are cleared, so deposits/redeems halt until the next `verify_price`; a staleness-only update leaves the stored price intact. |
+| `verify_price`            | Rewards administrators    | Submits a signed Chainlink report for on-chain verification via CPI. On success, stores the verified price and the report’s `observations_timestamp` (staleness anchor).                                                                                         |
+| `set_price_for_testing`   | Program upgrade authority | Directly sets `price` and `price_timestamp`. For localnet testing only — not for production use.                                                                                                                                                                 |
+
+
+The same instruction set exists on **vault-stake-auto** (AUTO). Operational tooling is unified under `scripts/vault-stake/`; target AUTO by passing `--program_id <VAULT_STAKE_AUTO_PROGRAM_ID>` where supported.
+
+### Staleness Protection
+
+Both `deposit` and `redeem` reject a stored price that is too old:
+
+- `price_timestamp == 0` → `PriceNotInitialized` (oracle not yet seeded)
+- `current_time − price_timestamp > price_max_staleness` → `PriceTooStale`
+
+`price_timestamp` is the Chainlink report’s **observations** time (set in `verify_price`), not the wall-clock time of the verify transaction, so age is measured from the oracle’s vouched validity window end.
+
+The oracle check runs **before** the user balance check in `redeem`, so a stale oracle fails fast regardless of user balance.
+
+### Mint Program Token and Token Accounts
+
+The program requires two tokens and one token account to operate. The tokens can be any SPL token, but typically the vault token is a stablecoin like USDC, and the mint token is a custom token that represents a claim on the vault tokens. There are token accounts for both the user and the program to hold the tokens.
+
+To make it easier to understand the tokens in play, here's a sequence diagram on how the tokens interact.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Program
+    participant VaultAccount as Vault Token Account
+    participant Offchain as Off-Chain Yield Generation
+
+    User->>Program: Deposit Vault Tokens (e.g. USDC)
+    Program->>VaultAccount: Transfer Vault Tokens to Vault Token Account
+    Program->>User: Mint Tokens (e.g. wYLDS)
+    User->>Program: Redeem
+    activate Program
+    Program->>Program: Verify No Redeems in Progress
+    Program->>Program: Create Redeem Request Ticket
+    Program-->>Offchain: Dispatch Redeem Request to Off-Chain
+    deactivate Program
+    activate Offchain
+    Offchain->>Offchain: Fund Redeem from External Liquidity
+    Offchain->>Offchain: Move USDC to Redeem Vault Token Account
+    Offchain-->>Program: Complete Redeem Request
+    deactivate Offchain
+    Program->>User: Transfer Vault Tokens (e.g. USDC) from Redeem Vault Token Account
+    Program->>User: Burn Mint Tokens (e.g. wYLDS)
+```
+
+
+
+### Mint Program Accounts in Play
+
+
+| Token/Account Type   | Symbol     | Description                                                                                                                                                                                                                                       | Mint Authority                                                                                                      | Freeze Authority                                                                |
+| -------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Vault Token          | e.g. USDC  | The token the user deposits to receive the minted token                                                                                                                                                                                           | External vault token mint authority                                                                                 | External vault token freeze authority                                           |
+| Mint Token           | e.g. wYLDS | The token that is minted when the user deposits vault tokens                                                                                                                                                                                      | Your Solana Wallet initially, then Program Derived Address (PDA) of the program                                     | Your Solana Wallet initially, then Program Derived Address (PDA) of the program |
+| Vault Token Account  | N/A        | The token account that will hold the vaulted tokens when users deposit them in exchange for mint tokens                                                                                                                                           | This token account authority is not the program, so the holder can deploy vaulted tokens for off-chain investments. | N/A                                                                             |
+| Redeem Token Account | N/A        | The token account that will hold vaulted tokens (USDC) when users request a redeem. Once the off-chain entity approves the redeem this account is funded and the program transfers the vault to the user on authority of a rewards administrator. | N/A                                                                                                                 | N/A                                                                             |
+
+
+### Staking Program Token and Token Accounts
+
+The program requires two tokens to operate. The tokens can be any SPL token, but typically the vault token is a stablecoin like wYLDS, and the mint token is a custom token that represents a claim on the vault tokens. There are token accounts for both the user and the program to hold the tokens.
+
+To make it easier to understand the tokens in play, here's a sequence diagram on how the tokens interact.
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Program
+    participant VaultAccount as Vault Token Account
+    
+    User->>Program: Deposit Vault Mint Token (wYLDS)
+    Program->>VaultAccount: Transfer Vault Mint (wYLDS) to Vault Token Account
+    Program->>User: Mint the Mint Token (PRIME)
+    Program->>Program: (Optional) publish_rewards mints more wYLDS into VaultAccount
+    User->>Program: Redeem
+    activate Program
+    Program->>Program: Burn PRIME
+    Program->>User: Transfer Vault Token (wYLDS) from Vault Token Account
+    deactivate Program
+```
+
+
+
+### Staking Program Accounts in Play
+
+
+| Token/Account Type  | Symbol | Description                                                                                                                             | Mint Authority                                                                                               | Freeze Authority                                                                                             |
+| ------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| Vault Mint          | wYLDS  | The token the user deposits to receive the minted token (PRIME)                                                                         | Your Solana Wallet (e.g. hastra-devnet-id.json) initially, then Program Derived Address (PDA) of the program | Your Solana Wallet (e.g. hastra-devnet-id.json) initially, then Program Derived Address (PDA) of the program |
+| Mint Token          | PRIME  | The token that is minted when the user deposits the vault token (wYLDS)                                                                 | Your Solana Wallet (e.g. hastra-devnet-id.json) initially, then Program Derived Address (PDA) of the program | Your Solana Wallet (e.g. hastra-devnet-id.json) initially, then Program Derived Address (PDA) of the program |
+| Vault Token Account | N/A    | The token account that will hold the vaulted tokens (e.g. wYLDS) when users deposit them in exchange for the minted token (e.g. PRIME). | Program Derived Address (PDA) of the program                                                                 | N/A                                                                                                          |
+
 
 ## Administrative Features
 
 **Freeze System:**
+
 - Designated administrators can freeze/thaw specific token accounts
 - Useful for compliance, security incidents, or regulatory requirements
 - Maximum 5 freeze administrators with program update authority control
 
 **Rewards Distribution:**
+
 - Merkle tree-based reward claims for mint token holder incentives
 - Epoch-based system with configurable reward periods
 - Prevents double-claiming with permanent claim records
@@ -119,22 +315,30 @@ Staking rewards are published by a rewards administrator to the staking program.
 ## Security Model
 
 **Program-Controlled Assets:**
+
 - Vault authority PDA controls all deposited vault tokens
 - Mint authority PDA controls mint token issuance
 - Freeze authority PDA manages account freezing capabilities
 
 **Administrative Controls:**
+
 - Program upgrade authority can modify configurations
-- Separate administrator lists for freeze and rewards functions
+- Separate administrator lists for freeze and rewards functions (each must be 1–5 unique pubkeys; empty or duplicate lists are rejected)
+- `deposit` requires the user vault token account to differ from the configured deposit vault token account (blocks self-transfer minting)
+- `external_program_mint` requires a rewards administrator who signed the outer transaction (in addition to the calling program's `external_mint_authority` PDA)
 - All sensitive operations require proper authority validation
 
 **Account Structure:**
+
 - `Config`: Program settings and administrator lists
 - `RewardsEpoch`: Manages reward distribution with merkle proofs
 - `ClaimRecord`: Prevents reward double-spending
 
-** Protcol Pause and Unpause **
-- Program authority can pause and unpause the protocol preventing deposit, claim, and redeem. 
+**Protocol pause (vault-mint and each stake program)**  
+
+- **vault-mint** `pause` stops user-facing mint instructions (including CPIs such as `external_program_mint` used by `publish_rewards`).  
+- **vault-stake** / **vault-stake-auto** `pause` stops deposit, redeem, and other guarded instructions for that pool.  
+- Merkle **claim_rewards** in vault-mint respects the mint program pause flag.
 
 This creates a secure, flexible vault protocol suitable for DeFi protocols requiring both liquidity and governance controls.
 
@@ -142,20 +346,22 @@ There are several different aspects to this repo, but all are related to the Vau
 
 ## Project Layout
 
-
 ### Core Components
 
-**Rust Programs** (`programs/*/src/`):
+**Rust Programs** (`programs/vault-mint`, `programs/vault-stake`, `programs/vault-stake-auto`; sources under `src/`):
+
 - **State Management**: Account structures and program data models
 - **Business Logic**: Deposit, withdrawal, rewards, and administrative functions
 - **Security Layer**: Authorization guards and error handling
 
 **TypeScript Scripts** (`scripts/*/`):
+
 - **Deployment Tools**: Automated setup and configuration management
 - **User Operations**: Deposit, redeem, and claim workflows
 - **Admin Functions**: Program updates and authority management
 
 **Generated Assets** (`target/`):
+
 - **Program Binary**: Deployable Solana bytecode
 - **Type Definitions**: TypeScript interfaces for client integration
 - **IDL Files**: JSON schema for cross-platform compatibility
@@ -163,20 +369,24 @@ There are several different aspects to this repo, but all are related to the Vau
 This modular structure separates on-chain program logic from off-chain tooling while providing comprehensive deployment and management capabilities.
 
 ## Required Libs/Utils
-Like all recent projects, we have to include a bunch of boiler plate libs/utils. We'll keep a running list here, but it is best to note that this project got started by reading the https://solana.com/docs/intro/installation doc.
+
+Like all recent projects, we have to include a bunch of boiler plate libs/utils. We'll keep a running list here, but it is best to note that this project got started by reading the [https://solana.com/docs/intro/installation](https://solana.com/docs/intro/installation) doc.
 
 **Prerequisites**
+
 - yarn
 - solana w/spl-token
-- anchor cli (recommend using avm to manage anchor versions)
+- anchor cli **0.31.x** (see `[toolchain]` in `Anchor.toml`; recommend `avm` to match the workspace version)
 - rust
 
 ### Yarn
+
 `yarn install` to install node js dependencies. Don't make the mistake I did, and try to use npm.
 
 ### Anchor
 
 To build the project with anchor, we have to install rust. It is also best to ensure you have the latest version by running `rustup update` prior to engaging in development. Anchor follows the conventional command for building the Solana programs in this repo.
+
 ```bash
 $ anchor build
 ```
@@ -185,14 +395,18 @@ $ anchor build
 
 The deployment workflow is split into two interactive scripts that share a common configuration layer:
 
-| Script | Purpose |
-|--------|---------|
-| `scripts/setup-tokens.sh` | **Part 1** — Create SPL tokens, token accounts, and Metaplex metadata |
-| `scripts/deploy.sh` | **Part 2** — Build programs, write upgrade buffers for Squads, initialize programs, set authorities |
+
+| Script                    | Purpose                                                                                                                                                                                    |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `scripts/setup-tokens.sh` | **Part 1** — Create SPL tokens, token accounts, and Metaplex metadata. This step is needed **only for new installations.** For ongoing maintenance, only the `deploy.sh` script is needed. |
+| `scripts/deploy.sh`       | **Part 2** — Build programs, write upgrade buffers for Squads, initialize programs, set authorities                                                                                        |
+
 
 > Programs are **never deployed directly** from `deploy.sh`. Instead, the script writes a program buffer on-chain and prints the buffer address and SHA-256 hash so you can create a Squads upgrade proposal. This ensures every deployment goes through the M-of-N multisig approval process. See [Creating a Squads Upgrade Request](#creating-a-squads-upgrade-request) below.
 
 Both scripts persist selections to a network-specific history file (e.g. `devnet_vault.history`) so you don't have to re-enter values on every run.
+
+## Initial Setup
 
 ### Generate a new keypair
 
@@ -215,6 +429,8 @@ refuse detail throw curtain spell journey grab shiver assume salute recycle tube
 ## Part 1 — Token Setup (`scripts/setup-tokens.sh`)
 
 Run this script once when setting up a new deployment environment. It creates the SPL tokens and token accounts that the programs require, and registers their metadata on Metaplex.
+
+> This step is **only needed for new installations** and **not for ongoing maintenance**.
 
 ### Start `setup-tokens.sh`
 
@@ -312,6 +528,12 @@ Prints all program IDs, token addresses, token accounts, and derived PDAs in one
 
 Run this script to build programs, write upgrade buffers for Squads, and initialize programs after the first Squads-executed deployment.
 
+> Refer to the Squads section of the [Squads Docs](https://docs.squads.so/docs/getting-started/deploying-programs) for more details on the upgrade process.
+
+> This section assumes that you have already set up a Squads vault (either on devnet or mainnet) and have the Squads vault address in your wallet. See [GitHub Release](#github-release) below.
+
+> After Chainlink pricing is enabled on a stake program, complete `initialize_price_config` and `verify_price` before users can deposit or redeem. See [Chain Link Pricing Specific Post-Upgrade Initialization](#chain-link-pricing-specific-post-upgrade-initialization).
+
 ### Start `deploy.sh`
 
 ```
@@ -323,23 +545,24 @@ Select Solana network (localnet, devnet, mainnet-beta, testnet) []: devnet
 Public Key:             HT9c4xkDT9bx2JyMfLrauNmg8BA7bjUm7qba1vdMsMrz (8.34021568 SOL)
 Vault Mint Program ID:  9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV
 Vault Stake Program ID: 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY
-Squads Vault:           ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K
+Squads Vault:           FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv
 Mint Buffer:            <none>
 Stake Buffer:           <none>
 
+The menu includes separate steps for **vault-mint**, **vault-stake** (PRIME), and **vault-stake-auto** (AUTO): build, write buffers, initialize, and set mint/freeze authorities. Exact option numbers may change—use the script’s live prompt.
+
+Example (abbreviated):
+
+```
+
 Select an action:
- 1) Build Programs
- 2) Write Vault Mint Buffer (for Squads upgrade)
- 3) Write Vault Stake Buffer (for Squads upgrade)
- 4) Write All Buffers
- 5) Initialize Mint Program
- 6) Initialize Stake Program
- 7) Set Mint Program Mint and Freeze Authorities
- 8) Set Stake Program Mint and Freeze Authorities
- 9) Configure Squads Vault Address
-10) Show Accounts & PDAs
-11) Exit
-#?
+
+1. Build Programs
+2. Write Vault Mint Buffer (for Squads upgrade)
+3. Write Vault Stake Buffer (for Squads upgrade)
+4. Write Vault Stake Auto Buffer (for Squads upgrade)
+5. Write All Buffers
+
 ```
 
 ### Option `9` — Configure Squads Vault Address
@@ -347,7 +570,9 @@ Select an action:
 Set the Squads vault PDA once so subsequent buffer writes can optionally transfer buffer authority automatically.
 
 ```
-Enter Squads vault address (used as upgrade authority) []: ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K
+
+Enter Squads vault address (used as upgrade authority) []: FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv
+
 ```
 
 This value is persisted to the network history file.
@@ -357,6 +582,7 @@ This value is persisted to the network history file.
 Runs `anchor build` and prompts for the destination paths to copy the generated IDL and TypeScript types to the frontend project (e.g. `hastra-fi-nexus-flow`).
 
 ```
+
 ...snip...
     Finished `release` profile target(s) in 95.12s
 
@@ -369,6 +595,7 @@ Enter destination for vault_stake.ts TYPE [../../hastra-fi-nexus-flow/src/types/
 Enter destination for vault_stake.ts IDL  [../../hastra-fi-nexus-flow/src/types/idl/vault-stake.ts]:
 Copied to ../../hastra-fi-nexus-flow/src/types/vault-stake.ts
 Copied to ../../hastra-fi-nexus-flow/src/types/idl/vault-stake.ts
+
 ```
 
 ### Option `2` / `3` / `4` — Write Program Buffer(s)
@@ -376,27 +603,31 @@ Copied to ../../hastra-fi-nexus-flow/src/types/idl/vault-stake.ts
 Writes the compiled `.so` to an on-chain buffer account, prints the buffer address and SHA-256 hash, and optionally transfers buffer authority to the configured Squads vault. Use this instead of `solana program deploy`.
 
 ```
+
 Writing Vault Mint Program to buffer...
 Program file: ../target/deploy/vault_mint.so
 SHA-256: a3f2c1d4e5b6789012345678abcdef01234567890abcdef1234567890abcdef12
 
-============================================================
+# ============================================================
+
   Vault Mint Program Buffer Written
-============================================================
-  Buffer Address : 5tWAz76wZXCB3GFzpdswa7E9ZkVP6R9KrsmBZ9sV3fQX
+
+# Buffer Address : 5tWAz76wZXCB3GFzpdswa7E9ZkVP6R9KrsmBZ9sV3fQX
+
   SHA-256        : a3f2c1d4e5b6789012345678abcdef01234567890abcdef1234567890abcdef12
-============================================================
 
 Next steps:
-  1. Verify the SHA-256 above matches the GitHub release artifact.
-  2. Go to devnet.squads.so (or squads.so for mainnet).
-  3. Create a Program Upgrade proposal using:
-       Buffer Address : 5tWAz76wZXCB3GFzpdswa7E9ZkVP6R9KrsmBZ9sV3fQX
-       Program ID     : 9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV
-       Buffer Refund  : your wallet address
+
+1. Verify the SHA-256 above matches the GitHub release artifact.
+2. Go to backup.app.squads.so (or squads.so for mainnet).
+3. Create a Program Upgrade proposal using:
+  Buffer Address : 5tWAz76wZXCB3GFzpdswa7E9ZkVP6R9KrsmBZ9sV3fQX
+  Program ID     : 9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV
+  Buffer Refund  : your wallet address
 
 Transfer buffer authority to Squads vault now? [y/N]: y
-Buffer authority transferred to ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K
+Buffer authority transferred to FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv
+
 ```
 
 > The SHA-256 printed here must match the hash in the GitHub release artifact. See [GitHub Release](#github-release) below.
@@ -406,6 +637,7 @@ Buffer authority transferred to ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K
 Run this **after** Squads executes the first deployment. Sets up the config account, PDAs, freeze/rewards administrators, and the allowed caller program ID.
 
 ```
+
 Enter comma-separated list of Freeze Administrator addresses []: GrzQ4vW3UviEDKN7aHGroayoJC3B87ovcSofyt2Q48KG,56NYkGD9TCijuYgfeiHTbMN9sqcr9uH2CeV1GnSCy4Xn
 Enter comma-separated list of Rewards Administrator addresses []: GrzQ4vW3UviEDKN7aHGroayoJC3B87ovcSofyt2Q48KG,56NYkGD9TCijuYgfeiHTbMN9sqcr9uH2CeV1GnSCy4Xn
 Program ID: 9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV
@@ -416,22 +648,25 @@ Mint Authority PDA: BxW9j6D5UCdMCAwGXYBmuvGZZw8oiMoLkZT29rpMrzp2
 Freeze Authority PDA: 4cpL9meEt6hPuG2SBbDr4jUxXDtaGTVqm7pxzdTd8iZV
 Transaction: 3fU2zPujqqjfXD4bG2hjxSEFvvpYQMzZFRAvBkbt8tzce3H6q8NXXW6FBtJYmDQgFLGCLWHYxU4eJCqenBpqyzJF
 Done in 3.10s.
+
 ```
 
 ### Option `6` — Initialize Stake Program
 
-Run this after the stake program's first Squads-executed deployment. Configures the unbonding period, administrators, and vault PDAs.
+Run this after the stake program's first Squads-executed deployment. Configures administrators and the core stake PDAs.
+
+> **After initialization**, also call `initialize_price_config` (via a Squads transaction proposal, since the upgrade authority is the Squads vault PDA) and then `verify_price` (directly by a rewards administrator) with a fresh Chainlink-signed report before any user deposit or redeem can succeed. See [Post-Upgrade Initialization](#post-upgrade-initialization) above.
 
 ```
-Enter Unbonding Period (in seconds) []: 300
+
 Program ID: 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY
 Vault (accepted token): EcqKZtgqAdtxjACxinNUrKUXJVuVARwc1YCFNQUGPz6
 Mint (token to be minted): 6vTKjkQ5srGZPyfjKf3nRa97Lf9hQn6Yx7Gs6SB8y7Ht
-Unbonding Period (seconds): 300
 Config PDA: Bdjt3yVjegtwfXH4qzSUCMvT1avMfzKzrUXf4ZV8jVR2
 Vault Authority PDA: fByzStfcJmRWnmk7ySxcW7JyPLhzVnQawVtwnknrHRg
 Transaction: 3SJbVXBpGRCSboKRy5mWAV9Qpdc7nmJYCfTdrQRxG6i14f5MV7pGKuaySH65UYa615zrgV3EKYSseL59eenfVjGZ
 Done in 3.09s.
+
 ```
 
 ### Option `7` — Set Mint Program Mint and Freeze Authorities
@@ -439,11 +674,13 @@ Done in 3.09s.
 Transfers the mint and freeze authority of the wYLDS token to the program PDAs. Run once after initialization so that only the on-chain program can mint or freeze.
 
 ```
+
 Setting Mint Program mint authority to BxW9j6D5UCdMCAwGXYBmuvGZZw8oiMoLkZT29rpMrzp2
 Signature: JLWN8kuypcM8gEAvnvQBQvKPsLFP8URec97dJMYes8myHt3qvCtYZMMNVbaDBSYaXnxY2K32gwmmEmrfeirqYAm
 
 Setting Mint Program freeze authority to 4cpL9meEt6hPuG2SBbDr4jUxXDtaGTVqm7pxzdTd8iZV
 Signature: q8ckEeRm6GcWJbCfEV3DTW4hVDiarbxM1rV8HdWqyVojVeQ7b9A2HoBcjgT7ZsY2djfeNVEgyNyKBTuEg6yJ6SU
+
 ```
 
 ### Option `8` — Set Stake Program Mint and Freeze Authorities
@@ -451,124 +688,14 @@ Signature: q8ckEeRm6GcWJbCfEV3DTW4hVDiarbxM1rV8HdWqyVojVeQ7b9A2HoBcjgT7ZsY2djfeN
 Transfers the mint and freeze authority of the PRIME token to the stake program PDAs.
 
 ```
+
 Setting Stake Program mint authority to HyKvZbsURg9gd2zkfzjdLkGYhV7uLymzfwkbwa1kWhwa
 Signature: 3ME5sE2EJT41GjmUWrSZsE6tspdDd7x7GjrzPTZ5WaD62shJSGSLLMv9gEYPzq6YCcRHMEgH9xmx2Ks6rqTiG4kw
 
 Setting Freeze Authority to DMqBGKYzHDLbmj3XgjDHoQNghTASiyAdwH7UqY985Pib
 Signature: Nchp5Tdd5L8gPu1xheqTAjHP9LoaZYjwQw2D8D5dE89eVna8Rqrp18KvmtCTvfy5ZwRmaxbHzaxYDRgxw8xr1oa
+
 ```
-
----
-
-## GitHub Release
-
-The `.github/workflows/release.yml` workflow triggers when a version tag is pushed. It builds both programs, computes SHA-256 checksums, and publishes a GitHub Release containing the `.so` artifacts and a `checksums.txt` file.
-
-### Create a Release
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-The release will contain:
-
-| File | Description |
-|------|-------------|
-| `vault_mint.so` | Compiled vault-mint program binary |
-| `vault_stake.so` | Compiled vault-stake program binary |
-| `checksums.txt` | SHA-256 of each `.so` |
-
-### Verify a Buffer Before Approving in Squads
-
-Before approving a Squads upgrade proposal, confirm the buffer on-chain was built from the tagged release:
-
-```bash
-# Download the .so from the GitHub release and hash it locally
-shasum -a 256 vault_mint.so
-
-# Compare against the hash printed by deploy.sh when the buffer was written,
-# and against checksums.txt attached to the release.
-# All three must match before approving the proposal.
-```
-
-Any discrepancy means the buffer was **not** built from the tagged release and the upgrade should be rejected.
-
-### Mint Program Token and Token Accounts
-
-The program requires two tokens and one token account to operate. The tokens can be any SPL token, but typically the vault token is a stablecoin like USDC, and the mint token is a custom token that represents a claim on the vault tokens. There are token accounts for both the user and the program to hold the tokens.
-
-To make it easier to understand the tokens in play, here's a sequence diagram on how the tokens interact.
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Program
-    participant VaultAccount as Vault Token Account
-    participant Offchain as Off-Chain Yield Generation
-
-    User->>Program: Deposit Vault Tokens (e.g. USDC)
-    Program->>VaultAccount: Transfer Vault Tokens to Vault Token Account
-    Program->>User: Mint Tokens (e.g. wYLDS)
-    User->>Program: Redeem
-    activate Program
-    Program->>Program: Verify No Redeems in Progress
-    Program->>Program: Create Redeem Request Ticket
-    Program-->>Offchain: Dispatch Redeem Request to Off-Chain
-    deactivate Program
-    activate Offchain
-    Offchain->>Offchain: Fund Redeem from External Liquidity
-    Offchain->>Offchain: Move USDC to Redeem Vault Token Account
-    Offchain-->>Program: Complete Redeem Request
-    deactivate Offchain
-    Program->>User: Transfer Vault Tokens (e.g. USDC) from Redeem Vault Token Account
-    Program->>User: Burn Mint Tokens (e.g. wYLDS)
-```
-
-### Mint Program Accounts in Play
-
-| Token/Account Type   | Symbol  | Description                                                                                                                                                                                                                                        | Mint Authority                                                                                                                       | Freeze Authority            |
-|----------------------|---------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------|
-| Vault Token          | e.g. USDC   | The token the user deposits to receive the minted token                                                                                                                                                                                            | External vault token mint authority                                                                                                  | External vault token freeze authority |
-| Mint Token           | e.g. wYLDS   | The token that is minted when the user deposits vault tokens                                                                                                                                                                                       | Your Solana Wallet initially, then Program Derived Address (PDA) of the program                                                      | Your Solana Wallet initially, then Program Derived Address (PDA) of the program |
-| Vault Token Account  | N/A     | The token account that will hold the vaulted tokens when users deposit them in exchange for mint tokens                                                                                                                                            | This tokena account authority is NOT the program to allow the account holder to utilize the vaulted token for off-chain investments. | N/A |
-| Redeem Token Account | N/A     | The token account that will hold vaulted tokens (USDC) when users request a redeem. Once the off-chain entity approves the redeem this account is funded and the program transfers the vault to the user on authority of a rewards administrator.  | N/A                                                                                                                                  | N/A |
-
-### Staking Program Token and Token Accounts
-
-The program requires two tokens to operate. The tokens can be any SPL token, but typically the vault token is a stablecoin like wYLDS, and the mint token is a custom token that represents a claim on the vault tokens. There are token accounts for both the user and the program to hold the tokens.
-
-To make it easier to understand the tokens in play, here's a sequence diagram on how the tokens interact.
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Program
-    participant VaultAccount as Vault Token Account
-    
-    User->>Program: Deposit Vault Mint Token (wYLDS)
-    Program->>VaultAccount: Transfer Vault Mint (wYLDS) to Vault Token Account
-    Program->>User: Mint the Mint Token (PRIME)
-    User->>Program: Unbond
-    activate Program
-    Program->>Program: Create Unbonding Ticket
-    Program->>Program: Start Unbonding Period Ticket Timer
-    deactivate Program
-    User->>Program: Redeem after Unbonding Period
-    activate Program
-    Program->>Program: Burn PRIME
-    Program->>Program: Remove Unbonding Ticket
-    Program->>User: Transfer Vault Token (wYLDS) from Vault Token Account
-    deactivate Program
-```
-
-### Staking Program Accounts in Play
-
-| Token/Account Type  | Symbol  | Description                                                  | Mint Authority                                                                                        | Freeze Authority            |
-|---------------------|---------|--------------------------------------------------------------|-------------------------------------------------------------------------------------------------------|---------------------------------------|
-| Vault Mint          | wYLDS   | The token the user deposits to receive the minted token (PRIME) | Your Solana Wallet (e.g. hastra-devnet-id.json) initially, then Program Derived Address (PDA) of the program | Your Solana Wallet (e.g. hastra-devnet-id.json) initially, then Program Derived Address (PDA) of the program |
-| Mint Token          | PRIME   | The token that is minted when the user deposits the vault token (wYLDS) | Your Solana Wallet (e.g. hastra-devnet-id.json) initially, then Program Derived Address (PDA) of the program  | Your Solana Wallet (e.g. hastra-devnet-id.json) initially, then Program Derived Address (PDA) of the program |
-| Vault Token Account | N/A     | The token account that will hold the vaulted tokens (e.g. wYLDS) when users deposit them in exchange for the minted token (e.g. PRIME). | Program Derived Address (PDA) of the program                                                          | N/A |
 
 ## Freeze and Thaw
 
@@ -631,6 +758,7 @@ $ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
 ```
 
 ### Complete Redeem
+
 This is run by a rewards administrator to complete the redeem request once the off-chain entity has funded the redeem vault.
 
 ```bash
@@ -638,30 +766,42 @@ $ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
     ANCHOR_WALLET=~/.config/solana/hastra-devnet-id.json
     yarn run ts-node scripts/complete_redeem.ts \
     --user <USER_PUBLIC_KEY_WHO_REQUESTED_REDEEM> \
+    --expected_amount <RAW_AMOUNT_THAT_WAS_APPROVED> \
     --mint AVpS6aTBQyCFBA4jymYRWqDyL7ipurn24PZVdjbbWT3X
 ```
 
+`--expected_amount` must come from the approval record, not from re-reading the request: the program rejects with `RedemptionAmountMismatch` if it does not match the amount recorded on-chain. This is what keeps a request the user replaced after approval from being settled by an already-signed completion.
+
 ## Testing
 
-The project includes a suite of tests for both the mint and staking programs. To run the tests, use the following command:
+Integration tests live under `tests/` (`vault-mint.test.ts`, `vault-stake-auto.test.ts`, `vault-stake.test.ts`, etc.). `Anchor.toml` runs them with:
 
-Start a local validator separately:
 ```bash
-$ solana-test-validator --reset
+anchor test
 ```
-then run:
+
+That starts a temporary local validator, deploys the workspace programs, and executes `yarn run ts-mocha … tests/**/*.ts` (see `[scripts] test`).
+
+To attach to a validator you already started:
+
 ```bash
-$ anchor test --skip-local-validator
+solana-test-validator --reset
+# another terminal:
+anchor test --skip-local-validator
 ```
+
+Tests run in **lexical file order**. `vault-mint.test.ts` exercises **vault-stake-auto** `publish_rewards` before `vault-stake-auto.test.ts`, so both suites share validator state; reward cooldown and related assertions account for that ordering.
 
 ## Hastra Solana Vault - Local Development Setup
 
 **Start Local Validator**
+
 ```bash
 $ solana-test-validator --reset
 ```
 
 **Set Solana Configs**
+
 > You must generate the solana keypair first using `solana-keygen new --no-passphrase --outfile ~/.config/solana/hastra-localnet-id.json`
 
 ```bash
@@ -669,15 +809,17 @@ $ solana-keygen new --no-passphrase --outfile ~/.config/solana/hastra-localnet-i
 $ solana config set --url l
 $ solana config set --keypair ~/.config/solana/hastra-localnet-id.json
 $ solana airdrop 1000
-````
+```
 
 **Build and Deploy Programs**
+
 ```bash
 $ anchor build
 $ anchor deploy
 ```
 
 **Initialize Programs and Accounts**
+
 ```bash
 $ ANCHOR_PROVIDER_URL=http://localhost:8899 \
   ANCHOR_WALLET=~/.config/solana/hastra-localnet-id.json \
@@ -693,6 +835,89 @@ After running `yarn validator:init`, you'll find:
 
 These have all the values needed for the FE and BE services.
 
+---
+
+## CI and build artifacts
+
+| Workflow | When | Output |
+| -------- | ---- | ------ |
+| `program-ci.yml` | Pull requests, pushes to `main`, version tags, and manual runs | Tests plus identical [solana-verify](https://solana.com/docs/programs/verified-builds) binaries, shared IDLs/types, and `checksums.txt` |
+| `program-ci.yml` release job | Version tags matching `v*` | Draft GitHub Release created from the verified-build artifact without rebuilding |
+
+Each trigger builds verified binaries under `programs/`, IDLs under `idl/`, and TypeScript types under `client/`. Non-PR runs also export Squads verification PDA files under `verify/` (`pda-tx-*` full transaction + `pda-msg-*` message-only for Transaction Builder). The test and verified-build jobs use separate checkouts so ephemeral test key synchronization cannot alter reproducible builds.
+
+Squads v4 settings are in `.github/verify-config.env`:
+
+| Cluster | Vault PDA (upgrade authority / verify `--uploader`) | Multisig (proposals) | Squads program |
+| ------- | --------------------------------------------------- | -------------------- | -------------- |
+| Devnet | `FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv` | — | — |
+| Mainnet | `8fDTne6mBYfQXYHtsFWrBvrxUFqqXrFcJ83ZQwUBfmSD` | `FCdUkkK7YcsyW24H1Sjba1jgK53nuMMqqjqaHYAoSgJm` | `SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf` |
+
+---
+
+## GitHub Release
+
+The release job in `.github/workflows/program-ci.yml` runs on version tags. It downloads the exact artifact produced by the verified-build job and publishes a draft GitHub Release without rebuilding.
+
+> This section assumes you have set up a Squads vault and have configured the `vault_mint` and `vault_stake` programs to use it. See [Post-Upgrade Initialization](#post-upgrade-initialization) above.
+
+### Create a Release
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Artifact layout (CI zip preserves directories; GitHub Release assets use the same basenames):
+
+```text
+programs/   vault_mint.so, vault_stake_prime.so, vault_stake_auto.so, vault_stake_smb.so
+idl/        vault_mint.json, vault_stake.json
+client/     vault_mint.ts, vault_stake.ts
+verify/     pda-tx-*.txt (full tx) + pda-msg-*.txt (Squads import)
+checksums.txt
+```
+
+| Path | Description |
+| ---- | ----------- |
+| `programs/vault_mint.so` | Verifiable vault-mint program binary |
+| `programs/vault_stake_prime.so` | Verifiable vault-stake PRIME program binary |
+| `programs/vault_stake_auto.so` | Verifiable vault-stake AUTO program binary |
+| `programs/vault_stake_smb.so` | Verifiable vault-stake SMB program binary |
+| `verify/pda-msg-*-vault_*.txt` | Message-only base58 for Squads Transaction Builder |
+| `verify/pda-tx-*-vault_*.txt` | Full transaction base58 from `solana-verify export-pda-tx` |
+| `idl/vault_mint.json` | Anchor IDL for vault-mint |
+| `idl/vault_stake.json` | Anchor IDL for vault-stake |
+| `client/vault_mint.ts` | TypeScript types from vault-mint IDL |
+| `client/vault_stake.ts` | TypeScript types from vault-stake IDL |
+| `checksums.txt` | SHA-256 of all release artifacts |
+
+
+### Deploy from release artifacts
+
+1. Download the release assets (or main-branch CI artifact for a pre-release soak).
+2. In `scripts/deploy.sh`, choose **Set verified .so directory** and point at the artifact root (it resolves `programs/`) or directly at `programs/`.
+3. **Write buffers** → create Squads program upgrade proposals.
+4. After upgrade executes, import the **cluster-matching** `verify/pda-msg-*.txt` files in Squads Transaction Builder ([docs](https://solana.com/docs/programs/verified-builds#how-to-verify-your-program-when-its-controlled-by-a-multisig-like-squads)). Use message-only files on `backup.app.squads.so` / `app.squads.so`.
+5. Run `solana-verify remote submit-job` per program with `--uploader` set to that cluster's Squads **vault** PDA.
+
+To regenerate PDA files locally: `./scripts/export_verify_pda_tx.sh both devnet` or `… both mainnet`.  
+To convert an existing `pda-tx-*.txt` into `pda-msg-*.txt`: `./scripts/export_verify_pda_tx.sh to-msg path/to/pda-tx-….txt`.
+
+### Verify a Buffer Before Approving in Squads
+
+Before approving a program upgrade proposal, confirm the buffer SHA-256 matches the release:
+
+```bash
+shasum -a 256 programs/vault_mint.so
+shasum -a 256 programs/vault_stake_prime.so
+shasum -a 256 programs/vault_stake_auto.so
+shasum -a 256 programs/vault_stake_smb.so
+# Compare against checksums.txt and deploy.sh output
+```
+
+Any discrepancy means the buffer was **not** built from the tagged release and the upgrade should be rejected.
+
 ## Converting Upgrade Authority to a Squads Multi Sig
 
 Initially the programs were deployed to devnet and mainnet using a vaulted but single
@@ -705,39 +930,29 @@ This section will be using the Squads UI to set up and manage the Squad.
 
 A devnet Squad was created to manage the **devnet** programs. 
 
-Using a Squad owner account, connect with your Solana wallet to [Devnet Squads](devnet.squads.so). 
+Using a Squad owner account, connect with your Solana wallet to [Devnet Squads](backup.app.squads.so). 
 
-The devnet Squad address is `FftEXgzqaJNm8A6ynAmyfixBpHZtEJNr22q4KvUydByB`
+Devnet Squads v4 addresses:
 
-#### Both Mint and Stake Programs Upgrade Authority Moved to Squad
+| Role | Address |
+|------|---------|
+| Multisig PDA (`--multisig_pda` in proposal scripts) | `xmWqhNJwNL4z4BcDo1Yh7BbStLU7omVafZNmg91y2Vg` |
+| Vault PDA (program upgrade authority, index 0) | `FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv` |
 
-The **vault-mint** program `9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV` upgrade authority was transferred from
-`93cFkHJZR2AqjTJ1rqrAbvLsh5WqtKr6q8jh3LdH8tAq` to the Squad's vault PDA `ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K`
-using: 
+#### Both Mint and Stake Programs Upgrade Authority
 
-```bash
-$ solana program set-upgrade-authority 9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV \
-       --new-upgrade-authority ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K \
-       --skip-new-upgrade-authority-signer-check \
-       --keypair <Current Upgrade Auth Key Pair> \
-       --url devnet
-```
-
-The **vault-stake** program `97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY` upgrade authority was transferred from
-`93cFkHJZR2AqjTJ1rqrAbvLsh5WqtKr6q8jh3LdH8tAq` to the Squad's vault PDA `ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K`
-using: 
+**vault-mint** (`9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV`) and **vault-stake** (`97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY`) use the Squads v4 vault PDA `FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv` as upgrade authority. Verify with:
 
 ```bash
-$ solana program set-upgrade-authority 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY \
-       --new-upgrade-authority ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K \
-       --skip-new-upgrade-authority-signer-check \
-       --keypair <Current Upgrade Auth Key Pair> \
-       --url devnet
+solana program show 9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV --url devnet
+solana program show 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY --url devnet
 ```
 
 ### Creating a Squads Upgrade Request
 
 Steps 1–3 (build, write buffer, transfer buffer authority) are handled by `scripts/deploy.sh`. Run the script and select **Build Programs** then **Write All Buffers**. The script prints the buffer address and SHA-256 hash, and offers to transfer buffer authority to the configured Squads vault automatically.
+
+> The deploy.sh script also contains write buffer logic for the **vault-stake** program and the **vault-mint** program specifically. There is no need to write all buffers if only one program is being upgraded.
 
 If you prefer to run the steps manually:
 
@@ -747,7 +962,7 @@ If you prefer to run the steps manually:
 $ anchor build
 ```
 
-2. Write the program buffer to Solana:
+1. Write the program buffer to Solana:
 
 ```bash
 $ solana program write-buffer target/deploy/vault_stake.so \
@@ -759,30 +974,25 @@ Buffer: 5tWAz76wZXCB3GFzpdswa7E9ZkVP6R9KrsmBZ9sV3fQX
 
 Note the `Buffer` address. Record its SHA-256 and verify it matches the [GitHub release](#github-release) artifact before proceeding.
 
-3. Transfer the buffer address authority to the Squad vault PDA:
+1. Transfer the buffer address authority to the Squad vault PDA:
 
 ```bash
 $ solana program set-buffer-authority 5tWAz76wZXCB3GFzpdswa7E9ZkVP6R9KrsmBZ9sV3fQX \
-  --new-buffer-authority ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K \
+  --new-buffer-authority FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv \
   --keypair <KEY PAIR Used to create Buffer> \
   --url devnet
 
 Account Type: Buffer
-Authority: ATAkatkGWPDNdhLmeqd1PPdG6h7af5kkmivisuqVvX3K
+Authority: FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv
 ```
 
-4. Connect to [Devnet Squads](devnet.squads.so) with Squad owner and
-open the `FftEXgzqaJNm8A6ynAmyfixBpHZtEJNr22q4KvUydByB` Squad.
-
-5. Select **Developer | Programs** from the Squads menu.
-
-6. Click the Vault Stake program `97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY`
-
-7. Click **Add Upgrade** and fill in the upgrade name, the buffer address from Step 2 and click Next.
-   - You can use your address in the Buffer Refund to get the buffer rent back.
-
-8. The Upgrade will be enqueued. Select the Upgrade and click the **Upgrade** button and enter
-   a Description then click **Initiate Upgrade**.
+1. Connect to [Devnet Squads](backup.app.squads.so) with Squad owner and open the squad with multisig `xmWqhNJwNL4z4BcDo1Yh7BbStLU7omVafZNmg91y2Vg`.
+2. Select **Developer | Programs** from the Squads menu.
+3. Click the Vault Stake program `97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY`
+4. Click **Add Upgrade** and fill in the upgrade name, the buffer address from Step 2 and click Next.
+  - You can use your address in the Buffer Refund to get the buffer rent back.
+5. The Upgrade will be enqueued. Select the Upgrade and click the **Upgrade** button and enter
+  a Description then click **Initiate Upgrade**.
 
 This will enqueue the upgrade in the Squads **Transactions** list. From there other Squad members must approve the upgrade.
 
@@ -792,20 +1002,233 @@ The next section describes how other Squad owners approve.
 
 In this step, the other Squads owner(s) approve the upgrade.
 
-1. Connect your wallet to [Devnet Squads](devnet.squads.so) and select the `FftEXgzqaJNm8A6ynAmyfixBpHZtEJNr22q4KvUydByB` Squad.
-
+1. Connect your wallet to [Devnet Squads](backup.app.squads.so) and select the squad with multisig `xmWqhNJwNL4z4BcDo1Yh7BbStLU7omVafZNmg91y2Vg`.
 2. Navigate to the **Transactions** page.
-
-3. In the Results card, Click the **Approve** button to just approve or also select _Approve and execte_ to approve the 
-   upgrade and execute it. Note that you will need SOL here.
+3. In the Results card, Click the **Approve** button to just approve or also select *Approve and execte* to approve the
+  upgrade and execute it. Note that you will need SOL here.
 
 Once the Squad threshold is met, the **Execute** button becomes available in the Results card. Click it to execute the
 upgrade.
 
-Squads shows the transaction signature that contains the upgrade. For example: https://explorer.solana.com/tx/65f4dUN86TDLW5PmENhssfRAL3Fk7Gv5c2XNt6wsF2gx74xBLCtJhhRn2V9Zh6RimGvosDyXkrYshB6NyHaBdDLq?cluster=devnet
+Squads shows the transaction signature that contains the upgrade. For example: [https://explorer.solana.com/tx/65f4dUN86TDLW5PmENhssfRAL3Fk7Gv5c2XNt6wsF2gx74xBLCtJhhRn2V9Zh6RimGvosDyXkrYshB6NyHaBdDLq?cluster=devnet](https://explorer.solana.com/tx/65f4dUN86TDLW5PmENhssfRAL3Fk7Gv5c2XNt6wsF2gx74xBLCtJhhRn2V9Zh6RimGvosDyXkrYshB6NyHaBdDLq?cluster=devnet)
 
+### Troubleshooting: "account data too small for instruction"
 
+If the upgrade proposal fails simulation with:
 
+```
+Program logged: "Instruction: ExecuteTransaction"
+Program invoked: BPF Upgradeable Loader
+  ProgramData account not large enough
+  Program returned error: "account data too small for instruction"
+```
 
+the new binary (in the buffer) is larger than the current on-chain `programData` account. The BPF loader's `Upgrade` instruction writes into the existing account without resizing it, so the account mu--st be pre-extended to fit the new binary.
 
+**Why `solana program extend` fails here:** the CLI refuses to run unless the `--keypair` you pass is the program's upgrade authority. Since the upgrade authority is the Squads vault PDA (`FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv`), no keypair on disk can satisfy that check. The on-chain `ExtendProgram` instruction only requires a payer, however, so the CLI check can be bypassed by constructing the instruction directly.
 
+**Fix:** run `scripts/extend_program.ts` with any funded wallet as the payer:
+
+```bash
+$ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
+    ANCHOR_WALLET=~/.config/solana/id.json \
+    yarn ts-node scripts/extend_program.ts \
+    --program_id 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY \
+    --additional_bytes <DIFF>
+```
+
+`<DIFF>` is the difference between the buffer data length and the current `programData` data length:
+
+```bash
+# Check current programData size
+$ solana program show 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY --url devnet
+
+# Check buffer size
+$ solana program show <BUFFER_ADDRESS> --url devnet
+
+# additional_bytes = buffer "Data Length" − programData "Data Length"
+```
+
+After the extension lands, re-simulate the upgrade proposal in Squads — it should pass.
+
+### Chain Link Pricing Specific Post-Upgrade Initialization
+
+After upgrading the program to use the **new Chain Link pricing**, two instructions must be called **before** allowing user transactions:
+
+1. `**initialize_price_config**` — creates the `StakePriceConfig` PDA and sets Chainlink parameters
+2. `**verify_price**` — seeds the initial price by submitting a fresh signed Chainlink report
+
+These two instructions have different authority requirements and therefore different execution paths.
+
+#### `initialize_price_config` — via Squads transaction proposal
+
+`initialize_price_config` calls `validate_program_update_authority`, which requires that the transaction signer **exactly matches** the program's on-chain upgrade authority. Since the upgrade authority is the Squads vault PDA (`FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv` on devnet), this instruction cannot be submitted by a local keypair — it must be submitted as a Squads v4 vault transaction proposal so the vault PDA co-signs the inner message when the proposal executes.
+
+> `initialize_price_config` creates the `StakePriceConfig` account, so the Squads vault PDA is also the rent payer. Ensure the vault has enough SOL before submitting the proposal.
+
+Use `scripts/vault-stake/initialize_price_config_proposal.ts`. The script builds the Anchor instruction, sets the vault PDA as `signer`, wraps it in an inner `TransactionMessage`, and submits `vaultTransactionCreate` + `proposalCreate` in one transaction (same pattern as `scripts/create-memo-proposal.ts`).
+
+```bash
+ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
+ANCHOR_WALLET=~/.config/solana/squad-member.json \
+yarn ts-node scripts/vault-stake/initialize_price_config_proposal.ts \
+  --multisig_pda xmWqhNJwNL4z4BcDo1Yh7BbStLU7omVafZNmg91y2Vg \
+  --chainlink_program <CHAINLINK_VERIFIER_PROGRAM_ID> \
+  --chainlink_access_controller <ACCESS_CONTROLLER_ACCOUNT> \
+  --feed_id <64_CHAR_HEX_FEED_ID> \
+  --price_scale 1000000000000000000 \
+  --price_max_staleness 300
+```
+
+The script prints the derived vault PDA — verify it matches the program's on-chain upgrade authority before approving. Squad members approve at [backup.app.squads.so](https://backup.app.squads.so) (mainnet: [app.squads.so](https://app.squads.so)).
+
+#### `verify_price` — called directly by a rewards administrator
+
+`verify_price` requires only that the signer is a member of the `rewards_administrators` list in `StakeConfig`. This can be called directly from a CLI script using a rewards admin keypair — no Squads involvement needed.
+
+```bash
+$ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
+    ANCHOR_WALLET=~/.config/solana/rewards-admin.json \
+    yarn run ts-node scripts/vault-stake/verify_price.ts \
+    --signed_report <HEX_ENCODED_CHAINLINK_REPORT>
+```
+
+`--signed_report` is the hex-encoded signed report from the Chainlink Data Streams API.
+
+For example, to verify a Chainlink report with ID `0x000700f43b35146a1cb16373ac6225ad597535e928e6dc4d179c3b4225f2b6d3` on devnet:
+
+```bash
+$ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \                                    [13:35:26]
+ANCHOR_WALLET=~/temp/freeze_admin1.json \
+yarn ts-node scripts/vault-stake/verify_price.ts \
+  --signed_report 0x00090d9e8d96765a0c49e03a6ae05c82e8f8de70cf179baa632f18313e54bd690000000000000000000000000000000000000000000000000000000004eec334000000000000000000000000000000000000000000000000000000030000000100000000000000000000000000000000000000000000000000000000000000e000000000000000000000000000000000000000000000000000000000000001e00000000000000000000000000000000000000000000000000000000000000240000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e0000700f43b35146a1cb16373ac6225ad597535e928e6dc4d179c3b4225f2b6d30000000000000000000000000000000000000000000000000000000069b3155b0000000000000000000000000000000000000000000000000000000069b3155b00000000000000000000000000000000000000000000000000008cd5ff706ac1000000000000000000000000000000000000000000000000007db5ec7a54dd3d0000000000000000000000000000000000000000000000000000000069daa25b0000000000000000000000000000000000000000000000000de0b6b3b55833000000000000000000000000000000000000000000000000000000000000000002a335606baefcffe1bffac7d2495d1842b0d3b1713c6ad3cd64cd40374d6c11b3e259bd037faac0556607c884c64f726f66980dacd98b3fc3c19fc3fd65dfad93000000000000000000000000000000000000000000000000000000000000000206606e6ef5efcccfd1c4fdbd21aec627474d2eaa73648ebc48218e47801a4ac16413503e5abc306604921d10e8bde4efdced7c4784f0f34d9f03d5331a53c614
+ 
+ === verify_price ===
+
+Program ID:                 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY
+Signer (rewards admin):     GrzQ4vW3UviEDKN7aHGroayoJC3B87ovcSofyt2Q48KG
+Stake Config PDA:           4qZvMr1THcZzHFicLAv9MtAi7cBGzQ7EzaY4K4cyYF18
+Stake Price Config PDA:     Ev92L9D2CsPczeKHF3UWybQSweQCG4NRfexwJfVwyqsn
+Chainlink Program:          Gt9S41PtjR58CbG9JhJ3J6vxesqrNAswbWYbLNTMZA3c
+Chainlink Verifier:         HJR45sRiFdGncL69HVzRK4HLS2SXcVW3KeTPkp2aFmWC
+Access Controller:          2k3DsgwBoqrnvXKVvd7jX7aptNxdcRBdcd5HkYsGgbrb
+Chainlink Config Account:   5xhvdZ3Spm5PctCZLBQqTDZmjxhnyLprmLBk2Df51b2H
+Signed report:              672 bytes (uncompressed), 308 bytes (compressed)
+Compressed report:          308 bytes (compressed) 0xa0058000090d9e8d96765a0c49e03a6ae05c82e8f8de70cf179baa632f18313e54bd69006a01000c04eec3346a1f001003000000016a2000010100e0010566010000017a200004024082620076010080e0000700f43b35146a1cb16373ac6225ad597535e928e6dc4d179c3b4225f2b6d36e3f000c69b3155be62000148cd5ff706ac1624000187db5ec7a54dd3d6220001400000069daa2628000180de0b6b3b5583301276e0100f04002a335606baefcffe1bffac7d2495d1842b0d3b1713c6ad3cd64cd40374d6c11b3e259bd037faac0556607c884c64f726f66980dacd98b3fc3c19fc3fd65dfad936e5d00f0430000000206606e6ef5efcccfd1c4fdbd21aec627474d2eaa73648ebc48218e47801a4ac16413503e5abc306604921d10e8bde4efdced7c4784f0f34d9f03d5331a53c614
+
+✅ verify_price succeeded
+   Transaction: 4L3hGAUQK19drPTd52Qc32tAndGRuviSvLNtQpeLqXNtDz63P1axHy1ThfvDQPGoukuv24KVf56r26utZBGgnNN1
+
+   StakePriceConfig.price and price_timestamp have been updated.
+✨  Done in 4.92s.
+```
+
+#### `update_price_config` — via Squads transaction proposal
+
+`update_price_config` has the same upgrade-authority requirement as `initialize_price_config` and must also go through a Squads vault transaction proposal. It modifies the Chainlink addresses, feed ID, price scale, or staleness window on the existing `StakePriceConfig` account. Changing any field other than staleness clears the stored price and timestamp (deposits/redeems halt until the next `verify_price`); a staleness-only update leaves them intact. No new account is created, so no rent is required from the vault.
+
+Use `scripts/vault-stake/update_price_config_proposal.ts` to build and submit the proposal. The pattern is identical to `initialize_price_config_proposal.ts` except it calls `.updatePriceConfig()` and omits `system_program` from the accounts.
+
+```bash
+$ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
+    ANCHOR_WALLET=~/.config/solana/squad-member.json \
+    yarn run ts-node scripts/vault-stake/update_price_config_proposal.ts \
+    --multisig_pda <SQUADS_MULTISIG_PDA> \
+    --chainlink_program <CHAINLINK_VERIFIER_PROGRAM_ID> \
+    --chainlink_verifier_account <VERIFIER_STATE_ACCOUNT> \
+    --chainlink_access_controller <ACCESS_CONTROLLER_ACCOUNT> \
+    --feed_id <64_CHAR_HEX_FEED_ID> \
+    --price_scale 1000000000000000000 \
+    --price_max_staleness 300
+```
+
+The script prints the proposal index. Squad members approve and execute at [backup.app.squads.so](https://backup.app.squads.so) or [app.squads.so](https://app.squads.so). If the feed ID changed, call `verify_price` after execution to refresh the stored price.
+
+Devnet example:
+
+```bash
+ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
+ANCHOR_WALLET=~/.config/solana/squad-member.json \
+yarn ts-node scripts/vault-stake/update_price_config_proposal.ts \
+  --multisig_pda xmWqhNJwNL4z4BcDo1Yh7BbStLU7omVafZNmg91y2Vg \
+  --chainlink_program <CHAINLINK_VERIFIER_PROGRAM_ID> \
+  --chainlink_access_controller <ACCESS_CONTROLLER_ACCOUNT> \
+  --feed_id <64_CHAR_HEX_FEED_ID> \
+  --price_scale 1000000000000000000 \
+  --price_max_staleness 7200
+```
+
+---
+
+# Quick Deploy Steps
+
+This section shows the steps to upgrade from a built `*.so` without using the full `deploy.sh` script. The same pattern applies to **vault-mint**, **vault-stake**, and **vault-stake-auto** (replace program id and buffer names accordingly). The example below uses **vault-stake** (PRIME).
+
+> This section assumes that the programs have been deployed and that the Squads squad is set up.
+
+## 1. Build the programs
+
+```bash
+$ anchor build
+```
+
+This will build the programs and place them in the `target/deploy` directory.
+
+ *Or*, copy the *.so files from [a GitHub release](https://github.com/provenance-io/hastra-sol-vault/releases)
+
+## 2. Deploy the program(s)
+
+Take the *.so file (from the `target/deploy` directory or a GitHub release).
+
+```bash
+$ solana program write-buffer vault_stake.so \
+         --keypair ~/.config/solana/<YOUR KEY>.json \
+         --url devnet
+         
+Buffer: CV926m5MZU6XPBqhDLs4zf4Dh9zN4dNTXdsjUNZPGGfK         
+```
+
+This wrote the program to the buffer `CV926m5MZU6XPBqhDLs4zf4Dh9zN4dNTXdsjUNZPGGfK`. This will be different for each program upgrade.
+
+## 3. Upgrade the program(s) via Squads
+
+- Connect to the Squads app with your wallet at `app.squads.so` (mainnet) or `backup.app.squads.so` (devnet) and create a new proposal.
+- From the Squads dashboard navigate to `Developers | Programs` and select the Vault Stake program (i.e. `97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY`).
+- Click the `Add Upgrade` button.
+  - Name the upgrade
+  - Enter the buffer address `CV926m5MZU6XPBqhDLs4zf4Dh9zN4dNTXdsjUNZPGGfK`
+  - Enter where the SOL rent for the buffer is returned. Use your `<YOUR KEY>` public key used to write the buffer in Step 2.
+- Click the `Next` button and sign the proposal with your wallet.
+- You will be prompted to change the write buffer authority to the Squads multisig. Squads will show you command line instructions to do this like:
+
+```bash
+$ solana program set-buffer-authority CV926m5MZU6XPBqhDLs4zf4Dh9zN4dNTXdsjUNZPGGfK \
+         --keypair ~/.config/solana/<YOUR KEY>.json \
+         --new-buffer-authority FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv \ 
+         --url d
+         
+Account Type: Buffer
+Authority: FTK6ckiPWbe1jAiRtcPCz9sCrvCV6Y6hAJhAU5b9S3nv 
+```
+
+- Go back to the Squads dashboard and click the `Verify authority` to ensure the buffer authority is correct.
+- Now, click on your new upgrade in the `Upgrades` list. Confirm the upgrade by clicking the `Upgrade` button in the dialog presented.
+- Then, click the `Initiate upgrade` button to sign the upgrade proposal with your wallet and kick off voting.
+- Now the rest of the Squads squad members can vote on the proposal. Once approved, click the `Execute` button to sign and upgrade the program.
+
+## Initialize Chain Link Pricing
+
+> This section assumes that the Chainlink program has been deployed and that the Squads squad is set up. This only needs to be done once.
+
+- Follow the steps in the previous section to upgrade the program that contains the Chain Link pricing logic.
+- Then, set the Chain Link parameters via `scripts/vault-stake/initialize_price_config_proposal.ts` (see [initialize_price_config](#initialize_price_config--via-squads-transaction-proposal)).
+
+> `multisig_pda` is the Squads multisig account (`xmWqhNJwNL4z4BcDo1Yh7BbStLU7omVafZNmg91y2Vg` on devnet) and can be found on the Squads dashboard.
+
+This will create a new proposal that must be voted on by the Squads squad members following Squads voting and execution steps.
+
+[Refer to the Chain Link Pricing Specific Post-Upgrade Initialization section for detailed information](#chain-link-pricing-specific-post-upgrade-initialization). You will need the correct feed ID and Chain Link program ID and Chainlink Access Controller for the network you are deploying to. 
+
+To change the Chain Link configuration, refer to the [Update Price Config section](#update_price_config--via-squads-transaction-proposal).
+
+To publish a Chain Link price report, refer to the [Verify Price section](#verify_price--called-directly-by-a-rewards-administrator).

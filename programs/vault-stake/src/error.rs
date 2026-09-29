@@ -56,5 +56,44 @@ pub enum CustomErrorCode {
     Overflow = 33,
     #[msg("Invalid vault token account")]
     InvalidVaultTokenAccount = 34,
-    
+    #[msg("Price has not been initialized; call verify_price first")]
+    PriceNotInitialized = 35,
+    #[msg("Stored price is too stale for deposit or redeem")]
+    PriceTooStale = 36,
+    #[msg("Chainlink report is outside its valid time window")]
+    ReportStale = 37,
+    #[msg("Report feed ID does not match configured feed ID")]
+    InvalidFeedId = 38,
+    #[msg("Chainlink verifier returned no report data")]
+    ChainlinkVerifyFailed = 39,
+    #[msg("Chainlink report valid_from_timestamp is ahead of current time - retry later")]
+    FutureReportValidFromTimestamp = 40,
+    #[msg("Reward amount exceeds maximum allowed delta (max_reward_bps of total assets)")]
+    RewardExceedsMaxDelta = 41,
+    #[msg("Invalid max reward BPS: must be greater than 0 and at most 10_000")]
+    InvalidMaxRewardBps = 42,
+    #[msg("Reward cooldown period has not elapsed")]
+    RewardCooldownNotElapsed = 43,
+    #[msg("Reward amount exceeds maximum allowed period cap")]
+    ExceedsPeriodRewardCap = 44,
+    #[msg("Reward amount exceeds remaining lifetime cap")]
+    ExceedsLifetimeRewardCap = 45,
+    #[msg("Invalid reward period: must be greater than 0 seconds")]
+    InvalidRewardPeriodSeconds = 46,
+    #[msg("Invalid max period rewards: must be greater than 0")]
+    InvalidMaxPeriodRewards = 47,
+    #[msg("Invalid max total rewards: must be greater than 0 and not below distributed total")]
+    InvalidMaxTotalRewards = 48,
+    #[msg("Chainlink report has invalid timestamp ordering (expected valid_from <= observations <= expires_at)")]
+    InvalidReportTimestamps = 49,
+    #[msg(
+        "Report observations_timestamp must be strictly greater than the stored price_timestamp"
+    )]
+    ObservationTimestampNotIncreasing = 50,
+    #[msg("Chainlink report observations_timestamp is ahead of current time")]
+    FutureObservationTimestamp = 51,
+    #[msg("Reward publication id must be greater than the last published id")]
+    RewardPublicationIdNotMonotonic = 52,
+    #[msg("Reward publication id gap from last published id exceeds MAX_GAP")]
+    RewardPublicationIdGapTooLarge = 53,
 }

@@ -1,5 +1,35 @@
+import BN from "bn.js";
 import { PublicKey, Connection } from "@solana/web3.js";
 import { getAccount } from "@solana/spl-token";
+
+/** Derives rewards epoch PDAs for a given epoch index. */
+export function deriveRewardsEpochAccounts(programId: PublicKey, index: number) {
+    const indexLe = new BN(index).toArrayLike(Buffer, "le", 8);
+    const [epoch] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch"), indexLe],
+        programId
+    );
+    const [epochClaimed] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch_claimed"), indexLe],
+        programId
+    );
+    const [epochCapsConfig] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch_caps_config")],
+        programId
+    );
+    const [lastRewardsEpoch] = PublicKey.findProgramAddressSync(
+        [Buffer.from("last_rewards_epoch")],
+        programId
+    );
+    return { epoch, epochClaimed, epochCapsConfig, lastRewardsEpoch };
+}
+
+/** Default `StakeRewardConfig` numeric fields (matches on-chain `state::StakeRewardConfig`). */
+export const STAKE_REWARD_CONFIG_DEFAULTS = {
+    maxPeriodRewards: new BN("1000000000000"),
+    rewardPeriodSeconds: new BN(3540),
+    maxTotalRewards: new BN("10000000000000"),
+};
 
 export async function getTokenBalance(
     connection: Connection,
@@ -12,3 +42,11 @@ export async function getTokenBalance(
 export function sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
+
+/**
+ * After shortening `reward_period_seconds` for tests, wait long enough that Solana's
+ * `Clock::unix_timestamp` (whole seconds) advances past `last_reward_distributed_at + period`.
+ * Otherwise back-to-back `publish_rewards` can see the same unix second and hit
+ * `RewardCooldownNotElapsed` even after a 1s nominal cooldown.
+ */
+export const REWARD_COOLDOWN_TEST_SLEEP_MS = 2100;

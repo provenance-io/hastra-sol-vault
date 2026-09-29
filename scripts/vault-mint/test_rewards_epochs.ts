@@ -85,17 +85,39 @@ const main = async () => {
         [Buffer.from("config")],
         program.programId
     );
-    const [epochPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("epoch"), new anchor.BN(epochIndex).toArrayLike(Buffer, "le", 8)],
+    const [epochCapsConfigPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch_caps_config")],
         program.programId
+    );
+    const [lastRewardsEpochPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("last_rewards_epoch")],
+        program.programId
+    );
+    const indexLe = new anchor.BN(epochIndex).toArrayLike(Buffer, "le", 8);
+    const [epochPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch"), indexLe],
+        program.programId
+    );
+    const [epochClaimedPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch_claimed"), indexLe],
+        program.programId
+    );
+    const BPF_LOADER_UPGRADEABLE_ID = new PublicKey("BPFLoaderUpgradeab1e11111111111111111111111");
+    const [programDataPda] = PublicKey.findProgramAddressSync(
+        [program.programId.toBuffer()],
+        BPF_LOADER_UPGRADEABLE_ID
     );
 
     const tx = await program.methods
         .createRewardsEpoch(new anchor.BN(epochIndex), Array.from(root), total)
         .accountsStrict({
             config: configPda,
+            epochCapsConfig: epochCapsConfigPda,
+            lastRewardsEpoch: lastRewardsEpochPda,
             admin: provider.wallet.publicKey,
+            programData: programDataPda,
             epoch: epochPda,
+            epochClaimed: epochClaimedPda,
             systemProgram: anchor.web3.SystemProgram.programId,
         })
         .rpc();

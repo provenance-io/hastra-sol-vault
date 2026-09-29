@@ -5,3 +5,8 @@ target
 node_modules
 .yarn
 /scripts/*vault.history*
+.vscode
+.idea
+*.log
+test-ledger/
+/scripts/.local-validator

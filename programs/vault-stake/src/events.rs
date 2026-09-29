@@ -42,3 +42,67 @@ pub struct RewardsPublished {
     pub totals_last_update_slot: u64,
     pub id: u32,
 }
+
+#[event]
+pub struct PriceVerifiedEvent {
+    pub verifier: Pubkey, // rewards admin who submitted the report
+    pub feed_id: [u8; 32],
+    pub price: i128,
+    pub price_scale: u64,
+    /// Report `observations_timestamp` (staleness anchor for deposit/redeem), not the verify tx time.
+    pub price_timestamp: i64,
+    pub expires_at: u64,
+    pub slot: u64,
+}
+
+#[event]
+pub struct MaxRewardBpsUpdated {
+    pub admin: Pubkey,
+    pub old_bps: u64,
+    pub new_bps: u64,
+    pub stake_config: Pubkey,
+}
+
+#[event]
+pub struct MaxPeriodRewardsUpdated {
+    pub admin: Pubkey,
+    pub old_value: u64,
+    pub new_value: u64,
+    pub stake_config: Pubkey,
+}
+
+#[event]
+pub struct RewardPeriodSecondsUpdated {
+    pub admin: Pubkey,
+    pub old_value: i64,
+    pub new_value: i64,
+    pub stake_config: Pubkey,
+}
+
+#[event]
+pub struct MaxTotalRewardsUpdated {
+    pub admin: Pubkey,
+    pub old_value: u64,
+    pub new_value: u64,
+    pub stake_config: Pubkey,
+}
+
+#[event]
+pub struct LastRewardPublicationInitialized {
+    pub start_id: u32,
+    pub stake_config: Pubkey,
+}
+
+#[event]
+pub struct LastRewardPublicationUpdated {
+    pub old_id: u32,
+    pub new_id: u32,
+    pub stake_config: Pubkey,
+}
+
+#[event]
+pub struct PriceInvalidated {
+    pub verifier: Pubkey,
+    pub feed_id: [u8; 32],
+    pub price_scale: u64,
+}

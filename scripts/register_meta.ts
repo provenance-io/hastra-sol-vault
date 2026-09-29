@@ -10,7 +10,7 @@ import {
 import {
     createV1,
     Creator,
-    fetchMetadata,
+    fetchMetadataFromSeeds,
     TokenStandard,
     updateV1
 } from "@metaplex-foundation/mpl-token-metadata";
@@ -68,8 +68,8 @@ umi.use(signerIdentity(signer));
 
 if(args.update) {
     // Minimal update: change just the URI (and/or name/symbol).
-    // Fetch metadata account
-    fetchMetadata(umi, args.mint).then(metadata => {
+    // Fetch metadata PDA derived from mint (not the mint account itself).
+    fetchMetadataFromSeeds(umi, {mint: publicKey(args.mint)}).then(metadata => {
         const creators: Some<Array<Creator>> | None = metadata.creators ?? null;
         console.dir(creators);
         updateV1(umi, {
@@ -102,7 +102,7 @@ if(args.update) {
     createV1(umi, {
         mint: publicKey(args.mint),
         authority: signer,
-        name: args.ame,
+        name: args.name,
         symbol: args.symbol,
         uri: args.token_meta_url,
         isMutable: true,

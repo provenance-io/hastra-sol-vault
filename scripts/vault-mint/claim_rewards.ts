@@ -57,7 +57,6 @@ const main = async () => {
 
     console.log("Proof:", proof);
     console.log("Root:", tree.getRoot().toString("hex"));
-    // Verify
     const verified = tree.verify(treeProof, leaf, tree.getRoot());
     console.log("Verified:", verified);
 
@@ -69,11 +68,19 @@ const main = async () => {
         [Buffer.from("config")],
         program.programId
     );
+    const indexLe = new anchor.BN(epochIndex).toArrayLike(Buffer, "le", 8);
     const [epochPda] = PublicKey.findProgramAddressSync(
-        [Buffer.from("epoch"), new anchor.BN(epochIndex).toArrayLike(Buffer, "le", 8)],
+        [Buffer.from("epoch"), indexLe],
         program.programId
     );
-    // derive claim record PDA
+    const [epochCapsConfigPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch_caps_config")],
+        program.programId
+    );
+    const [epochClaimedPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("epoch_claimed"), indexLe],
+        program.programId
+    );
     const [claimPda] = PublicKey.findProgramAddressSync(
         [Buffer.from("claim"), epochPda.toBuffer(), provider.wallet.publicKey.toBuffer()],
         program.programId
@@ -85,7 +92,6 @@ const main = async () => {
     );
 
     const mint = new anchor.web3.PublicKey(args.mint);
-    // Calculate the Associated Token Account address
     const tokenAccount = getAssociatedTokenAddressSync(
         mint,
         provider.wallet.publicKey,
@@ -97,6 +103,8 @@ const main = async () => {
             config: configPda,
             user: provider.wallet.publicKey,
             epoch: epochPda,
+            epochCapsConfig: epochCapsConfigPda,
+            epochClaimed: epochClaimedPda,
             claimRecord: claimPda,
             mintAuthority: mintAuthorityPda,
             mint: mint,

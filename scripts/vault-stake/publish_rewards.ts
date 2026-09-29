@@ -65,6 +65,22 @@ const main = async () => {
         program.programId
     );
 
+    const [stakeRewardConfigPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("stake_reward_config"),
+            stakeConfigPda.toBuffer()
+        ],
+        program.programId
+    );
+
+    const [lastRewardPublicationPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("last_reward_publication"),
+            stakeConfigPda.toBuffer()
+        ],
+        program.programId
+    );
+
     const [vaultAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [Buffer.from("vault_authority")],
         program.programId
@@ -94,11 +110,20 @@ const main = async () => {
         stakeProgramId
     );
 
+    const [vaultMintAllowedExternalProgramsPda] = anchor.web3.PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("allowed_external_mint_programs"),
+            mintConfigPda.toBuffer()
+        ],
+        mintProgramId
+    );
+
+    // Addressed by (id, amount); uniqueness of id is enforced by LastRewardPublication.
     const [rewardsRecordPda] = anchor.web3.PublicKey.findProgramAddressSync(
         [
             Buffer.from("reward_record"),
             Buffer.from(new Uint32Array([rewardId]).buffer),
-            Buffer.from(new BigUint64Array([createBigInt(amount.toNumber())]).buffer)
+            Buffer.from(new BigUint64Array([createBigInt(amount.toString())]).buffer)
         ],
         program.programId);
 
@@ -114,6 +139,7 @@ const main = async () => {
     console.log("Mint Config PDA:", mintConfigPda.toBase58());
     console.log("Rewards Mint Authority PDA:", rewardsMintAuthorityPda.toBase58());
     console.log("Vault Authority PDA:", vaultAuthorityPda.toBase58());
+    console.log("Vault Mint Allowed External Programs PDA:", vaultMintAllowedExternalProgramsPda.toBase58());
 
     const tx = await program.methods
         .publishRewards(rewardId, amount)
@@ -123,6 +149,8 @@ const main = async () => {
             mintConfig: mintConfigPda,
             externalMintAuthority: externalMintAuthorityPda,
             mintProgram: new anchor.web3.PublicKey(args.mint_program),
+            thisProgram: stakeProgramId,
+            vaultMintAllowedExternalPrograms: vaultMintAllowedExternalProgramsPda,
             admin: signer,
             rewardsMint: rewardsMint,
             rewardsMintAuthority: rewardsMintAuthorityPda,
@@ -130,6 +158,8 @@ const main = async () => {
             vaultAuthority: vaultAuthorityPda,
             mint: mint,
             rewardRecord: rewardsRecordPda,
+            stakeRewardConfig: stakeRewardConfigPda,
+            lastRewardPublication: lastRewardPublicationPda,
             tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
             systemProgram: anchor.web3.SystemProgram.programId,
         }).rpc();

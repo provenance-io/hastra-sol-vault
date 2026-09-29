@@ -1,7 +1,7 @@
 import yargs from "yargs";
 import {allocationsToMerkleTree, makeLeaf, sha256} from "../cryptolib";
 import {PublicKey} from "@solana/web3.js";
-import {BN} from "@coral-xyz/anchor";
+import BN from "bn.js";
 
 const args = yargs(process.argv.slice(2))
     .option("epoch", {

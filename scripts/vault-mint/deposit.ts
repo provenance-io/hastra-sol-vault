@@ -1,8 +1,8 @@
 import * as anchor from "@coral-xyz/anchor";
-import {Program} from "@coral-xyz/anchor";
+import { Program } from "@coral-xyz/anchor";
 import yargs from "yargs";
-import {VaultMint} from "../../target/types/vault_mint";
-import {getAssociatedTokenAddress,} from "@solana/spl-token";
+import { VaultMint } from "../../target/types/vault_mint";
+import { getAssociatedTokenAddress, } from "@solana/spl-token";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
@@ -59,8 +59,8 @@ const main = async () => {
     const vault = new anchor.web3.PublicKey(args.vault);
     const amount = new anchor.BN(args.amount);
     const vaultTokenAccount = new anchor.web3.PublicKey(args.vault_token_account);
-    const userMintTokenAccount = await getAssociatedTokenAddress(mint,signer)
-    const userVaultTokenAccount = await getAssociatedTokenAddress(vault,signer)
+    const userMintTokenAccount = await getAssociatedTokenAddress(mint, signer)
+    const userVaultTokenAccount = await getAssociatedTokenAddress(vault, signer)
 
     console.log("Mint (token to be minted e.g. wYLDS)", mint.toBase58());
     console.log("Amount:", amount.toString());

@@ -36,6 +36,20 @@ use account_structs::*;
 use anchor_lang::prelude::*;
 use state::ProofNode;
 
+#[cfg(not(feature = "no-entrypoint"))]
+use solana_security_txt::security_txt;
+
+// Embeds stable security-reporting metadata in the deployed program binary.
+#[cfg(not(feature = "no-entrypoint"))]
+security_txt! {
+    name: "Hastra Vault Mint",
+    project_url: "https://hastra.io",
+    contacts: "email:security@provenance.io",
+    policy: "https://vdp.figure.com/",
+    preferred_languages: "en",
+    source_code: "https://github.com/provenance-io/hastra-sol-vault"
+}
+
 declare_id!("9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV");
 
 #[program]
@@ -51,13 +65,9 @@ pub mod vault_mint {
     pub fn initialize(
         ctx: Context<Initialize>,
         freeze_administrators: Vec<Pubkey>,
-        rewards_administrators: Vec<Pubkey>
+        rewards_administrators: Vec<Pubkey>,
     ) -> Result<()> {
-        processor::initialize(
-            ctx,
-            freeze_administrators,
-            rewards_administrators
-        )
+        processor::initialize(ctx, freeze_administrators, rewards_administrators)
     }
 
     /// Pauses or unpauses the program, disabling or enabling deposit and redeem functions.
@@ -79,8 +89,27 @@ pub mod vault_mint {
         processor::request_redeem(ctx, amount)
     }
 
-    pub fn complete_redeem(ctx: Context<CompleteRedeem>) -> Result<()> {
-        processor::complete_redeem(ctx)
+    /// Settles a pending redemption request, burning the user's mint tokens and paying out the
+    /// corresponding vault tokens. Only callable by a rewards administrator.
+    ///
+    /// `expected_amount` must equal the amount recorded on the request, failing with
+    /// `RedemptionAmountMismatch` otherwise. The request PDA is keyed on the user alone, so a user
+    /// can cancel a reviewed request and open a replacement for a different amount at the same
+    /// address; restating the approved amount keeps an already-signed completion bound to the
+    /// request that was reviewed.
+    pub fn complete_redeem(ctx: Context<CompleteRedeem>, expected_amount: u64) -> Result<()> {
+        processor::complete_redeem(ctx, expected_amount)
+    }
+
+    /// Lets a user withdraw their own pending redemption request:
+    /// - Clears the burn delegate granted by `request_redeem`, if still set to that authority
+    /// - Closes the request account, refunding its rent to the user
+    ///
+    /// Needed because `complete_redeem` requires the full requested amount to still be held, so a
+    /// user who moved their mint tokens after requesting can clear the stale request and submit a
+    /// new one.
+    pub fn cancel_redeem(ctx: Context<CancelRedeem>) -> Result<()> {
+        processor::cancel_redeem(ctx)
     }
 
     pub fn update_freeze_administrators(
@@ -124,8 +153,9 @@ pub mod vault_mint {
     /// 	•	Store each epoch’s Merkle root in a PDA.
     /// 	•	When a user claims, they present (amount, proof) for their pubkey.
     /// 	•	The program verifies the Merkle proof against the root.
-    /// 	•	If valid, transfer reward tokens (wYLDS) from the rewards vault to the user's mint token account.
+    /// 	•	If valid, mint reward tokens (wYLDS) to the user's mint token account.
     /// 	•	Mark the claim as redeemed so they can’t double-claim.
+    ///     •   Epochs with `index >= first_capped_epoch` also enforce the aggregate claim cap.
     pub fn claim_rewards(
         ctx: Context<ClaimRewards>,
         amount: u64,
@@ -134,15 +164,81 @@ pub mod vault_mint {
         processor::claim_rewards(ctx, amount, proof)
     }
 
+    /// One-shot: enables epoch caps (upgrade authority).
+    /// Must be executed after program upgrade before create/claim rewards.
+    /// Sets `first_capped_epoch` and `max_epoch_cap`. Epochs already created below that
+    /// index stay uncapped; new epochs cannot be created there. Contiguous create indices
+    /// are enforced separately by `LastRewardsEpoch` (see `initialize_last_rewards_epoch`).
+    pub fn initialize_epoch_caps(
+        ctx: Context<InitializeEpochCaps>,
+        first_capped_epoch: u64,
+        max_epoch_cap: u64,
+    ) -> Result<()> {
+        processor::initialize_epoch_caps(ctx, first_capped_epoch, max_epoch_cap)
+    }
+
+    /// Creates the LastRewardsEpoch PDA, seeding the index floor for create_rewards_epoch.
+    /// Must be called once before create can succeed. Only callable by the program upgrade
+    /// authority. Requires epoch caps already initialized; rejects a floor that would deadlock
+    /// create (`start_index + 1 < first_capped_epoch`). Subsequent creates must use exact
+    /// succession (`start_index + 1`, then contiguous).
+    pub fn initialize_last_rewards_epoch(
+        ctx: Context<InitializeLastRewardsEpoch>,
+        start_index: u64,
+    ) -> Result<()> {
+        processor::initialize_last_rewards_epoch(ctx, start_index)
+    }
+
+    /// Corrects the LastRewardsEpoch floor (upgrade authority). Recovery when start_index was
+    /// seeded wrongly; enforces the same first_capped_epoch check as init.
+    pub fn update_last_rewards_epoch(
+        ctx: Context<UpdateLastRewardsEpoch>,
+        new_index: u64,
+    ) -> Result<()> {
+        processor::update_last_rewards_epoch(ctx, new_index)
+    }
+
+    /// Updates the global max epoch cap (upgrade authority). Affects future creates only.
+    pub fn update_max_epoch_cap(ctx: Context<UpdateMaxEpochCap>, new_cap: u64) -> Result<()> {
+        processor::update_max_epoch_cap(ctx, new_cap)
+    }
+
     /// Allows an external authorized program to mint tokens to a specified account.
+    /// The calling_program account identifies the CPI caller; it must match either
+    /// config.allowed_external_mint_program (legacy) or be listed in the
+    /// allowed_external_mint_programs PDA (registered via register_allowed_external_mint_program).
     pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> Result<()> {
         processor::external_program_mint(ctx, amount)
     }
 
-    pub fn update_vault_token_account(
-        ctx: Context<UpdateVaultTokenAccount>,
+    /// Registers an additional external program as authorized to call external_program_mint.
+    /// Creates the AllowedExternalMintPrograms PDA on first call (init_if_needed).
+    /// Idempotent: calling with an already-registered program is a no-op.
+    /// The active cap is controlled via update_external_mint_programs_limit.
+    /// Only callable by the program upgrade authority.
+    pub fn register_allowed_external_mint_program(
+        ctx: Context<RegisterAllowedExternalMintProgram>,
     ) -> Result<()> {
+        processor::register_allowed_external_mint_program(ctx)
+    }
+
+    /// Updates the cap enforced by register_allowed_external_mint_program.
+    /// Only callable by the program upgrade authority.
+    pub fn update_external_mint_programs_limit(
+        ctx: Context<UpdateExternalMintProgramsLimit>,
+        max_programs: u8,
+    ) -> Result<()> {
+        processor::update_external_mint_programs_limit(ctx, max_programs)
+    }
+
+    pub fn update_vault_token_account(ctx: Context<UpdateVaultTokenAccount>) -> Result<()> {
         processor::update_vault_token_account(ctx)
+    }
+
+    /// Sets `config.redeem_vault` to a PDA-owned vault-mint token account.
+    /// Call once after upgrade on deployments initialized before this field was written.
+    pub fn update_redeem_vault(ctx: Context<UpdateRedeemVault>) -> Result<()> {
+        processor::update_redeem_vault(ctx)
     }
 
     pub fn sweep_redeem_vault_funds(
