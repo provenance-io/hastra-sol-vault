@@ -95,14 +95,56 @@ jobs:
       if: always()
       run: kill "${VALIDATOR_PID}" 2>/dev/null || true
 
+  # One runner per program id. Stake builds all write target/deploy/vault_stake.so,
+  # so they cannot share a checkout.
   verified-build:
+    name: verified-build (${{ matrix.id }})
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    outputs:
-      mint_hash: ${{ steps.checksums.outputs.mint_hash }}
-      stake_prime_hash: ${{ steps.checksums.outputs.stake_prime_hash }}
-      stake_auto_hash: ${{ steps.checksums.outputs.stake_auto_hash }}
-      stake_smb_hash: ${{ steps.checksums.outputs.stake_smb_hash }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: mint
+            library: vault_mint
+            program: vault-mint
+            so_name: vault_mint.so
+            idl_name: vault_mint.json
+            ts_name: vault_mint.ts
+            address: 9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV
+            cargo_args: ""
+          - id: prime
+            library: vault_stake
+            program: vault-stake
+            so_name: vault_stake_prime.so
+            idl_name: vault_stake_prime.json
+            ts_name: vault_stake_prime.ts
+            address: 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY
+            cargo_args: ""
+          - id: auto
+            library: vault_stake
+            program: vault-stake
+            so_name: vault_stake_auto.so
+            idl_name: vault_stake_auto.json
+            ts_name: vault_stake_auto.ts
+            address: 5uJgCDrQHfA58fPqLsuU14Srg9quxXNHz91cZ54cq4pK
+            cargo_args: "--no-default-features --features pool-auto"
+          - id: auto-devnet
+            library: vault_stake
+            program: vault-stake
+            so_name: vault_stake_auto_devnet.so
+            idl_name: vault_stake_auto_devnet.json
+            ts_name: vault_stake_auto_devnet.ts
+            address: B8FDo5EGA2hZ7YMugcw8wPHUYDBQJfNkEYpduXFLHfdZ
+            cargo_args: "--no-default-features --features pool-auto-devnet"
+          - id: smb
+            library: vault_stake
+            program: vault-stake
+            so_name: vault_stake_smb.so
+            idl_name: vault_stake_smb.json
+            ts_name: vault_stake_smb.ts
+            address: FtpEAgur3VALsDw91PfNre82eXVrtgiDNf9EG3JeBd2r
+            cargo_args: "--no-default-features --features pool-smb"
 
     steps:
     - name: Checkout code
@@ -141,6 +183,107 @@ jobs:
         key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: cargo-${{ runner.os }}-
 
+    # Anchor 0.31.1 rewrites declare_id! on the first build when target/deploy
+    # is absent. Create it first so this production checkout stays immutable.
+    - name: Build IDL and TypeScript types
+      env:
+        PROGRAM: ${{ matrix.program }}
+        IDL_NAME: ${{ matrix.idl_name }}
+        TS_NAME: ${{ matrix.ts_name }}
+        CARGO_ARGS: ${{ matrix.cargo_args }}
+      run: |
+        mkdir -p target/deploy artifacts/programs artifacts/idl artifacts/client
+        idl_args=(-p "${PROGRAM}" -o "artifacts/idl/${IDL_NAME}" -t "artifacts/client/${TS_NAME}")
+        if [ -n "${CARGO_ARGS}" ]; then
+          # shellcheck disable=SC2086
+          anchor idl build "${idl_args[@]}" -- ${CARGO_ARGS}
+        else
+          anchor idl build "${idl_args[@]}"
+        fi
+
+    - name: Confirm IDL address
+      env:
+        IDL_PATH: artifacts/idl/${{ matrix.idl_name }}
+        EXPECTED_ADDRESS: ${{ matrix.address }}
+      run: |
+        python3 -c 'import json, os, sys
+        path = os.environ["IDL_PATH"]
+        expected = os.environ["EXPECTED_ADDRESS"]
+        address = json.load(open(path))["address"]
+        if address != expected:
+            sys.exit(f"{path} address {address} != {expected}")
+        print(f"{path} address {address}")'
+
+    - name: Confirm build preserved checked-in IDs
+      run: |
+        git diff --exit-code -- \
+          Anchor.toml \
+          programs/vault-mint/src/lib.rs \
+          programs/vault-stake/src/lib.rs
+
+    - name: Verifiable build
+      env:
+        LIBRARY: ${{ matrix.library }}
+        SO_NAME: ${{ matrix.so_name }}
+        CARGO_ARGS: ${{ matrix.cargo_args }}
+      run: |
+        if [ -n "${CARGO_ARGS}" ]; then
+          # shellcheck disable=SC2086
+          solana-verify build --library-name "${LIBRARY}" -- ${CARGO_ARGS}
+        else
+          solana-verify build --library-name "${LIBRARY}"
+        fi
+        cp "target/deploy/${LIBRARY}.so" "artifacts/programs/${SO_NAME}"
+
+    - name: Upload program artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: verified-${{ matrix.id }}-${{ github.sha }}
+        retention-days: 30
+        path: |
+          artifacts/programs/${{ matrix.so_name }}
+          artifacts/idl/${{ matrix.idl_name }}
+          artifacts/client/${{ matrix.ts_name }}
+
+  assemble:
+    needs: [test, verified-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      mint_hash: ${{ steps.checksums.outputs.mint_hash }}
+      stake_prime_hash: ${{ steps.checksums.outputs.stake_prime_hash }}
+      stake_auto_hash: ${{ steps.checksums.outputs.stake_auto_hash }}
+      stake_auto_devnet_hash: ${{ steps.checksums.outputs.stake_auto_devnet_hash }}
+      stake_smb_hash: ${{ steps.checksums.outputs.stake_smb_hash }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Load verify config
+      run: cat .github/verify-config.env >> "$GITHUB_ENV"
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          pkg-config \
+          libudev-dev \
+          llvm \
+          libclang-dev \
+          protobuf-compiler \
+          libssl-dev
+
+    - uses: solana-foundation/github-actions/extract-versions@v0.2.11
+      id: versions
+
+    - uses: solana-foundation/github-actions/setup-all@v0.2.11
+      with:
+        solana_version: ${{ steps.versions.outputs.solana_version }}
+        anchor_version: ${{ steps.versions.outputs.anchor_version }}
+        verify_version: ${{ env.SOLANA_VERIFY_VERSION }}
+
     - name: Cache yarn dependencies
       uses: actions/setup-node@v4
       with:
@@ -150,51 +293,12 @@ jobs:
     - name: Install yarn dependencies
       run: yarn install --frozen-lockfile
 
-    # Anchor 0.31.1 synchronizes IDs on the first build when target/deploy is
-    # absent. Create it first so the production checkout remains immutable.
-    - name: Build production IDLs and types
-      run: |
-        mkdir -p target/deploy
-        anchor build
-
-    - name: Confirm production build preserved checked-in IDs
-      run: |
-        git diff --exit-code -- \
-          Anchor.toml \
-          programs/vault-mint/src/lib.rs \
-          programs/vault-stake/src/lib.rs
-
-    - name: Verifiable build vault_mint
-      uses: solana-foundation/github-actions/build-verified@v0.2.11
+    - name: Download verified program artifacts
+      uses: actions/download-artifact@v4
       with:
-        program: vault_mint
-
-    - name: Prepare artifacts directory
-      run: |
-        mkdir -p artifacts/programs artifacts/idl artifacts/client artifacts/verify
-        cp target/deploy/vault_mint.so artifacts/programs/vault_mint.so
-        cp target/idl/vault_mint.json artifacts/idl/vault_mint.json
-        cp target/idl/vault_stake.json artifacts/idl/vault_stake.json
-        cp target/types/vault_mint.ts artifacts/client/vault_mint.ts
-        cp target/types/vault_stake.ts artifacts/client/vault_stake.ts
-
-    - name: Verifiable build vault_stake (PRIME)
-      run: solana-verify build --library-name vault_stake
-
-    - name: Copy vault_stake_prime.so
-      run: cp target/deploy/vault_stake.so artifacts/programs/vault_stake_prime.so
-
-    - name: Verifiable build vault_stake (AUTO)
-      run: solana-verify build --library-name vault_stake -- --no-default-features --features pool-auto
-
-    - name: Copy vault_stake_auto.so
-      run: cp target/deploy/vault_stake.so artifacts/programs/vault_stake_auto.so
-
-    - name: Verifiable build vault_stake (SMB)
-      run: solana-verify build --library-name vault_stake -- --no-default-features --features pool-smb
-
-    - name: Copy vault_stake_smb.so
-      run: cp target/deploy/vault_stake.so artifacts/programs/vault_stake_smb.so
+        pattern: verified-{mint,prime,auto,auto-devnet,smb}-${{ github.sha }}
+        merge-multiple: true
+        path: artifacts
 
     # Pull-request commits can be synthetic merge refs, so only persistent refs
     # export remote verification transactions.
@@ -213,11 +317,18 @@ jobs:
             programs/vault_mint.so \
             programs/vault_stake_prime.so \
             programs/vault_stake_auto.so \
+            programs/vault_stake_auto_devnet.so \
             programs/vault_stake_smb.so \
             idl/vault_mint.json \
-            idl/vault_stake.json \
+            idl/vault_stake_prime.json \
+            idl/vault_stake_auto.json \
+            idl/vault_stake_auto_devnet.json \
+            idl/vault_stake_smb.json \
             client/vault_mint.ts \
-            client/vault_stake.ts \
+            client/vault_stake_prime.ts \
+            client/vault_stake_auto.ts \
+            client/vault_stake_auto_devnet.ts \
+            client/vault_stake_smb.ts \
             > checksums.txt
           if compgen -G 'verify/pda-*.txt' > /dev/null; then
             sha256sum verify/pda-*.txt >> checksums.txt
@@ -228,6 +339,7 @@ jobs:
         echo "mint_hash=$(sha256sum artifacts/programs/vault_mint.so | awk '{print $1}')" >> "$GITHUB_OUTPUT"
         echo "stake_prime_hash=$(sha256sum artifacts/programs/vault_stake_prime.so | awk '{print $1}')" >> "$GITHUB_OUTPUT"
         echo "stake_auto_hash=$(sha256sum artifacts/programs/vault_stake_auto.so | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+        echo "stake_auto_devnet_hash=$(sha256sum artifacts/programs/vault_stake_auto_devnet.so | awk '{print $1}')" >> "$GITHUB_OUTPUT"
         echo "stake_smb_hash=$(sha256sum artifacts/programs/vault_stake_smb.so | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
     - name: Upload verified program artifacts
@@ -244,7 +356,7 @@ jobs:
 
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    needs: [test, verified-build]
+    needs: [test, assemble]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -290,12 +402,17 @@ jobs:
 
           ### Programs (verified)
 
-          | File | SHA-256 |
-          |------|---------|
-          | `programs/vault_mint.so` | `${{ needs.verified-build.outputs.mint_hash }}` |
-          | `programs/vault_stake_prime.so` | `${{ needs.verified-build.outputs.stake_prime_hash }}` |
-          | `programs/vault_stake_auto.so` | `${{ needs.verified-build.outputs.stake_auto_hash }}` |
-          | `programs/vault_stake_smb.so` | `${{ needs.verified-build.outputs.stake_smb_hash }}` |
+          Mint, PRIME, and SMB each have one binary used on both clusters. AUTO program ids differ, so devnet and mainnet are separate files.
+
+          | File | Cluster | SHA-256 |
+          |------|---------|---------|
+          | `programs/vault_mint.so` | devnet and mainnet | `${{ needs.assemble.outputs.mint_hash }}` |
+          | `programs/vault_stake_prime.so` | devnet and mainnet | `${{ needs.assemble.outputs.stake_prime_hash }}` |
+          | `programs/vault_stake_auto.so` | mainnet | `${{ needs.assemble.outputs.stake_auto_hash }}` |
+          | `programs/vault_stake_auto_devnet.so` | devnet | `${{ needs.assemble.outputs.stake_auto_devnet_hash }}` |
+          | `programs/vault_stake_smb.so` | devnet and mainnet | `${{ needs.assemble.outputs.stake_smb_hash }}` |
+
+          Devnet AUTO upgrades use `programs/vault_stake_auto_devnet.so` with `verify/pda-msg-devnet-vault_stake_auto.txt`.
 
           ### Squads verify PDA
 
@@ -313,15 +430,21 @@ jobs:
           | File | Description |
           |------|-------------|
           | `idl/vault_mint.json` | Anchor IDL for vault-mint |
-          | `idl/vault_stake.json` | Anchor IDL for vault-stake (shared by all pools) |
-          | `client/vault_mint.ts` | TypeScript types from vault-mint IDL |
-          | `client/vault_stake.ts` | TypeScript types from vault-stake IDL (shared by all pools) |
+          | `idl/vault_stake_prime.json` | Anchor IDL for vault-stake PRIME |
+          | `idl/vault_stake_auto.json` | Anchor IDL for vault-stake AUTO (mainnet) |
+          | `idl/vault_stake_auto_devnet.json` | Anchor IDL for vault-stake AUTO (devnet) |
+          | `idl/vault_stake_smb.json` | Anchor IDL for vault-stake SMB |
+          | `client/vault_mint.ts` | TypeScript types from the vault-mint IDL |
+          | `client/vault_stake_prime.ts` | TypeScript types from the PRIME IDL |
+          | `client/vault_stake_auto.ts` | TypeScript types from the mainnet AUTO IDL |
+          | `client/vault_stake_auto_devnet.ts` | TypeScript types from the devnet AUTO IDL |
+          | `client/vault_stake_smb.ts` | TypeScript types from the SMB IDL |
 
           All artifact hashes are in `checksums.txt`.
 
           ### Squads upgrade checklist
 
-          1. Confirm buffer SHA-256 matches `checksums.txt` before approving (use the pool-specific `.so` under `programs/` for that program ID).
+          1. Confirm buffer SHA-256 matches `checksums.txt` before approving. Use `programs/vault_stake_auto_devnet.so` for devnet AUTO and `programs/vault_stake_auto.so` for mainnet AUTO.
           2. Execute program upgrade in Squads.
           3. Import and execute the cluster-matching `verify/pda-msg-*` files in Squads v4 Transaction Builder.
           4. Run `solana-verify remote submit-job` per program.
