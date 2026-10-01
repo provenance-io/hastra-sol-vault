@@ -841,8 +841,8 @@ These have all the values needed for the FE and BE services.
 
 | Workflow | When | Output |
 | -------- | ---- | ------ |
-| `program-ci.yml` | Pull requests, pushes to `main`, version tags, and manual runs | Tests plus identical [solana-verify](https://solana.com/docs/programs/verified-builds) binaries, shared IDLs/types, and `checksums.txt` |
-| `program-ci.yml` release job | Version tags matching `v*` | Draft GitHub Release created from the verified-build artifact without rebuilding |
+| `program-ci.yml` | Pull requests, pushes to `main`, version tags, and manual runs | Tests plus identical [solana-verify](https://solana.com/docs/programs/verified-builds) binaries, one IDL and TypeScript file per program id, and `checksums.txt` |
+| `program-ci.yml` release job | Version tags matching `v*` | Draft GitHub Release created from the assemble artifact without rebuilding |
 
 Each trigger builds verified binaries under `programs/`, IDLs under `idl/`, and TypeScript types under `client/`. Non-PR runs also export Squads verification PDA files under `verify/` (`pda-tx-*` full transaction + `pda-msg-*` message-only for Transaction Builder). The test and verified-build jobs use separate checkouts so ephemeral test key synchronization cannot alter reproducible builds.
 
@@ -857,7 +857,7 @@ Squads v4 settings are in `.github/verify-config.env`:
 
 ## GitHub Release
 
-The release job in `.github/workflows/program-ci.yml` runs on version tags. It downloads the exact artifact produced by the verified-build job and publishes a draft GitHub Release without rebuilding.
+The release job in `.github/workflows/program-ci.yml` runs on version tags. It downloads the exact artifact produced by the assemble job and publishes a draft GitHub Release without rebuilding.
 
 > This section assumes you have set up a Squads vault and have configured the `vault_mint` and `vault_stake` programs to use it. See [Post-Upgrade Initialization](#post-upgrade-initialization) above.
 
@@ -871,25 +871,34 @@ git push origin v1.0.0
 Artifact layout (CI zip preserves directories; GitHub Release assets use the same basenames):
 
 ```text
-programs/   vault_mint.so, vault_stake_prime.so, vault_stake_auto.so, vault_stake_smb.so
-idl/        vault_mint.json, vault_stake.json
-client/     vault_mint.ts, vault_stake.ts
+programs/   vault_mint.so, vault_stake_prime.so, vault_stake_auto.so, vault_stake_auto_devnet.so, vault_stake_smb.so
+idl/        vault_mint.json, vault_stake_prime.json, vault_stake_auto.json, vault_stake_auto_devnet.json, vault_stake_smb.json
+client/     vault_mint.ts, vault_stake_prime.ts, vault_stake_auto.ts, vault_stake_auto_devnet.ts, vault_stake_smb.ts
 verify/     pda-tx-*.txt (full tx) + pda-msg-*.txt (Squads import)
 checksums.txt
 ```
 
+Mint, PRIME, and SMB each ship one binary for both clusters. AUTO program ids differ, so devnet upgrades use `vault_stake_auto_devnet.so` and mainnet upgrades use `vault_stake_auto.so`.
+
 | Path | Description |
 | ---- | ----------- |
-| `programs/vault_mint.so` | Verifiable vault-mint program binary |
-| `programs/vault_stake_prime.so` | Verifiable vault-stake PRIME program binary |
-| `programs/vault_stake_auto.so` | Verifiable vault-stake AUTO program binary |
-| `programs/vault_stake_smb.so` | Verifiable vault-stake SMB program binary |
+| `programs/vault_mint.so` | Verifiable vault-mint program binary (devnet and mainnet) |
+| `programs/vault_stake_prime.so` | Verifiable vault-stake PRIME program binary (devnet and mainnet) |
+| `programs/vault_stake_auto.so` | Verifiable vault-stake AUTO program binary (mainnet) |
+| `programs/vault_stake_auto_devnet.so` | Verifiable vault-stake AUTO program binary (devnet) |
+| `programs/vault_stake_smb.so` | Verifiable vault-stake SMB program binary (devnet and mainnet) |
 | `verify/pda-msg-*-vault_*.txt` | Message-only base58 for Squads Transaction Builder |
 | `verify/pda-tx-*-vault_*.txt` | Full transaction base58 from `solana-verify export-pda-tx` |
 | `idl/vault_mint.json` | Anchor IDL for vault-mint |
-| `idl/vault_stake.json` | Anchor IDL for vault-stake |
-| `client/vault_mint.ts` | TypeScript types from vault-mint IDL |
-| `client/vault_stake.ts` | TypeScript types from vault-stake IDL |
+| `idl/vault_stake_prime.json` | Anchor IDL for vault-stake PRIME |
+| `idl/vault_stake_auto.json` | Anchor IDL for vault-stake AUTO (mainnet) |
+| `idl/vault_stake_auto_devnet.json` | Anchor IDL for vault-stake AUTO (devnet) |
+| `idl/vault_stake_smb.json` | Anchor IDL for vault-stake SMB |
+| `client/vault_mint.ts` | TypeScript types from the vault-mint IDL |
+| `client/vault_stake_prime.ts` | TypeScript types from the PRIME IDL |
+| `client/vault_stake_auto.ts` | TypeScript types from the mainnet AUTO IDL |
+| `client/vault_stake_auto_devnet.ts` | TypeScript types from the devnet AUTO IDL |
+| `client/vault_stake_smb.ts` | TypeScript types from the SMB IDL |
 | `checksums.txt` | SHA-256 of all release artifacts |
 
 
@@ -912,6 +921,7 @@ Before approving a program upgrade proposal, confirm the buffer SHA-256 matches 
 shasum -a 256 programs/vault_mint.so
 shasum -a 256 programs/vault_stake_prime.so
 shasum -a 256 programs/vault_stake_auto.so
+shasum -a 256 programs/vault_stake_auto_devnet.so
 shasum -a 256 programs/vault_stake_smb.so
 # Compare against checksums.txt and deploy.sh output
 ```

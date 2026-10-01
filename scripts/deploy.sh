@@ -136,7 +136,7 @@ configure_verified_so_dir() {
   fi
   if [ -n "$VERIFIED_SO_DIR" ]; then
     local missing=0
-    for f in vault_mint.so vault_stake_prime.so vault_stake_auto.so vault_stake_smb.so; do
+    for f in vault_mint.so vault_stake_prime.so vault_stake_auto.so vault_stake_auto_devnet.so vault_stake_smb.so; do
       if [ ! -f "${VERIFIED_SO_DIR}/${f}" ]; then
         # vault_stake.so is the local-build name; pool-specific names come from CI.
         if [ "$f" = "vault_stake_prime.so" ] && [ -f "${VERIFIED_SO_DIR}/vault_stake.so" ]; then
