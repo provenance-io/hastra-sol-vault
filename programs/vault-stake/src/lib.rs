@@ -41,10 +41,37 @@ use anchor_lang::prelude::*;
 #[cfg(not(feature = "no-entrypoint"))]
 use solana_security_txt::security_txt;
 
+// security_txt! feeds `name` to concat!, which accepts a literal and not a const.
+// One pool feature is active per build, so exactly one of these macros is compiled.
+#[cfg(all(not(feature = "no-entrypoint"), feature = "pool-prime"))]
+macro_rules! security_txt_name {
+    () => {
+        "Hastra Vault Stake (PRIME)"
+    };
+}
+#[cfg(all(not(feature = "no-entrypoint"), feature = "pool-auto"))]
+macro_rules! security_txt_name {
+    () => {
+        "Hastra Vault Stake (AUTO)"
+    };
+}
+#[cfg(all(not(feature = "no-entrypoint"), feature = "pool-auto-devnet"))]
+macro_rules! security_txt_name {
+    () => {
+        "Hastra Vault Stake (AUTO devnet)"
+    };
+}
+#[cfg(all(not(feature = "no-entrypoint"), feature = "pool-smb"))]
+macro_rules! security_txt_name {
+    () => {
+        "Hastra Vault Stake (SMB)"
+    };
+}
+
 // Embeds stable security-reporting metadata in each deployed pool binary.
 #[cfg(not(feature = "no-entrypoint"))]
 security_txt! {
-    name: "Hastra Vault Stake",
+    name: security_txt_name!(),
     project_url: "https://hastra.io",
     contacts: "email:security@provenance.io",
     policy: "https://vdp.figure.com/",

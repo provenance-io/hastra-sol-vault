@@ -113,6 +113,7 @@ jobs:
             ts_name: vault_mint.ts
             address: 9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV
             cargo_args: ""
+            desc: "Solana Vault Mint Contract for Hastra"
           - id: prime
             library: vault_stake
             program: vault-stake
@@ -121,6 +122,7 @@ jobs:
             ts_name: vault_stake_prime.ts
             address: 97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY
             cargo_args: ""
+            desc: "Solana Vault Stake Contract for Hastra (PRIME)"
           - id: auto
             library: vault_stake
             program: vault-stake
@@ -129,6 +131,7 @@ jobs:
             ts_name: vault_stake_auto.ts
             address: 5uJgCDrQHfA58fPqLsuU14Srg9quxXNHz91cZ54cq4pK
             cargo_args: "--no-default-features --features pool-auto"
+            desc: "Solana Vault Stake Contract for Hastra (AUTO)"
           - id: auto-devnet
             library: vault_stake
             program: vault-stake
@@ -137,6 +140,7 @@ jobs:
             ts_name: vault_stake_auto_devnet.ts
             address: B8FDo5EGA2hZ7YMugcw8wPHUYDBQJfNkEYpduXFLHfdZ
             cargo_args: "--no-default-features --features pool-auto-devnet"
+            desc: "Solana Vault Stake Contract for Hastra (AUTO devnet)"
           - id: smb
             library: vault_stake
             program: vault-stake
@@ -145,6 +149,7 @@ jobs:
             ts_name: vault_stake_smb.ts
             address: FtpEAgur3VALsDw91PfNre82eXVrtgiDNf9EG3JeBd2r
             cargo_args: "--no-default-features --features pool-smb"
+            desc: "Solana Vault Stake Contract for Hastra (SMB)"
 
     steps:
     - name: Checkout code
@@ -213,6 +218,42 @@ jobs:
         if address != expected:
             sys.exit(f"{path} address {address} != {expected}")
         print(f"{path} address {address}")'
+
+    # Cargo package description is static, so every stake IDL would otherwise
+    # share one sentence. Replace that field only; leave the rest of the file.
+    - name: Set IDL description
+      env:
+        IDL_PATH: artifacts/idl/${{ matrix.idl_name }}
+        TS_PATH: artifacts/client/${{ matrix.ts_name }}
+        DESC: ${{ matrix.desc }}
+      run: |
+        python3 << 'PY'
+        import json
+        import os
+        import sys
+
+        idl_path = os.environ["IDL_PATH"]
+        ts_path = os.environ["TS_PATH"]
+        new_desc = os.environ["DESC"]
+
+        idl_text = open(idl_path).read()
+        current = json.loads(idl_text)["metadata"]["description"]
+        if current == new_desc:
+            print(f"description already {new_desc!r}")
+            sys.exit(0)
+        field = '"description": ' + json.dumps(current)
+        updated = '"description": ' + json.dumps(new_desc)
+
+        def replace_once(path, text):
+            count = text.count(field)
+            if count != 1:
+                sys.exit(f"{path} description field count {count}, expected 1")
+            open(path, "w").write(text.replace(field, updated, 1))
+            print(f"{path} description {current!r} -> {new_desc!r}")
+
+        replace_once(idl_path, idl_text)
+        replace_once(ts_path, open(ts_path).read())
+        PY
 
     - name: Confirm build preserved checked-in IDs
       run: |
