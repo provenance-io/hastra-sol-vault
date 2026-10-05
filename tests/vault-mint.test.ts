@@ -2,7 +2,7 @@ import * as anchor from "@coral-xyz/anchor";
 import {Program} from "@coral-xyz/anchor";
 import {VaultMint} from "../target/types/vault_mint";
 import {VaultStake} from "../target/types/vault_stake";
-import {Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram} from "@solana/web3.js";
+import {Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction} from "@solana/web3.js";
 import * as fs from "fs";
 import * as path from "path";
 import {
@@ -1747,6 +1747,26 @@ describe("vault-mint", () => {
     });
 
     describe("paused protocol", () => {
+        it("rejects CPI into pause", async () => {
+            const before = await program.account.config.fetch(configPda);
+            try {
+                await program.methods
+                    .cpiInvokePauseForTesting(!before.paused)
+                    .accountsStrict({
+                        config: configPda,
+                        signer: freezeAdmin.publicKey,
+                    })
+                    .signers([freezeAdmin])
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(err).to.exist;
+                expect(err.toString()).to.match(/InstructionMustBeDirectInvocation/);
+            }
+            const after = await program.account.config.fetch(configPda);
+            assert.equal(after.paused, before.paused);
+        });
+
         it("pauses all functionality", async () => {
             await program.methods
                 .pause(true)
@@ -2127,6 +2147,57 @@ describe("vault-mint", () => {
                     /Signature verification failed|missing required signature|Transaction simulation failed/i
                 );
             }
+        });
+
+        it("rejects top-level external_program_mint before minting", async () => {
+            const [externalMintAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [Buffer.from("external_mint_authority")],
+                stakeProgram.programId
+            );
+            const [allowedExternalMintProgramsPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("allowed_external_mint_programs"),
+                    configPda.toBuffer(),
+                ],
+                program.programId
+            );
+            const supplyBefore = (await getMint(provider.connection, mintedToken)).supply;
+
+            // Signature checks run before the program. Skip them so the instruction
+            // actually executes at stack height 1 and hits the CPI-only guard.
+            // The stake PDA stays an unsigned required signer.
+            const ix = await program.methods
+                .externalProgramMint(new BN(1_000_000))
+                .accountsStrict({
+                    config: configPda,
+                    callingProgram: stakeProgram.programId,
+                    externalMintAuthority: externalMintAuthorityPda,
+                    mint: mintedToken,
+                    mintAuthority: mintAuthorityPda,
+                    admin: rewardsAdmin.publicKey,
+                    destination: userMintTokenAccount,
+                    allowedExternalMintPrograms: allowedExternalMintProgramsPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .instruction();
+            const {blockhash} = await provider.connection.getLatestBlockhash();
+            const message = new TransactionMessage({
+                payerKey: provider.wallet.publicKey,
+                recentBlockhash: blockhash,
+                instructions: [ix],
+            }).compileToV0Message();
+            const tx = new VersionedTransaction(message);
+            tx.sign([provider.wallet.payer, rewardsAdmin]);
+            const sim = await provider.connection.simulateTransaction(tx, {
+                sigVerify: false,
+                replaceRecentBlockhash: true,
+            });
+            const logs = (sim.value.logs ?? []).join("\n");
+            expect(sim.value.err, logs).to.exist;
+            expect(logs).to.match(/ExternalMintMustBeCpi/);
+
+            const supplyAfter = (await getMint(provider.connection, mintedToken)).supply;
+            assert.equal(supplyAfter, supplyBefore);
         });
 
         it("requires rewards admin signature on external_program_mint", async () => {

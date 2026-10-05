@@ -1,7 +1,10 @@
 use crate::account_structs::*;
 use crate::error::*;
 use crate::events::*;
-use crate::guard::{validate_administrators, validate_program_update_authority};
+use crate::guard::{
+    require_cpi_invocation, require_direct_invocation, validate_administrators,
+    validate_program_update_authority,
+};
 use crate::state::{AllowedExternalMintPrograms, EpochClaimedAmount, ProofNode};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::hash::hashv;
@@ -16,6 +19,7 @@ pub fn initialize(
     freeze_administrators: Vec<Pubkey>,
     rewards_administrators: Vec<Pubkey>,
 ) -> Result<()> {
+    require_direct_invocation()?;
     msg!(
         "Initializing with vault_token_mint: {}",
         ctx.accounts.vault_token_mint.key()
@@ -77,6 +81,7 @@ pub fn initialize(
 }
 
 pub fn pause(ctx: Context<Pause>, pause: bool) -> Result<()> {
+    require_direct_invocation()?;
     let config = &ctx.accounts.config;
     let signer = ctx.accounts.signer.key();
 
@@ -253,6 +258,7 @@ pub fn cancel_redeem(ctx: Context<CancelRedeem>) -> Result<()> {
 /// was actually reviewed. Solvency was never at risk — the full recorded amount is burned and paid
 /// to the same user either way — but amount-specific operational and compliance approval was.
 pub fn complete_redeem(ctx: Context<CompleteRedeem>, expected_amount: u64) -> Result<()> {
+    require_direct_invocation()?;
     // Admin gate
     require!(
         ctx.accounts
@@ -341,6 +347,7 @@ pub fn update_freeze_administrators(
     ctx: Context<UpdateFreezeAdministrators>,
     new_administrators: Vec<Pubkey>,
 ) -> Result<()> {
+    require_direct_invocation()?;
     // Validate that the signer is the program's update authority
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
     validate_administrators(&new_administrators)?;
@@ -361,6 +368,7 @@ pub fn update_rewards_administrators(
     ctx: Context<UpdateRewardsAdministrators>,
     new_administrators: Vec<Pubkey>,
 ) -> Result<()> {
+    require_direct_invocation()?;
     // Validate that the signer is the program's update authority
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
     validate_administrators(&new_administrators)?;
@@ -377,6 +385,7 @@ pub fn update_rewards_administrators(
 
 // Freeze a specific token account (only freeze administrators can do this)
 pub fn freeze_token_account(ctx: Context<FreezeTokenAccount>) -> Result<()> {
+    require_direct_invocation()?;
     let config = &ctx.accounts.config;
     let signer = ctx.accounts.signer.key();
 
@@ -413,6 +422,7 @@ pub fn freeze_token_account(ctx: Context<FreezeTokenAccount>) -> Result<()> {
 
 // Thaw a specific token account (only freeze administrators can do this)
 pub fn thaw_token_account(ctx: Context<ThawTokenAccount>) -> Result<()> {
+    require_direct_invocation()?;
     let config = &ctx.accounts.config;
     let signer = ctx.accounts.signer.key();
 
@@ -453,6 +463,7 @@ pub fn create_rewards_epoch(
     merkle_root: [u8; 32],
     total: u64,
 ) -> Result<()> {
+    require_direct_invocation()?;
     require!(!ctx.accounts.config.paused, CustomErrorCode::ProtocolPaused);
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.admin)?;
     require!(total > 0, CustomErrorCode::InvalidAmount);
@@ -613,6 +624,7 @@ pub fn initialize_epoch_caps(
     first_capped_epoch: u64,
     max_epoch_cap: u64,
 ) -> Result<()> {
+    require_direct_invocation()?;
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
     require!(max_epoch_cap > 0, CustomErrorCode::InvalidGlobalCap);
 
@@ -653,6 +665,7 @@ pub fn initialize_last_rewards_epoch(
     ctx: Context<InitializeLastRewardsEpoch>,
     start_index: u64,
 ) -> Result<()> {
+    require_direct_invocation()?;
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
     require_next_epoch_at_or_above_first_capped(
         start_index,
@@ -678,6 +691,7 @@ pub fn update_last_rewards_epoch(
     ctx: Context<UpdateLastRewardsEpoch>,
     new_index: u64,
 ) -> Result<()> {
+    require_direct_invocation()?;
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
     require_next_epoch_at_or_above_first_capped(
         new_index,
@@ -702,6 +716,7 @@ pub fn update_last_rewards_epoch(
 
 /// Updates the global max epoch cap. Affects future `create_rewards_epoch` calls only.
 pub fn update_max_epoch_cap(ctx: Context<UpdateMaxEpochCap>, new_cap: u64) -> Result<()> {
+    require_direct_invocation()?;
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
     require!(new_cap > 0, CustomErrorCode::InvalidGlobalCap);
 
@@ -734,7 +749,11 @@ pub fn update_max_epoch_cap(ctx: Context<UpdateMaxEpochCap>, new_cap: u64) -> Re
 /// Cryptographic proof of caller identity comes from the `external_mint_authority` PDA
 /// signer: its address is derived with `seeds = [b"external_mint_authority"]` under
 /// `calling_program`'s program id, so only `calling_program` can produce a valid signer.
+///
+/// This instruction is CPI-only. Every other privileged instruction in this program
+/// rejects CPI and must be invoked directly.
 pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> Result<()> {
+    require_cpi_invocation()?;
     require!(!ctx.accounts.config.paused, CustomErrorCode::ProtocolPaused);
 
     let config = &ctx.accounts.config;
@@ -813,6 +832,7 @@ pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> 
 
 // create a function called by program update authority to update the vault token account
 pub fn update_vault_token_account(ctx: Context<UpdateVaultTokenAccount>) -> Result<()> {
+    require_direct_invocation()?;
     // Validate that the signer is the program's update authority
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
 
@@ -838,6 +858,7 @@ pub fn update_vault_token_account(ctx: Context<UpdateVaultTokenAccount>) -> Resu
 /// until then `complete_redeem` / `sweep_redeem_vault_funds` fail the key pin.
 /// Only callable by the program upgrade authority.
 pub fn update_redeem_vault(ctx: Context<UpdateRedeemVault>) -> Result<()> {
+    require_direct_invocation()?;
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
 
     let config = &mut ctx.accounts.config;
@@ -857,6 +878,7 @@ pub fn update_redeem_vault(ctx: Context<UpdateRedeemVault>) -> Result<()> {
 pub fn register_allowed_external_mint_program(
     ctx: Context<RegisterAllowedExternalMintProgram>,
 ) -> Result<()> {
+    require_direct_invocation()?;
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
 
     let program_key = ctx.accounts.external_program.key();
@@ -917,6 +939,7 @@ pub fn update_external_mint_programs_limit(
     ctx: Context<UpdateExternalMintProgramsLimit>,
     max_programs: u8,
 ) -> Result<()> {
+    require_direct_invocation()?;
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
 
     let limit_config = &mut ctx.accounts.external_mint_programs_limit_config;
@@ -931,6 +954,7 @@ pub fn update_external_mint_programs_limit(
 }
 
 pub fn sweep_redeem_vault_funds(ctx: Context<SweepRedeemVaultFunds>, amount: u64) -> Result<()> {
+    require_direct_invocation()?;
     // Validate the signer is a rewards administrator
     require!(
         ctx.accounts
@@ -976,6 +1000,45 @@ pub fn sweep_redeem_vault_funds(ctx: Context<SweepRedeemVaultFunds>, amount: u64
         vault: ctx.accounts.redeem_vault_token_account.mint,
     });
     msg!("Emitted SweepRedeemVaultEvent");
+
+    Ok(())
+}
+
+/// FOR TESTING ONLY — invokes `pause` via CPI so the direct-invocation guard can be
+/// observed on-chain. The inner call is expected to fail with
+/// `InstructionMustBeDirectInvocation`.
+#[cfg(feature = "testing")]
+pub fn cpi_invoke_pause_for_testing(
+    ctx: Context<CpiInvokePauseForTesting>,
+    pause: bool,
+) -> Result<()> {
+    require_direct_invocation()?;
+
+    let mut data = hashv(&[b"global:pause"]).to_bytes()[..8].to_vec();
+    data.push(u8::from(pause));
+
+    let ix = anchor_lang::solana_program::instruction::Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            anchor_lang::solana_program::instruction::AccountMeta::new(
+                ctx.accounts.config.key(),
+                false,
+            ),
+            anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+                ctx.accounts.signer.key(),
+                true,
+            ),
+        ],
+        data,
+    };
+
+    invoke(
+        &ix,
+        &[
+            ctx.accounts.config.to_account_info(),
+            ctx.accounts.signer.to_account_info(),
+        ],
+    )?;
 
     Ok(())
 }
