@@ -32,6 +32,7 @@ pub mod account_structs;
 pub mod error;
 pub mod events;
 mod guard;
+pub mod math;
 pub mod processor;
 pub mod state;
 
