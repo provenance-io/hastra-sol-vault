@@ -85,15 +85,12 @@ pub struct Pause<'info> {
     pub signer: Signer<'info>,
 }
 
-/// FOR TESTING ONLY — top-level instruction that CPIs `pause`, so tests can assert
-/// privileged instructions reject cross-program invocation. Not for production.
+/// FOR TESTING ONLY — top-level instruction that CPIs this program with the supplied
+/// instruction data and remaining accounts. Used to assert privileged instructions
+/// reject cross-program invocation. Not for production.
 #[cfg(feature = "testing")]
 #[derive(Accounts)]
-pub struct CpiInvokePauseForTesting<'info> {
-    /// CHECK: forwarded unchanged to `pause`, which validates the config PDA.
-    #[account(mut)]
-    pub config: UncheckedAccount<'info>,
-
+pub struct CpiInvokeForTesting<'info> {
     pub signer: Signer<'info>,
 }
 

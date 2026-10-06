@@ -2,7 +2,9 @@ use crate::account_structs::*;
 use crate::error::*;
 use crate::events::*;
 use crate::guard::{require_direct_invocation, validate_program_update_authority};
-use crate::state::{LastRewardPublication, StakePriceConfig, StakeRewardConfig, MAX_ADMINISTRATORS};
+use crate::state::{
+    LastRewardPublication, StakePriceConfig, StakeRewardConfig, MAX_ADMINISTRATORS,
+};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::{get_return_data, invoke};
 use anchor_spl::token::spl_token::instruction::AuthorityType;
@@ -1105,4 +1107,41 @@ pub fn exchange_rate(ctx: Context<ConversionView>) -> Result<u64> {
     anchor_lang::solana_program::program::set_return_data(&rate.to_le_bytes());
 
     Ok(rate)
+}
+
+/// FOR TESTING ONLY — invokes this program via CPI using `data` as the inner instruction
+/// and `remaining_accounts` as its account list. The inner call is expected to fail with
+/// `InstructionMustBeDirectInvocation` for freeze and rewards admin instructions.
+#[cfg(feature = "testing")]
+pub fn cpi_invoke_for_testing(ctx: Context<CpiInvokeForTesting>, data: Vec<u8>) -> Result<()> {
+    require_direct_invocation()?;
+
+    let accounts: Vec<anchor_lang::solana_program::instruction::AccountMeta> = ctx
+        .remaining_accounts
+        .iter()
+        .map(|account| {
+            if account.is_writable {
+                anchor_lang::solana_program::instruction::AccountMeta::new(
+                    account.key(),
+                    account.is_signer,
+                )
+            } else {
+                anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+                    account.key(),
+                    account.is_signer,
+                )
+            }
+        })
+        .collect();
+
+    invoke(
+        &anchor_lang::solana_program::instruction::Instruction {
+            program_id: crate::ID,
+            accounts,
+            data,
+        },
+        ctx.remaining_accounts,
+    )?;
+
+    Ok(())
 }

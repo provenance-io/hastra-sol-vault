@@ -1747,24 +1747,142 @@ describe("vault-mint", () => {
     });
 
     describe("paused protocol", () => {
-        it("rejects CPI into pause", async () => {
-            const before = await program.account.config.fetch(configPda);
+        const rejectCpi = async (
+            builder: { instruction(): Promise<anchor.web3.TransactionInstruction> },
+            signers: Keypair[]
+        ) => {
+            const ix = await builder.instruction();
             try {
                 await program.methods
-                    .cpiInvokePauseForTesting(!before.paused)
-                    .accountsStrict({
-                        config: configPda,
-                        signer: freezeAdmin.publicKey,
-                    })
-                    .signers([freezeAdmin])
+                    .cpiInvokeForTesting(Buffer.from(ix.data))
+                    .accounts({ signer: provider.wallet.publicKey })
+                    .remainingAccounts(
+                        ix.keys.map((meta) => ({
+                            pubkey: meta.pubkey,
+                            isSigner: meta.isSigner,
+                            isWritable: meta.isWritable,
+                        }))
+                    )
+                    .signers(signers)
                     .rpc();
                 assert.fail("Should have thrown error");
             } catch (err) {
-                expect(err).to.exist;
-                expect(err.toString()).to.match(/InstructionMustBeDirectInvocation/);
+                expect(String(err)).to.match(/InstructionMustBeDirectInvocation/);
             }
+        };
+
+        it("rejects CPI into pause", async () => {
+            const before = await program.account.config.fetch(configPda);
+            await rejectCpi(
+                program.methods.pause(!before.paused).accountsStrict({
+                    config: configPda,
+                    signer: freezeAdmin.publicKey,
+                }),
+                [freezeAdmin]
+            );
             const after = await program.account.config.fetch(configPda);
             assert.equal(after.paused, before.paused);
+        });
+
+        it("rejects CPI into freeze and thaw", async () => {
+            const before = await getAccount(provider.connection, userMintTokenAccount);
+            const accounts = {
+                config: configPda,
+                tokenAccount: userMintTokenAccount,
+                mint: mintedToken,
+                freezeAuthorityPda: freezeAuthorityPda,
+                signer: freezeAdmin.publicKey,
+                tokenProgram: TOKEN_PROGRAM_ID,
+            };
+            await rejectCpi(
+                program.methods.freezeTokenAccount().accountsStrict(accounts),
+                [freezeAdmin]
+            );
+            await rejectCpi(
+                program.methods.thawTokenAccount().accountsStrict(accounts),
+                [freezeAdmin]
+            );
+            const after = await getAccount(provider.connection, userMintTokenAccount);
+            assert.equal(after.isFrozen, before.isFrozen);
+        });
+
+        it("rejects CPI into sweep_redeem_vault_funds", async () => {
+            const redeemBefore = (await getAccount(provider.connection, redeemVaultTokenAccount)).amount;
+            const vaultBefore = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+            await rejectCpi(
+                program.methods.sweepRedeemVaultFunds(new BN(1)).accountsStrict({
+                    config: configPda,
+                    vaultTokenAccountConfig: vaultTokenAccountConfigPda,
+                    signer: rewardsAdmin.publicKey,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    redeemVaultTokenAccount: redeemVaultTokenAccount,
+                    vaultTokenAccount: vaultTokenAccount,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                }),
+                [rewardsAdmin]
+            );
+            assert.equal(
+                (await getAccount(provider.connection, redeemVaultTokenAccount)).amount,
+                redeemBefore
+            );
+            assert.equal(
+                (await getAccount(provider.connection, vaultTokenAccount)).amount,
+                vaultBefore
+            );
+        });
+
+        it("rejects CPI into complete_redeem", async () => {
+            const [redemptionRequestPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [Buffer.from("redemption_request"), user.publicKey.toBuffer()],
+                program.programId
+            );
+            const amount = new BN(1_000);
+            await program.methods
+                .requestRedeem(amount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            await rejectCpi(
+                program.methods.completeRedeem(amount).accountsStrict({
+                    admin: rewardsAdmin.publicKey,
+                    user: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    userVaultTokenAccount: userVaultTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultTokenAccount: redeemVaultTokenAccount,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                }),
+                [rewardsAdmin]
+            );
+
+            const request = await program.account.redemptionRequest.fetch(redemptionRequestPda);
+            assert.equal(request.amount.toString(), amount.toString());
+
+            await program.methods
+                .cancelRedeem()
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    config: configPda,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                })
+                .signers([user])
+                .rpc();
         });
 
         it("pauses all functionality", async () => {

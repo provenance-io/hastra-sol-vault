@@ -480,10 +480,7 @@ pub fn create_rewards_epoch(
         .index
         .checked_add(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
-    require!(
-        index == expected,
-        CustomErrorCode::EpochIndexNotContiguous
-    );
+    require!(index == expected, CustomErrorCode::EpochIndexNotContiguous);
     require!(
         total <= caps.max_epoch_cap,
         CustomErrorCode::EpochCapAboveGlobal
@@ -992,40 +989,38 @@ pub fn sweep_redeem_vault_funds(ctx: Context<SweepRedeemVaultFunds>, amount: u64
     Ok(())
 }
 
-/// FOR TESTING ONLY — invokes `pause` via CPI so the direct-invocation guard can be
-/// observed on-chain. The inner call is expected to fail with
-/// `InstructionMustBeDirectInvocation`.
+/// FOR TESTING ONLY — invokes this program via CPI using `data` as the inner instruction
+/// and `remaining_accounts` as its account list. The inner call is expected to fail with
+/// `InstructionMustBeDirectInvocation` for freeze and rewards admin instructions.
 #[cfg(feature = "testing")]
-pub fn cpi_invoke_pause_for_testing(
-    ctx: Context<CpiInvokePauseForTesting>,
-    pause: bool,
-) -> Result<()> {
+pub fn cpi_invoke_for_testing(ctx: Context<CpiInvokeForTesting>, data: Vec<u8>) -> Result<()> {
     require_direct_invocation()?;
 
-    let mut data = hashv(&[b"global:pause"]).to_bytes()[..8].to_vec();
-    data.push(u8::from(pause));
-
-    let ix = anchor_lang::solana_program::instruction::Instruction {
-        program_id: crate::ID,
-        accounts: vec![
-            anchor_lang::solana_program::instruction::AccountMeta::new(
-                ctx.accounts.config.key(),
-                false,
-            ),
-            anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
-                ctx.accounts.signer.key(),
-                true,
-            ),
-        ],
-        data,
-    };
+    let accounts: Vec<anchor_lang::solana_program::instruction::AccountMeta> = ctx
+        .remaining_accounts
+        .iter()
+        .map(|account| {
+            if account.is_writable {
+                anchor_lang::solana_program::instruction::AccountMeta::new(
+                    account.key(),
+                    account.is_signer,
+                )
+            } else {
+                anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+                    account.key(),
+                    account.is_signer,
+                )
+            }
+        })
+        .collect();
 
     invoke(
-        &ix,
-        &[
-            ctx.accounts.config.to_account_info(),
-            ctx.accounts.signer.to_account_info(),
-        ],
+        &anchor_lang::solana_program::instruction::Instruction {
+            program_id: crate::ID,
+            accounts,
+            data,
+        },
+        ctx.remaining_accounts,
     )?;
 
     Ok(())
