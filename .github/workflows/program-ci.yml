@@ -77,12 +77,16 @@ jobs:
     # Negative control for the release-artifact check in verified-build: it must flag this build.
     - name: Release-artifact check flags the testing build
       run: |
-        status=0
-        .github/scripts/check_release_artifacts.sh target/idl/vault_stake.json target/deploy/vault_stake.so || status=$?
-        if [ "${status}" -ne 1 ]; then
-          echo "expected exit 1 (testing instruction found), got ${status}"
-          exit 1
-        fi
+        # Only vault-stake has testing instructions. Each artifact is checked on its own, so a
+        # match in one cannot hide a miss in the other.
+        for artifact in target/idl/vault_stake.json target/deploy/vault_stake.so; do
+          status=0
+          .github/scripts/check_release_artifacts.sh "${artifact}" || status=$?
+          if [ "${status}" -ne 1 ]; then
+            echo "${artifact}: expected exit 1 (testing instruction found), got ${status}"
+            exit 1
+          fi
+        done
 
     - name: Start local validator
       run: |

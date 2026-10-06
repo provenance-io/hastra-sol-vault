@@ -1,12 +1,12 @@
 #!/bin/bash
 # Fail if a program IDL or binary exposes a `testing`-feature instruction.
-# Usage: check_release_artifacts.sh <idl.json> <program.so>
-# Exit 0 = clean; exit 1 = a testing instruction was found (matches are printed).
+# Usage: check_release_artifacts.sh <artifact>...   (IDL JSON and/or program .so)
+# Exit 0 = all clean; exit 1 = a testing instruction was found (matches are printed); 2 = bad usage.
 
 set -euo pipefail
 
-if [ "$#" -ne 2 ]; then
-  echo "usage: $0 <idl.json> <program.so>" >&2
+if [ "$#" -eq 0 ]; then
+  echo "usage: $0 <artifact>..." >&2
   exit 2
 fi
 
