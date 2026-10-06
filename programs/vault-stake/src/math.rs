@@ -255,6 +255,7 @@ mod tests {
             let max_dust = ((p - 1) as u128 / s as u128) as u64;
             prop_assert_eq!(err_code(deposit_shares(max_dust, p, s)), code(CustomErrorCode::DepositTooSmall));
             prop_assert_eq!(err_code(deposit_shares(0, p, s)), code(CustomErrorCode::DepositTooSmall));
+            prop_assert!(deposit_shares(max_dust + 1, p, s).unwrap() >= 1);
         }
 
         #[test]
@@ -263,6 +264,7 @@ mod tests {
             let max_dust = ((s - 1) as u128 / p as u128) as u64;
             prop_assert_eq!(err_code(redeem_assets(max_dust, p, s)), code(CustomErrorCode::InvalidAmount));
             prop_assert_eq!(err_code(redeem_assets(0, p, s)), code(CustomErrorCode::InvalidAmount));
+            prop_assert!(redeem_assets(max_dust + 1, p, s).unwrap() >= 1);
         }
 
         #[test]
@@ -459,5 +461,80 @@ mod tests {
             shares_to_assets(u64::MAX, i128::MAX, 1),
             CustomErrorCode::Overflow,
         );
+    }
+
+    fn outcome(r: Result<u64>) -> std::result::Result<u64, u32> {
+        match r {
+            Ok(v) => Ok(v),
+            e => Err(err_code(e)),
+        }
+    }
+
+    #[test]
+    fn conversions_at_extremes() {
+        use CustomErrorCode::*;
+        const M: u64 = u64::MAX;
+        const P: i128 = i128::MAX;
+        for price in [i128::MIN, -1, 0] {
+            for amount in [0, 1, M] {
+                for scale in [0, 1, M] {
+                    assert_eq!(
+                        outcome(deposit_shares(amount, price, scale)),
+                        Err(code(PriceNotInitialized))
+                    );
+                    assert_eq!(
+                        outcome(redeem_assets(amount, price, scale)),
+                        Err(code(PriceNotInitialized))
+                    );
+                }
+            }
+        }
+        // (amount, price, scale, deposit_shares = amount*scale/price, redeem_assets = amount*price/scale)
+        #[rustfmt::skip]
+        let table: [(u64, i128, u64, _, _); 27] = [
+            (0, 1, 0, Err(code(DepositTooSmall)), Err(code(DivisionByZero))),
+            (0, 1, 1, Err(code(DepositTooSmall)), Err(code(InvalidAmount))),
+            (0, 1, M, Err(code(DepositTooSmall)), Err(code(InvalidAmount))),
+            (1, 1, 0, Err(code(DepositTooSmall)), Err(code(DivisionByZero))),
+            (1, 1, 1, Ok(1), Ok(1)),
+            (1, 1, M, Ok(M), Err(code(InvalidAmount))),
+            (M, 1, 0, Err(code(DepositTooSmall)), Err(code(DivisionByZero))),
+            (M, 1, 1, Ok(M), Ok(M)),
+            (M, 1, M, Err(code(Overflow)), Ok(1)),
+            (0, M as i128, 0, Err(code(DepositTooSmall)), Err(code(DivisionByZero))),
+            (0, M as i128, 1, Err(code(DepositTooSmall)), Err(code(InvalidAmount))),
+            (0, M as i128, M, Err(code(DepositTooSmall)), Err(code(InvalidAmount))),
+            (1, M as i128, 0, Err(code(DepositTooSmall)), Err(code(DivisionByZero))),
+            (1, M as i128, 1, Err(code(DepositTooSmall)), Ok(M)),
+            (1, M as i128, M, Ok(1), Ok(1)),
+            (M, M as i128, 0, Err(code(DepositTooSmall)), Err(code(DivisionByZero))),
+            (M, M as i128, 1, Ok(1), Err(code(Overflow))),
+            (M, M as i128, M, Ok(M), Ok(M)),
+            (0, P, 0, Err(code(DepositTooSmall)), Err(code(DivisionByZero))),
+            (0, P, 1, Err(code(DepositTooSmall)), Err(code(InvalidAmount))),
+            (0, P, M, Err(code(DepositTooSmall)), Err(code(InvalidAmount))),
+            (1, P, 0, Err(code(DepositTooSmall)), Err(code(DivisionByZero))),
+            (1, P, 1, Err(code(DepositTooSmall)), Err(code(Overflow))),
+            // (2^127 - 1) / (2^64 - 1) = 2^63 remainder 2^63 - 1.
+            (1, P, M, Err(code(DepositTooSmall)), Ok(1 << 63)),
+            // amount * price overflows u128 before the division is reached.
+            (M, P, 0, Err(code(DepositTooSmall)), Err(code(Overflow))),
+            (M, P, 1, Err(code(DepositTooSmall)), Err(code(Overflow))),
+            // (2^64 - 1)^2 is just under 2 * (2^127 - 1).
+            (M, P, M, Ok(1), Err(code(Overflow))),
+        ];
+        for (amount, price, scale, deposit, redeem) in table {
+            let case = format!("amount {amount}, price {price}, scale {scale}");
+            assert_eq!(
+                outcome(deposit_shares(amount, price, scale)),
+                deposit,
+                "deposit {case}"
+            );
+            assert_eq!(
+                outcome(redeem_assets(amount, price, scale)),
+                redeem,
+                "redeem {case}"
+            );
+        }
     }
 }
