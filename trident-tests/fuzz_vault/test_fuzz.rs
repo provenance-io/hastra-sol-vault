@@ -12,6 +12,7 @@ const USERS: usize = 3;
 const MAX_GAP: u32 = 255;
 const MAX_BPS: u64 = 10_000;
 const ANCHOR_ACCOUNT_NOT_INITIALIZED: u32 = 3012;
+const ANCHOR_CONSTRAINT_EXECUTABLE: u32 = 2007;
 /// System program: `init` of an account that already exists.
 const ACCOUNT_ALREADY_IN_USE: u32 = 0;
 const SPL_INSUFFICIENT_FUNDS: u32 = 1;
@@ -474,8 +475,10 @@ impl FuzzTest {
     #[flow]
     fn register_external_program(&mut self) {
         let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
-        let program = candidate(t);
-        let expect = if m.allowed.contains(&program) || m.allowed.len() < m.limit as usize {
+        let program = candidate(t, &m.world);
+        let expect = if program == m.world.wylds_mint {
+            Expect::Code(ANCHOR_CONSTRAINT_EXECUTABLE)
+        } else if m.allowed.contains(&program) || m.allowed.len() < m.limit as usize {
             Expect::Ok
         } else {
             mint_err("TooManyAllowedExternalMintPrograms")
@@ -507,10 +510,12 @@ impl FuzzTest {
     #[flow]
     fn external_program_mint(&mut self) {
         let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
-        let program = candidate(t);
+        let program = candidate(t, &m.world);
         let u = t.random_from_range(0..USERS);
         let amount = t.random_from_range(1..=1_000_000_000u64);
-        let expect = if program == stake_id() || m.allowed.contains(&program) {
+        let expect = if program == m.world.wylds_mint {
+            Expect::Code(ANCHOR_CONSTRAINT_EXECUTABLE)
+        } else if program == stake_id() || m.allowed.contains(&program) {
             Expect::Ok
         } else {
             mint_err("InvalidMintProgramCaller")
@@ -933,8 +938,9 @@ fn pick_price(t: &mut Trident) -> i128 {
     }
 }
 
-fn candidate(t: &mut Trident) -> Pubkey {
-    let pool = [stake_id(), mint_id()];
+/// An allow-list candidate: an executable, one of the vault programs, or a non-executable account.
+fn candidate(t: &mut Trident, world: &World) -> Pubkey {
+    let pool = [stake_id(), mint_id(), world.wylds_mint];
     let i = t.random_from_range(0..EXECUTABLES.len() + pool.len());
     if i < EXECUTABLES.len() {
         EXECUTABLES[i]
