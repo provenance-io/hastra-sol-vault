@@ -215,6 +215,9 @@ jobs:
       run: cargo test --release --manifest-path trident-tests/Cargo.toml
 
     - name: Fast fuzz profile
+      env:
+        # Pinned so the fixed seed replays the same run on any runner with at least 2 CPUs.
+        FUZZ_THREADS: 2
       run: trident-tests/run_fuzz.sh 4000 100 fuzz-out "${FUZZ_SEED}"
 
     - name: Upload fuzz output
