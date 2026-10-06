@@ -33,6 +33,8 @@ testing = ["localnet-program-ids", "vault-mint/localnet-program-ids"]
 # instructions call the deprecated `AccountInfo::realloc`.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
+# Anchor 0.31's `#[program]` expansion calls the deprecated `AccountInfo::realloc` outside the
+# annotated module, so an item-level allow cannot reach it.
 deprecated = "allow"
 
 [dependencies]
