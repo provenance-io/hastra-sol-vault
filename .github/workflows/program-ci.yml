@@ -64,10 +64,8 @@ jobs:
     - name: Install yarn dependencies
       run: yarn install --frozen-lockfile
 
-    # Tests intentionally use ephemeral deploy keypairs. This checkout is isolated
-    # from the verified-build job, so synchronization cannot affect release binaries.
-    - name: Sync Anchor program IDs to deploy keypairs
-      run: anchor keys sync
+    - name: Install localnet deploy keypairs
+      run: bash scripts/sync-localnet-deploy-keypairs.sh
 
     # Ensure SBF platform tools exist before Anchor invokes cargo-build-sbf.
     - name: Install SBF platform tools

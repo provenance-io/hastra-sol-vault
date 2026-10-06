@@ -24,7 +24,8 @@ no-log-ix-name = []
 custom-heap = []
 idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 custom-panic = []
-testing = []
+localnet-program-ids = []
+testing = ["localnet-program-ids", "vault-mint/localnet-program-ids"]
 
 [dependencies]
 anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
