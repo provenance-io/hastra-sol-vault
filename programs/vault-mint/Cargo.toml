@@ -13,6 +13,7 @@ no-entrypoint = []
 anchor-debug = []
 no-idl = []
 no-log-ix-name = []
+# Localnet-only program IDs and test-only instructions; do not deploy to devnet/mainnet.
 localnet-program-ids = []
 testing = ["localnet-program-ids"]
 custom-heap = []

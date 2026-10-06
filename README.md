@@ -774,20 +774,27 @@ $ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
 
 ## Testing
 
-Integration tests live under `tests/` (`vault-mint.test.ts`, `vault-stake-auto.test.ts`, `vault-stake.test.ts`, etc.). `Anchor.toml` runs them with:
+Integration tests live under `tests/` (`vault-mint.test.ts`, `vault-stake-auto.test.ts`, `vault-stake.test.ts`, etc.).
+
+**Recommended:** run the full suite via `scripts/run-tests.sh` (copies to `/tmp`, installs localnet deploy keypairs, builds with the `testing` feature, starts a validator, and runs tests).
+
+Manual flow (same steps CI uses):
 
 ```bash
-anchor test
+bash scripts/sync-localnet-deploy-keypairs.sh
+anchor build -- --features testing
+(cd programs/vault-stake && cargo build-sbf --features testing)
+solana-test-validator --reset &
+# wait for RPC, then:
+anchor test --skip-local-validator --skip-build
 ```
 
-That starts a temporary local validator, deploys the workspace programs, and executes `yarn run ts-mocha … tests/**/*.ts` (see `[scripts] test`).
+Plain `anchor test` builds **without** the `testing` feature (production program IDs, no `set_price_for_testing`), so it does not match the committed localnet keypairs in `keys/localnet/` and tests will fail. Always build with `--features testing` first, or use `run-tests.sh`.
 
-To attach to a validator you already started:
+To attach to a validator you already started, use the build lines above, then:
 
 ```bash
-solana-test-validator --reset
-# another terminal:
-anchor test --skip-local-validator
+anchor test --skip-local-validator --skip-build
 ```
 
 Tests run in **lexical file order**. `vault-mint.test.ts` exercises **vault-stake-auto** `publish_rewards` before `vault-stake-auto.test.ts`, so both suites share validator state; reward cooldown and related assertions account for that ordering.
