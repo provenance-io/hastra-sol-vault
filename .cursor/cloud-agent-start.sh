@@ -18,26 +18,48 @@ fi
 solana config set --url http://127.0.0.1:8899
 solana config set --keypair "${KEYPAIR}"
 
+cli_version="$(solana --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+cluster_version=""
 if solana cluster-version >/dev/null 2>&1; then
-  echo "solana-test-validator already responding"
-else
+  cluster_version="$(solana cluster-version 2>/dev/null | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' || true)"
+fi
+
+stop_validator() {
   tmux -f "${TMUX_CONF}" has-session -t "=${SESSION_NAME}" 2>/dev/null &&
     tmux -f "${TMUX_CONF}" kill-session -t "${SESSION_NAME}" || true
+  pkill -f solana-test-validator 2>/dev/null || true
+  sleep 2
+}
 
+start_validator() {
+  stop_validator
   tmux -f "${TMUX_CONF}" new-session -d -s "${SESSION_NAME}" -c /workspace -- \
     "solana-test-validator --reset --ledger ${LEDGER_DIR} 2>&1 | tee ${LOG_FILE}"
 
   for _ in $(seq 1 90); do
     if solana cluster-version >/dev/null 2>&1; then
-      break
+      return 0
     fi
     sleep 1
   done
+  return 1
+}
 
-  if ! solana cluster-version >/dev/null 2>&1; then
+if [[ -n "${cluster_version}" && -n "${cli_version}" && "${cluster_version}" == "${cli_version}" ]]; then
+  echo "solana-test-validator already responding (v${cluster_version})"
+elif [[ -n "${cluster_version}" && -n "${cli_version}" ]]; then
+  echo "restarting validator (cluster v${cluster_version} != CLI v${cli_version})"
+  start_validator || {
     echo "solana-test-validator failed to start; see ${LOG_FILE}" >&2
     exit 1
-  fi
+  }
+elif solana cluster-version >/dev/null 2>&1; then
+  echo "solana-test-validator already responding"
+else
+  start_validator || {
+    echo "solana-test-validator failed to start; see ${LOG_FILE}" >&2
+    exit 1
+  }
 fi
 
 LAMPORTS=$(solana balance --lamports 2>/dev/null | awk '{print $1}' || echo 0)
