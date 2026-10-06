@@ -540,9 +540,12 @@ impl FuzzTest {
     fn stake_price_report(&mut self) {
         let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
         let now = pin_clock(t, m);
-        let observed = now - t.random_from_range(-2..=PRICE_MAX_STALENESS);
-        let valid_from = observed - t.random_from_range(-1..=10i64);
-        let expires_at = now + t.random_from_range(-2..=120i64);
+        let random = now - t.random_from_range(-2..=PRICE_MAX_STALENESS);
+        let observed = edge_or(t, &[now, now + 1, m.price_ts, m.price_ts + 1], random);
+        let random = observed - t.random_from_range(-1..=10i64);
+        let valid_from = edge_or(t, &[now, now + 1, observed, observed + 1], random);
+        let random = now + t.random_from_range(-2..=120i64);
+        let expires_at = edge_or(t, &[now, now - 1, observed, observed - 1], random);
         let feed = if t.random_from_range(0..10u8) == 0 {
             [8; 32]
         } else {
@@ -675,12 +678,16 @@ impl FuzzTest {
         };
         let vault = token_balance(t, m.world.stake_vault);
         let bps_cap = (vault as u128 * r.bps as u128 / MAX_BPS as u128) as u64;
-        let amount = match t.random_from_range(0..6u8) {
+        let amount = match t.random_from_range(0..7u8) {
             0 => bps_cap,
             1 => bps_cap + 1,
             2 => r.period_cap,
             3 => r.period_cap + 1,
             4 => r.lifetime_cap.saturating_sub(r.distributed),
+            5 => r
+                .lifetime_cap
+                .saturating_sub(r.distributed)
+                .saturating_add(1),
             _ => t.random_from_range(0..=bps_cap.min(r.period_cap)),
         };
         let now = pin_clock(t, m);
@@ -935,6 +942,15 @@ fn pick_price(t: &mut Trident) -> i128 {
         2 => 1,
         3 => t.random_from_range(u64::MAX as i128..=i128::MAX),
         _ => t.random_from_range(PRICE_SCALE as i128 / 2..=PRICE_SCALE as i128 * 2),
+    }
+}
+
+/// Half the time one of the boundary values a check compares against, otherwise `random`.
+fn edge_or(t: &mut Trident, edges: &[i64], random: i64) -> i64 {
+    if t.random_bool() {
+        edges[t.random_from_range(0..edges.len())]
+    } else {
+        random
     }
 }
 

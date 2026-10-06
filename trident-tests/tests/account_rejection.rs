@@ -249,16 +249,17 @@ fn caught(program: Program, mutation: Mutation, code: Option<u32>) -> bool {
     code.is_some_and(|code| rejected_by(mutation).contains(&error_name(program, code).as_str()))
 }
 
-fn accepted(program: Program, ix: &str, account: &str, mutation: Mutation) -> bool {
+fn accepted(program: Program, ix: &str, account: &str, mutation: Mutation) -> Option<usize> {
     ACCEPTED
         .iter()
-        .any(|(p, i, a, m, _)| (*p, *i, *a, *m) == (program, ix, account, mutation))
+        .position(|(p, i, a, m, _)| (*p, *i, *a, *m) == (program, ix, account, mutation))
 }
 
 #[test]
 fn every_instruction_rejects_wrong_accounts_and_signers() {
     let mut problems = Vec::new();
     let mut total = 0;
+    let mut exercised = [false; ACCEPTED.len()];
     for program in [Program::Mint, Program::Stake] {
         for ix in &program.idl().instructions {
             let name = ix.name.as_str();
@@ -298,7 +299,11 @@ fn every_instruction_rejects_wrong_accounts_and_signers() {
                 if let Some((key, original)) = original {
                     trident.set_account_custom(&key, &original);
                 }
-                let by_design = accepted(program, name, account, mutation);
+                let entry = accepted(program, name, account, mutation);
+                let by_design = entry.is_some();
+                if let Some(i) = entry {
+                    exercised[i] = true;
+                }
                 if result.is_success() {
                     if !by_design {
                         problems.push(format!("{tag} was accepted"));
