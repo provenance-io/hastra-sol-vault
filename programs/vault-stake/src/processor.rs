@@ -17,7 +17,6 @@ pub fn initialize(
     freeze_administrators: Vec<Pubkey>,
     rewards_administrators: Vec<Pubkey>,
 ) -> Result<()> {
-    require_direct_invocation()?;
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
     require!(
         freeze_administrators.len() <= MAX_ADMINISTRATORS,
@@ -312,7 +311,6 @@ pub fn update_freeze_administrators(
     ctx: Context<UpdateFreezeAdministrators>,
     new_administrators: Vec<Pubkey>,
 ) -> Result<()> {
-    require_direct_invocation()?;
     // Validate that the signer is the program's update authority
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
 
@@ -338,7 +336,6 @@ pub fn update_rewards_administrators(
     ctx: Context<UpdateRewardsAdministrators>,
     new_administrators: Vec<Pubkey>,
 ) -> Result<()> {
-    require_direct_invocation()?;
     // Validate that the signer is the program's update authority
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
 
@@ -586,7 +583,6 @@ pub fn set_price_for_testing(
     price: i128,
     price_timestamp: i64,
 ) -> Result<()> {
-    require_direct_invocation()?;
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
     let config = &mut ctx.accounts.stake_price_config;
     config.price = price;
@@ -653,7 +649,6 @@ pub fn initialize_price_config(
     price_scale: u64,
     price_max_staleness: i64,
 ) -> Result<()> {
-    require_direct_invocation()?;
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
 
     let config = &mut ctx.accounts.stake_price_config;
@@ -687,7 +682,6 @@ pub fn update_price_config(
     price_scale: u64,
     price_max_staleness: i64,
 ) -> Result<()> {
-    require_direct_invocation()?;
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
 
     let config = &mut ctx.accounts.stake_price_config;
@@ -733,7 +727,6 @@ pub fn update_price_config(
 /// Must be called once before `publish_rewards` can enforce reward limits.
 /// Only callable by the program upgrade authority.
 pub fn initialize_stake_reward_config(ctx: Context<InitializeStakeRewardConfig>) -> Result<()> {
-    require_direct_invocation()?;
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
 
     let config = &mut ctx.accounts.stake_reward_config;
@@ -762,7 +755,6 @@ pub fn initialize_last_reward_publication(
     ctx: Context<InitializeLastRewardPublication>,
     start_id: u32,
 ) -> Result<()> {
-    require_direct_invocation()?;
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
 
     let last = &mut ctx.accounts.last_reward_publication;
@@ -787,7 +779,6 @@ pub fn update_last_reward_publication(
     ctx: Context<UpdateLastRewardPublication>,
     new_id: u32,
 ) -> Result<()> {
-    require_direct_invocation()?;
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
 
     let last = &mut ctx.accounts.last_reward_publication;
@@ -810,7 +801,6 @@ pub fn update_last_reward_publication(
 /// Updates max_reward_bps on an existing StakeRewardConfig.
 /// Only callable by the program upgrade authority.
 pub fn update_max_reward_bps(ctx: Context<UpdateMaxRewardBps>, new_bps: u64) -> Result<()> {
-    require_direct_invocation()?;
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
     require!(
         new_bps > 0 && new_bps <= StakeRewardConfig::MAX_BPS,
@@ -833,7 +823,6 @@ pub fn update_max_reward_bps(ctx: Context<UpdateMaxRewardBps>, new_bps: u64) -> 
 }
 
 pub fn update_max_period_rewards(ctx: Context<UpdateMaxPeriodRewards>, new_cap: u64) -> Result<()> {
-    require_direct_invocation()?;
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
     require!(new_cap > 0, CustomErrorCode::InvalidMaxPeriodRewards);
 
@@ -858,7 +847,6 @@ pub fn update_reward_period_seconds(
     ctx: Context<UpdateRewardPeriodSeconds>,
     new_seconds: i64,
 ) -> Result<()> {
-    require_direct_invocation()?;
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
     require!(new_seconds > 0, CustomErrorCode::InvalidRewardPeriodSeconds);
 
@@ -884,7 +872,6 @@ pub fn update_reward_period_seconds(
 /// Updates max_total_rewards on an existing StakeRewardConfig.
 /// Only callable by the program upgrade authority.
 pub fn update_max_total_rewards(ctx: Context<UpdateMaxTotalRewards>, new_cap: u64) -> Result<()> {
-    require_direct_invocation()?;
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
     let distributed = ctx.accounts.stake_reward_config.total_rewards_distributed;
     require!(

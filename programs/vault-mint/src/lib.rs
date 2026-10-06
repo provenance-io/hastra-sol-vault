@@ -217,6 +217,7 @@ pub mod vault_mint {
     /// Allows an external authorized program to mint tokens to a specified account.
     /// This is the only vault-mint instruction that accepts CPI, and it must be invoked
     /// that way (staking `publish_rewards`). Direct calls are rejected.
+    /// that way (staking `publish_rewards`). Direct calls are rejected.
     /// The calling_program account identifies the CPI caller; it must match either
     /// config.allowed_external_mint_program (legacy) or be listed in the
     /// allowed_external_mint_programs PDA (registered via register_allowed_external_mint_program).
