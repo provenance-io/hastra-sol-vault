@@ -74,20 +74,17 @@ install_anchor() {
   sudo ln -sf /home/ubuntu/.avm/bin/anchor-0.31.1 /usr/local/bin/anchor
 }
 
-restore_tracked_program_ids() {
-  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    return 0
-  fi
-  git checkout -- programs/vault-mint/src/lib.rs programs/vault-stake/src/lib.rs Anchor.toml
-}
+# shellcheck source=localnet-program-ids.sh
+source "$(dirname "$0")/localnet-program-ids.sh"
 
 build_programs() {
   yarn install --frozen-lockfile
-  anchor keys sync
+  localnet_program_ids_no_skip_worktree
+  localnet_program_ids_sync
   cargo build-sbf --force-tools-install --manifest-path programs/vault-mint/Cargo.toml
   anchor build -- --features testing
   (cd programs/vault-stake && cargo build-sbf --features testing)
-  restore_tracked_program_ids
+  localnet_program_ids_skip_worktree
 }
 
 install_apt_deps
@@ -97,3 +94,6 @@ install_anchor
 build_programs
 
 echo "cloud-agent-install: OK"
+echo "  Localnet declare_id! drift is hidden via git skip-worktree."
+echo "  To edit program IDs intentionally: git update-index --no-skip-worktree on those files."
+echo "  Optional wrapper for a fresh sync before build/test: .cursor/anchor-localnet.sh <cmd...>"
