@@ -199,10 +199,18 @@ impl Program {
             Program::Stake => stake_idl(),
         }
     }
+
+    pub fn setup(self) -> &'static [&'static str] {
+        match self {
+            Program::Mint => MINT_SETUP,
+            Program::Stake => STAKE_SETUP,
+        }
+    }
 }
 
 /// A call with the authorized signer and valid accounts. `accounts` lists only what the IDL
 /// cannot derive.
+#[derive(Clone)]
 pub struct Call {
     pub program: Program,
     pub name: &'static str,
@@ -232,6 +240,11 @@ impl Call {
             Some(slot) => slot.1 = key,
             None => self.accounts.push((name, key)),
         }
+        self
+    }
+
+    pub fn with_args<T: BorshSerialize>(mut self, value: &T) -> Self {
+        self.args = args(value);
         self
     }
 }
@@ -291,8 +304,8 @@ impl World {
     /// Runs the setup steps of both programs (stopping before `stop_before`, if given), then
     /// funds every user with USDC, wYLDS and PRIME.
     pub fn setup(&self, trident: &mut Trident, stop_before: Option<(Program, &str)>) {
-        for (program, steps) in [(Program::Mint, MINT_SETUP), (Program::Stake, STAKE_SETUP)] {
-            for step in steps {
+        for program in [Program::Mint, Program::Stake] {
+            for step in program.setup() {
                 if stop_before == Some((program, *step)) {
                     return;
                 }
@@ -356,180 +369,133 @@ impl World {
 
     /// Authorized vault-mint call acting for user `u` where a user is involved.
     pub fn mint_call_for(&self, name: &str, u: usize) -> Call {
-        let user = &self.users.get(u);
-        let user_key = user.map(|u| u.key).unwrap_or_default();
-        let user_usdc = user.map(|u| u.usdc).unwrap_or_default();
-        let user_wylds = user.map(|u| u.wylds).unwrap_or_default();
+        let user = &self.users[u];
+        let (user_key, user_usdc, user_wylds) = (user.key, user.usdc, user.wylds);
         let pd = ("program_data", program_data(&mint_id()));
         let ua = ("signer", UPGRADE_AUTHORITY);
         let epoch = FIRST_CAPPED_EPOCH;
-        let (name, accounts, data): (&'static str, Vec<(&'static str, Pubkey)>, Vec<u8>) =
-            match name {
-                "initialize" => (
-                    "initialize",
-                    vec![
-                        ("vault_token_account", self.mint_vault),
-                        ("redeem_vault_token_account", self.redeem_vault),
-                        ("vault_token_mint", self.usdc_mint),
-                        ("mint", self.wylds_mint),
-                        ua,
-                        pd,
-                        ("allowed_external_mint_program", stake_id()),
-                    ],
-                    args(&(vec![FREEZE_ADMIN], vec![REWARDS_ADMIN])),
-                ),
-                "pause" => ("pause", vec![("signer", FREEZE_ADMIN)], args(&true)),
-                "deposit" => (
-                    "deposit",
-                    vec![
-                        ("vault_token_account", self.mint_vault),
-                        ("mint", self.wylds_mint),
-                        ("signer", user_key),
-                        ("user_vault_token_account", user_usdc),
-                        ("user_mint_token_account", user_wylds),
-                    ],
-                    args(&1_000_000u64),
-                ),
-                "request_redeem" => (
-                    "request_redeem",
-                    vec![
-                        ("signer", user_key),
-                        ("user_mint_token_account", user_wylds),
-                        ("mint", self.wylds_mint),
-                    ],
-                    args(&1_000_000u64),
-                ),
-                "cancel_redeem" => (
-                    "cancel_redeem",
-                    vec![
-                        ("signer", user_key),
-                        ("user_mint_token_account", user_wylds),
-                    ],
-                    vec![],
-                ),
-                "complete_redeem" => (
-                    "complete_redeem",
-                    vec![
-                        ("admin", REWARDS_ADMIN),
-                        ("user", user_key),
-                        ("user_mint_token_account", user_wylds),
-                        ("user_vault_token_account", user_usdc),
-                        ("redeem_vault_token_account", self.redeem_vault),
-                        ("mint", self.wylds_mint),
-                    ],
-                    args(&1_000_000u64),
-                ),
-                "update_freeze_administrators" => (
-                    "update_freeze_administrators",
-                    vec![pd, ua],
-                    args(&vec![FREEZE_ADMIN]),
-                ),
-                "update_rewards_administrators" => (
-                    "update_rewards_administrators",
-                    vec![pd, ua],
-                    args(&vec![REWARDS_ADMIN]),
-                ),
-                "freeze_token_account" | "thaw_token_account" => (
-                    if name == "freeze_token_account" {
-                        "freeze_token_account"
-                    } else {
-                        "thaw_token_account"
-                    },
-                    vec![
-                        ("token_account", user_wylds),
-                        ("mint", self.wylds_mint),
-                        ("signer", FREEZE_ADMIN),
-                    ],
-                    vec![],
-                ),
-                "create_rewards_epoch" => (
-                    "create_rewards_epoch",
-                    vec![
-                        ("admin", UPGRADE_AUTHORITY),
-                        pd,
-                        ("epoch", epoch_pda(epoch)),
-                        ("epoch_claimed", epoch_claimed_pda(epoch)),
-                    ],
-                    args(&(
-                        epoch,
-                        claim_leaf(&user_key, CLAIM_AMOUNT, epoch),
-                        CLAIM_AMOUNT,
-                    )),
-                ),
-                "claim_rewards" => (
-                    "claim_rewards",
-                    vec![
-                        ("user", user_key),
-                        ("epoch", epoch_pda(epoch)),
-                        ("epoch_claimed", epoch_claimed_pda(epoch)),
-                        ("mint", self.wylds_mint),
-                        ("user_mint_token_account", user_wylds),
-                    ],
-                    args(&(CLAIM_AMOUNT, Vec::<ProofNode>::new())),
-                ),
-                "initialize_epoch_caps" => (
-                    "initialize_epoch_caps",
-                    vec![ua, pd],
-                    args(&(FIRST_CAPPED_EPOCH, MAX_EPOCH_CAP)),
-                ),
-                "initialize_last_rewards_epoch" => (
-                    "initialize_last_rewards_epoch",
-                    vec![ua, pd],
-                    args(&(FIRST_CAPPED_EPOCH - 1)),
-                ),
-                "update_last_rewards_epoch" => (
-                    "update_last_rewards_epoch",
-                    vec![ua, pd],
-                    args(&FIRST_CAPPED_EPOCH),
-                ),
-                "update_max_epoch_cap" => (
-                    "update_max_epoch_cap",
-                    vec![ua, pd],
-                    args(&(MAX_EPOCH_CAP / 2)),
-                ),
-                "external_program_mint" => (
-                    "external_program_mint",
-                    vec![
-                        ("calling_program", stake_id()),
-                        ("mint", self.wylds_mint),
-                        ("admin", REWARDS_ADMIN),
-                        ("destination", user_wylds),
-                    ],
-                    args(&1_000u64),
-                ),
-                "register_allowed_external_mint_program" => (
-                    "register_allowed_external_mint_program",
-                    vec![("external_program", SOME_EXECUTABLE), ua, pd],
-                    vec![],
-                ),
-                "update_external_mint_programs_limit" => (
-                    "update_external_mint_programs_limit",
-                    vec![ua, pd],
-                    args(&MAX_EXTERNAL_PROGRAMS),
-                ),
-                "update_vault_token_account" => (
-                    "update_vault_token_account",
-                    vec![("vault_token_account", self.mint_vault), pd, ua],
-                    vec![],
-                ),
-                "update_redeem_vault" => (
-                    "update_redeem_vault",
-                    vec![("redeem_vault_token_account", self.redeem_vault), pd, ua],
-                    vec![],
-                ),
-                "sweep_redeem_vault_funds" => (
-                    "sweep_redeem_vault_funds",
-                    vec![
-                        ("redeem_vault_token_account", self.redeem_vault),
-                        ("vault_token_account", self.mint_vault),
-                        ("signer", REWARDS_ADMIN),
-                    ],
-                    args(&1_000u64),
-                ),
-                other => panic!("no vault-mint call for {other}"),
-            };
+        let (accounts, data): (Vec<(&'static str, Pubkey)>, Vec<u8>) = match name {
+            "initialize" => (
+                vec![
+                    ("vault_token_account", self.mint_vault),
+                    ("redeem_vault_token_account", self.redeem_vault),
+                    ("vault_token_mint", self.usdc_mint),
+                    ("mint", self.wylds_mint),
+                    ua,
+                    pd,
+                    ("allowed_external_mint_program", stake_id()),
+                ],
+                args(&(vec![FREEZE_ADMIN], vec![REWARDS_ADMIN])),
+            ),
+            "pause" => (vec![("signer", FREEZE_ADMIN)], args(&true)),
+            "deposit" => (
+                vec![
+                    ("vault_token_account", self.mint_vault),
+                    ("mint", self.wylds_mint),
+                    ("signer", user_key),
+                    ("user_vault_token_account", user_usdc),
+                    ("user_mint_token_account", user_wylds),
+                ],
+                args(&1_000_000u64),
+            ),
+            "request_redeem" => (
+                vec![
+                    ("signer", user_key),
+                    ("user_mint_token_account", user_wylds),
+                    ("mint", self.wylds_mint),
+                ],
+                args(&1_000_000u64),
+            ),
+            "cancel_redeem" => (
+                vec![
+                    ("signer", user_key),
+                    ("user_mint_token_account", user_wylds),
+                ],
+                vec![],
+            ),
+            "complete_redeem" => (
+                vec![
+                    ("admin", REWARDS_ADMIN),
+                    ("user", user_key),
+                    ("user_mint_token_account", user_wylds),
+                    ("user_vault_token_account", user_usdc),
+                    ("redeem_vault_token_account", self.redeem_vault),
+                    ("mint", self.wylds_mint),
+                ],
+                args(&1_000_000u64),
+            ),
+            "update_freeze_administrators" => (vec![pd, ua], args(&vec![FREEZE_ADMIN])),
+            "update_rewards_administrators" => (vec![pd, ua], args(&vec![REWARDS_ADMIN])),
+            "freeze_token_account" | "thaw_token_account" => (
+                vec![
+                    ("token_account", user_wylds),
+                    ("mint", self.wylds_mint),
+                    ("signer", FREEZE_ADMIN),
+                ],
+                vec![],
+            ),
+            "create_rewards_epoch" => (
+                vec![
+                    ("admin", UPGRADE_AUTHORITY),
+                    pd,
+                    ("epoch", epoch_pda(epoch)),
+                    ("epoch_claimed", epoch_claimed_pda(epoch)),
+                ],
+                args(&(
+                    epoch,
+                    claim_leaf(&user_key, CLAIM_AMOUNT, epoch),
+                    CLAIM_AMOUNT,
+                )),
+            ),
+            "claim_rewards" => (
+                vec![
+                    ("user", user_key),
+                    ("epoch", epoch_pda(epoch)),
+                    ("epoch_claimed", epoch_claimed_pda(epoch)),
+                    ("mint", self.wylds_mint),
+                    ("user_mint_token_account", user_wylds),
+                ],
+                args(&(CLAIM_AMOUNT, Vec::<ProofNode>::new())),
+            ),
+            "initialize_epoch_caps" => (vec![ua, pd], args(&(FIRST_CAPPED_EPOCH, MAX_EPOCH_CAP))),
+            "initialize_last_rewards_epoch" => (vec![ua, pd], args(&(FIRST_CAPPED_EPOCH - 1))),
+            "update_last_rewards_epoch" => (vec![ua, pd], args(&FIRST_CAPPED_EPOCH)),
+            "update_max_epoch_cap" => (vec![ua, pd], args(&(MAX_EPOCH_CAP / 2))),
+            "external_program_mint" => (
+                vec![
+                    ("calling_program", stake_id()),
+                    ("mint", self.wylds_mint),
+                    ("admin", REWARDS_ADMIN),
+                    ("destination", user_wylds),
+                ],
+                args(&1_000u64),
+            ),
+            "register_allowed_external_mint_program" => {
+                (vec![("external_program", SOME_EXECUTABLE), ua, pd], vec![])
+            }
+            "update_external_mint_programs_limit" => (vec![ua, pd], args(&MAX_EXTERNAL_PROGRAMS)),
+            "update_vault_token_account" => (
+                vec![("vault_token_account", self.mint_vault), pd, ua],
+                vec![],
+            ),
+            "update_redeem_vault" => (
+                vec![("redeem_vault_token_account", self.redeem_vault), pd, ua],
+                vec![],
+            ),
+            "sweep_redeem_vault_funds" => (
+                vec![
+                    ("redeem_vault_token_account", self.redeem_vault),
+                    ("vault_token_account", self.mint_vault),
+                    ("signer", REWARDS_ADMIN),
+                ],
+                args(&1_000u64),
+            ),
+            other => panic!("no vault-mint call for {other}"),
+        };
+        let program = Program::Mint;
+        let name = program.idl().instruction(name).name.as_str();
         Call {
-            program: Program::Mint,
+            program,
             name,
             accounts,
             args: data,
@@ -538,10 +504,8 @@ impl World {
 
     /// Authorized vault-stake call acting for user `u` where a user is involved.
     pub fn stake_call_for(&self, name: &str, u: usize) -> Call {
-        let user = &self.users.get(u);
-        let user_key = user.map(|u| u.key).unwrap_or_default();
-        let user_wylds = user.map(|u| u.wylds).unwrap_or_default();
-        let user_prime = user.map(|u| u.prime).unwrap_or_default();
+        let user = &self.users[u];
+        let (user_key, user_wylds, user_prime) = (user.key, user.wylds, user.prime);
         let pd = ("program_data", program_data(&stake_id()));
         let ua = ("signer", UPGRADE_AUTHORITY);
         let price_config_args = args(&(
@@ -564,128 +528,81 @@ impl World {
             ("user_vault_token_account", user_wylds),
             ("user_mint_token_account", user_prime),
         ];
-        let (name, accounts, data): (&'static str, Vec<(&'static str, Pubkey)>, Vec<u8>) =
-            match name {
-                "initialize" => (
-                    "initialize",
-                    vec![
-                        ("vault_token_account", self.stake_vault),
-                        ("vault_token_mint", self.wylds_mint),
-                        ("mint", self.prime_mint),
-                        ua,
-                        pd,
-                    ],
-                    args(&(vec![FREEZE_ADMIN], vec![REWARDS_ADMIN])),
-                ),
-                "pause" => ("pause", vec![("signer", FREEZE_ADMIN)], args(&true)),
-                "deposit" => ("deposit", user_accounts, args(&1_000_000u64)),
-                "redeem" => ("redeem", user_accounts, args(&1_000_000u64)),
-                "update_freeze_administrators" => (
-                    "update_freeze_administrators",
-                    vec![pd, ua],
-                    args(&vec![FREEZE_ADMIN]),
-                ),
-                "update_rewards_administrators" => (
-                    "update_rewards_administrators",
-                    vec![pd, ua],
-                    args(&vec![REWARDS_ADMIN]),
-                ),
-                "freeze_token_account" | "thaw_token_account" => (
-                    if name == "freeze_token_account" {
-                        "freeze_token_account"
-                    } else {
-                        "thaw_token_account"
-                    },
-                    vec![
-                        ("token_account", user_prime),
-                        ("mint", self.prime_mint),
-                        ("signer", FREEZE_ADMIN),
-                    ],
-                    vec![],
-                ),
-                "publish_rewards" => (
-                    "publish_rewards",
-                    publish_rewards_accounts(self, 1, 1_000),
-                    args(&(1u32, 1_000u64)),
-                ),
-                "shares_to_assets" => ("shares_to_assets", view, args(&1_000u64)),
-                "assets_to_shares" => ("assets_to_shares", view, args(&1_000u64)),
-                "exchange_rate" => ("exchange_rate", view, vec![]),
-                "initialize_price_config" => {
-                    ("initialize_price_config", vec![ua, pd], price_config_args)
-                }
-                "update_price_config" => ("update_price_config", vec![ua, pd], price_config_args),
-                "verify_price" => (
-                    "verify_price",
-                    vec![
-                        (
-                            "chainlink_verifier_account",
-                            Pubkey::new_from_array([2; 32]),
-                        ),
-                        (
-                            "chainlink_access_controller",
-                            Pubkey::new_from_array([3; 32]),
-                        ),
-                        ("chainlink_config_account", Pubkey::new_from_array([4; 32])),
-                        ("chainlink_program", Pubkey::new_from_array([1; 32])),
-                        ("signer", REWARDS_ADMIN),
-                    ],
-                    args(&vec![0u8; 8]),
-                ),
-                // Setup stores a price observed at START_TIME; this report must be newer.
-                "apply_verified_report_for_testing" => {
-                    let now = START_TIME as u32 + 1;
+        let (accounts, data): (Vec<(&'static str, Pubkey)>, Vec<u8>) = match name {
+            "initialize" => (
+                vec![
+                    ("vault_token_account", self.stake_vault),
+                    ("vault_token_mint", self.wylds_mint),
+                    ("mint", self.prime_mint),
+                    ua,
+                    pd,
+                ],
+                args(&(vec![FREEZE_ADMIN], vec![REWARDS_ADMIN])),
+            ),
+            "pause" => (vec![("signer", FREEZE_ADMIN)], args(&true)),
+            "deposit" => (user_accounts, args(&1_000_000u64)),
+            "redeem" => (user_accounts, args(&1_000_000u64)),
+            "update_freeze_administrators" => (vec![pd, ua], args(&vec![FREEZE_ADMIN])),
+            "update_rewards_administrators" => (vec![pd, ua], args(&vec![REWARDS_ADMIN])),
+            "freeze_token_account" | "thaw_token_account" => (
+                vec![
+                    ("token_account", user_prime),
+                    ("mint", self.prime_mint),
+                    ("signer", FREEZE_ADMIN),
+                ],
+                vec![],
+            ),
+            "publish_rewards" => (
+                publish_rewards_accounts(self, 1, 1_000),
+                args(&(1u32, 1_000u64)),
+            ),
+            "shares_to_assets" => (view, args(&1_000u64)),
+            "assets_to_shares" => (view, args(&1_000u64)),
+            "exchange_rate" => (view, vec![]),
+            "initialize_price_config" => (vec![ua, pd], price_config_args),
+            "update_price_config" => (vec![ua, pd], price_config_args),
+            "verify_price" => (
+                vec![
                     (
-                        "apply_verified_report_for_testing",
-                        vec![("signer", REWARDS_ADMIN)],
-                        args(&report_v7(FEED_ID, now, now, now + 60, PRICE_SCALE as i128)),
-                    )
-                }
-                "set_price_for_testing" => (
-                    "set_price_for_testing",
-                    vec![ua, pd],
-                    args(&(PRICE_SCALE as i128, START_TIME)),
-                ),
-                "initialize_stake_reward_config" => {
-                    ("initialize_stake_reward_config", vec![ua, pd], vec![])
-                }
-                "initialize_last_reward_publication" => (
-                    "initialize_last_reward_publication",
-                    vec![ua, pd],
-                    args(&0u32),
-                ),
-                "update_last_reward_publication" => {
-                    ("update_last_reward_publication", vec![ua, pd], args(&10u32))
-                }
-                "update_max_reward_bps" => ("update_max_reward_bps", vec![ua, pd], args(&100u64)),
-                "update_max_period_rewards" => (
-                    "update_max_period_rewards",
-                    vec![ua, pd],
-                    args(&1_000_000u64),
-                ),
-                "update_reward_period_seconds" => {
-                    ("update_reward_period_seconds", vec![ua, pd], args(&60i64))
-                }
-                "update_max_total_rewards" => (
-                    "update_max_total_rewards",
-                    vec![ua, pd],
-                    args(&1_000_000_000u64),
-                ),
-                other => panic!("no vault-stake call for {other}"),
-            };
+                        "chainlink_verifier_account",
+                        Pubkey::new_from_array([2; 32]),
+                    ),
+                    (
+                        "chainlink_access_controller",
+                        Pubkey::new_from_array([3; 32]),
+                    ),
+                    ("chainlink_config_account", Pubkey::new_from_array([4; 32])),
+                    ("chainlink_program", Pubkey::new_from_array([1; 32])),
+                    ("signer", REWARDS_ADMIN),
+                ],
+                args(&vec![0u8; 8]),
+            ),
+            // Setup stores a price observed at START_TIME; this report must be newer.
+            "apply_verified_report_for_testing" => {
+                let now = START_TIME as u32 + 1;
+                (
+                    vec![("signer", REWARDS_ADMIN)],
+                    args(&report_v7(FEED_ID, now, now, now + 60, PRICE_SCALE as i128)),
+                )
+            }
+            "set_price_for_testing" => (vec![ua, pd], args(&(PRICE_SCALE as i128, START_TIME))),
+            "initialize_stake_reward_config" => (vec![ua, pd], vec![]),
+            "initialize_last_reward_publication" => (vec![ua, pd], args(&0u32)),
+            "update_last_reward_publication" => (vec![ua, pd], args(&10u32)),
+            "update_max_reward_bps" => (vec![ua, pd], args(&100u64)),
+            "update_max_period_rewards" => (vec![ua, pd], args(&1_000_000u64)),
+            "update_reward_period_seconds" => (vec![ua, pd], args(&60i64)),
+            "update_max_total_rewards" => (vec![ua, pd], args(&1_000_000_000u64)),
+            other => panic!("no vault-stake call for {other}"),
+        };
+        let program = Program::Stake;
+        let name = program.idl().instruction(name).name.as_str();
         Call {
-            program: Program::Stake,
+            program,
             name,
             accounts,
             args: data,
         }
-    }
-}
-
-impl Call {
-    pub fn with_args<T: BorshSerialize>(mut self, value: &T) -> Self {
-        self.args = args(value);
-        self
     }
 }
 

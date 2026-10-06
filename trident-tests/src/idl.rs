@@ -123,6 +123,13 @@ impl Idl {
             .unwrap_or_else(|| panic!("error {name} is not in the IDL"))
     }
 
+    pub fn error_name(&self, code: u32) -> Option<&str> {
+        self.errors
+            .iter()
+            .find(|(_, c)| **c == code)
+            .map(|(n, _)| n.as_str())
+    }
+
     pub fn account_discriminator(&self, name: &str) -> &[u8] {
         self.account_discriminators
             .get(name)
