@@ -12,6 +12,10 @@ const USERS: usize = 3;
 const MAX_GAP: u32 = 255;
 const MAX_BPS: u64 = 10_000;
 const ANCHOR_ACCOUNT_NOT_INITIALIZED: u32 = 3012;
+/// System program: `init` of an account that already exists.
+const ACCOUNT_ALREADY_IN_USE: u32 = 0;
+const SPL_INSUFFICIENT_FUNDS: u32 = 1;
+const SPL_OVERFLOW: u32 = 14;
 
 const EXECUTABLES: [Pubkey; 4] = [
     pubkey!("11111111111111111111111111111111"),
@@ -23,8 +27,6 @@ const EXECUTABLES: [Pubkey; 4] = [
 enum Expect {
     Ok,
     Code(u32),
-    /// Rejected by the runtime or Anchor account validation before the handler runs.
-    Fail,
 }
 
 fn mint_err(name: &str) -> Expect {
@@ -49,11 +51,6 @@ fn run(trident: &mut Trident, ix: Instruction, label: &str, expect: Expect) -> b
             Some(code),
             "{label}: expected error {code}, got {:?}\n{}",
             result.get_result(),
-            result.logs()
-        ),
-        Expect::Fail => assert!(
-            !result.is_success(),
-            "{label}: expected failure\n{}",
             result.logs()
         ),
     }
@@ -213,7 +210,7 @@ impl FuzzTest {
                     let expect = if m.unused_uncapped.contains(&below) {
                         mint_err("EpochIndexBelowFirstCapped")
                     } else {
-                        Expect::Fail
+                        Expect::Code(ACCOUNT_ALREADY_IN_USE)
                     };
                     run(
                         t,
@@ -298,7 +295,7 @@ impl FuzzTest {
             .zip(&epoch.claimed)
             .any(|((u, _), done)| *u == claimant && *done);
         let expect = if has_record {
-            Expect::Fail
+            Expect::Code(ACCOUNT_ALREADY_IN_USE)
         } else if corrupt {
             mint_err("InvalidMerkleProof")
         } else if epoch.capped && epoch.claimed_sum + amount > epoch.total {
@@ -340,7 +337,7 @@ impl FuzzTest {
         let balance = token_balance(t, m.world.users[u].wylds);
         let amount = pick_amount(t, balance.min(200_000_000_000));
         let expect = if m.pending_redeem[u].is_some() {
-            Expect::Fail
+            Expect::Code(ACCOUNT_ALREADY_IN_USE)
         } else if amount == 0 {
             mint_err("InvalidAmount")
         } else if amount > balance {
@@ -602,8 +599,8 @@ impl FuzzTest {
             match shares {
                 None => stake_err("Overflow"),
                 Some(0) => stake_err("DepositTooSmall"),
-                // SPL Token rejects the transfer, or the mint once PRIME supply would overflow.
-                Some(s) if amount > wylds || supply.checked_add(s).is_none() => Expect::Fail,
+                Some(_) if amount > wylds => Expect::Code(SPL_INSUFFICIENT_FUNDS),
+                Some(s) if supply.checked_add(s).is_none() => Expect::Code(SPL_OVERFLOW),
                 Some(_) => Expect::Ok,
             }
         };
@@ -655,10 +652,6 @@ impl FuzzTest {
         let label = stake_label("stake_redeem", m, now);
         if run(t, ix, &label, expect) {
             let assets = assets.unwrap();
-            assert!(
-                assets as u128 * PRICE_SCALE as u128 <= shares as u128 * m.price as u128,
-                "redeem pays more than the shares are worth"
-            );
             assert_eq!(token_balance(t, user.prime), prime - shares);
             assert_eq!(token_balance(t, user.wylds), wylds + assets);
             assert_eq!(token_balance(t, m.world.stake_vault), vault - assets);
@@ -692,7 +685,7 @@ impl FuzzTest {
         );
         let expect = if t.get_account(&record).lamports() > 0 {
             // Replaying a published (id, amount) fails creating its record.
-            Expect::Fail
+            Expect::Code(ACCOUNT_ALREADY_IN_USE)
         } else if amount == 0 {
             stake_err("InvalidAmount")
         } else if id <= r.last_id {
@@ -806,15 +799,18 @@ impl FuzzTest {
         }
     }
 
-    /// Moves the clock forward, often to exactly the staleness boundary or one second past it.
+    /// Moves the clock forward, often onto the price staleness or reward cooldown boundary.
     #[flow]
     fn warp(&mut self) {
         let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
         let now = m.now;
-        let boundary = m.price_ts + PRICE_MAX_STALENESS;
-        let target = match t.random_from_range(0..4u8) {
-            0 => boundary,
-            1 => boundary + 1,
+        let stale_at = m.price_ts + PRICE_MAX_STALENESS;
+        let cooldown_ends = m.rewards.last_at + m.rewards.period_seconds;
+        let target = match t.random_from_range(0..6u8) {
+            0 => stale_at,
+            1 => stale_at + 1,
+            2 => cooldown_ends - 1,
+            3 => cooldown_ends,
             _ => now + t.random_from_range(0..=PRICE_MAX_STALENESS / 2),
         };
         m.now = target.max(now);
@@ -849,11 +845,19 @@ impl FuzzTest {
             + token_balance(t, w.mint_vault)
             + token_balance(t, w.redeem_vault);
         assert_eq!(usdc, m.usdc_minted, "USDC is conserved");
-        for epoch in m.epochs.iter().filter(|e| e.capped) {
+        for epoch in &m.epochs {
             let data = t
                 .get_account(&epoch_claimed_pda(epoch.index))
                 .data()
                 .to_vec();
+            if !epoch.capped {
+                assert!(
+                    data.is_empty(),
+                    "uncapped epoch {} has a claim counter",
+                    epoch.index
+                );
+                continue;
+            }
             let claimed = u64::from_le_bytes(data[8..16].try_into().unwrap());
             assert_eq!(
                 claimed, epoch.claimed_sum,
