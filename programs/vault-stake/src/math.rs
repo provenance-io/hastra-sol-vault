@@ -372,7 +372,14 @@ mod tests {
 
     #[test]
     fn first_publication_skips_cooldown() {
-        let config = reward_config(StakeRewardConfig::MAX_BPS, u64::MAX, i64::MAX, 0, u64::MAX, 0);
+        let config = reward_config(
+            StakeRewardConfig::MAX_BPS,
+            u64::MAX,
+            i64::MAX,
+            0,
+            u64::MAX,
+            0,
+        );
         assert!(check_reward_limits(&config, 0, 1, 0).is_ok());
     }
 
@@ -384,19 +391,42 @@ mod tests {
 
     #[test]
     fn cooldown_overflow_is_reported() {
-        let config = reward_config(StakeRewardConfig::MAX_BPS, u64::MAX, i64::MAX, 1, u64::MAX, 0);
-        assert_err(check_reward_limits(&config, 0, 1, i64::MAX), CustomErrorCode::Overflow);
+        let config = reward_config(
+            StakeRewardConfig::MAX_BPS,
+            u64::MAX,
+            i64::MAX,
+            1,
+            u64::MAX,
+            0,
+        );
+        assert_err(
+            check_reward_limits(&config, 0, 1, i64::MAX),
+            CustomErrorCode::Overflow,
+        );
     }
 
     #[test]
     fn lifetime_total_overflow_is_reported() {
-        let config = reward_config(StakeRewardConfig::MAX_BPS, u64::MAX, 0, 0, u64::MAX, u64::MAX);
-        assert_err(check_reward_limits(&config, 0, 1, 0), CustomErrorCode::Overflow);
+        let config = reward_config(
+            StakeRewardConfig::MAX_BPS,
+            u64::MAX,
+            0,
+            0,
+            u64::MAX,
+            u64::MAX,
+        );
+        assert_err(
+            check_reward_limits(&config, 0, 1, 0),
+            CustomErrorCode::Overflow,
+        );
     }
 
     #[test]
     fn max_reward_bps_bounds() {
-        assert_err(validate_max_reward_bps(0), CustomErrorCode::InvalidMaxRewardBps);
+        assert_err(
+            validate_max_reward_bps(0),
+            CustomErrorCode::InvalidMaxRewardBps,
+        );
         assert!(validate_max_reward_bps(1).is_ok());
         assert!(validate_max_reward_bps(StakeRewardConfig::MAX_BPS).is_ok());
         assert_err(
@@ -407,12 +437,27 @@ mod tests {
 
     #[test]
     fn price_errors_keep_their_codes() {
-        assert_err(require_fresh_price(1, 0, 10, 5), CustomErrorCode::PriceNotInitialized);
-        assert_err(require_fresh_price(0, 1, 10, 5), CustomErrorCode::PriceNotInitialized);
-        assert_err(require_fresh_price(-1, 1, 10, 5), CustomErrorCode::PriceNotInitialized);
-        assert_err(require_fresh_price(1, 1, 10, i64::MIN), CustomErrorCode::Overflow);
+        assert_err(
+            require_fresh_price(1, 0, 10, 5),
+            CustomErrorCode::PriceNotInitialized,
+        );
+        assert_err(
+            require_fresh_price(0, 1, 10, 5),
+            CustomErrorCode::PriceNotInitialized,
+        );
+        assert_err(
+            require_fresh_price(-1, 1, 10, 5),
+            CustomErrorCode::PriceNotInitialized,
+        );
+        assert_err(
+            require_fresh_price(1, 1, 10, i64::MIN),
+            CustomErrorCode::Overflow,
+        );
         assert_err(shares_to_assets(1, 1, 0), CustomErrorCode::DivisionByZero);
         assert_err(exchange_rate(1, 0), CustomErrorCode::DivisionByZero);
-        assert_err(shares_to_assets(u64::MAX, i128::MAX, 1), CustomErrorCode::Overflow);
+        assert_err(
+            shares_to_assets(u64::MAX, i128::MAX, 1),
+            CustomErrorCode::Overflow,
+        );
     }
 }

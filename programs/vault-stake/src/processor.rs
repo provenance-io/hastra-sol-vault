@@ -422,12 +422,8 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
     // Reward caps (bps of total_assets, per call, lifetime) and the cooldown between publishes.
     let config = &mut ctx.accounts.stake_reward_config;
     let now = Clock::get()?.unix_timestamp;
-    let next_total = check_reward_limits(
-        config,
-        ctx.accounts.vault_token_account.amount,
-        amount,
-        now,
-    )?;
+    let next_total =
+        check_reward_limits(config, ctx.accounts.vault_token_account.amount, amount, now)?;
 
     // Initialize the reward record
     let reward_record = &mut ctx.accounts.reward_record;
