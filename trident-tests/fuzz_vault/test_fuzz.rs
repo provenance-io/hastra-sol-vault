@@ -666,6 +666,59 @@ impl FuzzTest {
         }
     }
 
+    /// Deposits, then redeems exactly the minted shares at the same price and time. Checked from
+    /// observed balances only, so it does not rely on the model's conversion formula.
+    #[flow]
+    fn stake_round_trip(&mut self) {
+        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
+        let u = t.random_from_range(0..USERS);
+        let user = &m.world.users[u];
+        let wylds = token_balance(t, user.wylds);
+        let prime = token_balance(t, user.prime);
+        if wylds == 0 {
+            return;
+        }
+        let amount = match t.random_from_range(0..4u8) {
+            0 => 1,
+            1 => wylds,
+            _ => t.random_from_range(1..=wylds),
+        };
+        pin_clock(t, m);
+        let deposit = m
+            .world
+            .stake_call_for("deposit", u)
+            .with_args(&amount)
+            .instruction();
+        if !t
+            .process_transaction(&[deposit], Some("round_trip deposit"))
+            .is_success()
+        {
+            return;
+        }
+        let shares = token_balance(t, user.prime) - prime;
+        let redeem = m
+            .world
+            .stake_call_for("redeem", u)
+            .with_args(&shares)
+            .instruction();
+        let result = t.process_transaction(&[redeem], Some("round_trip redeem"));
+        if result.is_success() {
+            assert_eq!(
+                token_balance(t, user.prime),
+                prime,
+                "round trip burns the minted shares"
+            );
+        } else {
+            // The minted shares are worth less than one base unit.
+            assert_eq!(
+                result.get_custom_error_code(),
+                Some(stake_idl().error("InvalidAmount"))
+            );
+        }
+        let back = token_balance(t, user.wylds) - (wylds - amount);
+        assert!(back <= amount, "redeem(deposit({amount})) returned {back}");
+    }
+
     #[flow]
     fn publish_rewards(&mut self) {
         let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
@@ -940,7 +993,11 @@ fn pick_price(t: &mut Trident) -> i128 {
         0 => -t.random_from_range(0..=i128::MAX),
         1 => 0,
         2 => 1,
-        3 => t.random_from_range(u64::MAX as i128..=i128::MAX),
+        // Log-uniform over the whole positive range, so every magnitude is reached.
+        3 | 4 => {
+            let bits = t.random_from_range(0..127u32);
+            (1i128 << bits) | (t.random_from_range(0..=i128::MAX) & ((1i128 << bits) - 1))
+        }
         _ => t.random_from_range(PRICE_SCALE as i128 / 2..=PRICE_SCALE as i128 * 2),
     }
 }
