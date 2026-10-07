@@ -83,11 +83,8 @@ security_txt! {
 // Specify exactly one pool-* feature at build time to embed the correct program ID.
 // Enabling multiple features produces a duplicate-ID compile error; enabling none
 // produces the compile_error! below.
-#[cfg(all(feature = "pool-prime", feature = "localnet-program-ids"))]
-declare_id!("GLCJS7CRsbH8eqnx1eSsAKwnB6CQBddLzF9ZwfukdS1C");
-
-#[cfg(all(feature = "pool-prime", not(feature = "localnet-program-ids")))]
-declare_id!("97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY");
+#[cfg(feature = "pool-prime")]
+include!("prime_program_id.rs");
 
 #[cfg(feature = "pool-auto")]
 declare_id!("5uJgCDrQHfA58fPqLsuU14Srg9quxXNHz91cZ54cq4pK");
