@@ -66,7 +66,11 @@ jobs:
     - name: Conversion properties, deep profile
       env:
         PROPTEST_CASES: 100000
-      run: cargo test --release --manifest-path trident-tests/Cargo.toml --test conversions
+      run: |
+        set -o pipefail
+        mkdir -p fuzz-out
+        cargo test --release --manifest-path trident-tests/Cargo.toml --test conversions 2>&1 \
+          | tee fuzz-out/proptest.log
 
     - name: Deep fuzz profile
       if: success() || failure()
@@ -79,4 +83,7 @@ jobs:
         name: fuzz-deep-${{ github.run_id }}
         retention-days: 14
         if-no-files-found: error
-        path: fuzz-out/
+        # proptest writes each minimal failing input (and its seed) to *.proptest-regressions.
+        path: |
+          fuzz-out/
+          trident-tests/tests/*.proptest-regressions
