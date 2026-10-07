@@ -696,6 +696,7 @@ impl FuzzTest {
             return;
         }
         let shares = token_balance(t, user.prime) - prime;
+        pin_clock(t, m);
         let redeem = m
             .world
             .stake_call_for("redeem", u)
