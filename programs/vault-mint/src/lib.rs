@@ -148,18 +148,18 @@ pub mod vault_mint {
 
     /// This is the classic “airdrop/claim per epoch” design
     /// High-level idea:
-    /// 1. Off-chain (admin does this each epoch):
-    ///    - Calculate each user’s reward for this epoch.
-    ///    - Build a Merkle tree of (user, amount, epoch_index).
-    ///    - Publish the Merkle root on-chain with the create_rewards_epoch function above.
+    /// 	1.	Off-chain (admin does this each epoch):
+    /// 	•	Calculate each user’s reward for this epoch.
+    /// 	•	Build a Merkle tree of (user, amount, epoch_index).
+    /// 	•	Publish the Merkle root on-chain with the create_rewards_epoch function above.
     ///
-    /// 2. On-chain:
-    ///    - Store each epoch’s Merkle root in a PDA.
-    ///    - When a user claims, they present (amount, proof) for their pubkey.
-    ///    - The program verifies the Merkle proof against the root.
-    ///    - If valid, mint reward tokens (wYLDS) to the user's mint token account.
-    ///    - Mark the claim as redeemed so they can’t double-claim.
-    ///    - Epochs with `index >= first_capped_epoch` also enforce the aggregate claim cap.
+    /// 	2.	On-chain:
+    /// 	•	Store each epoch’s Merkle root in a PDA.
+    /// 	•	When a user claims, they present (amount, proof) for their pubkey.
+    /// 	•	The program verifies the Merkle proof against the root.
+    /// 	•	If valid, mint reward tokens (wYLDS) to the user's mint token account.
+    /// 	•	Mark the claim as redeemed so they can’t double-claim.
+    ///     •   Epochs with `index >= first_capped_epoch` also enforce the aggregate claim cap.
     pub fn claim_rewards(
         ctx: Context<ClaimRewards>,
         amount: u64,

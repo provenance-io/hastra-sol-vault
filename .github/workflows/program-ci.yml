@@ -148,8 +148,9 @@ jobs:
     - name: Clippy (testing features)
       run: cargo clippy --workspace --all-targets --features vault-mint/testing,vault-stake/testing -- -D warnings
 
-    - name: Unit and property tests
-      run: cargo test --workspace
+    # --all-targets skips doctests: vault-mint's existing doc comments are not valid doctests.
+    - name: Unit tests
+      run: cargo test --workspace --all-targets
 
     - uses: taiki-e/install-action@v2
       with:

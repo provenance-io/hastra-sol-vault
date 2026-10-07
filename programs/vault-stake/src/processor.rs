@@ -2,11 +2,7 @@ use crate::account_structs::*;
 use crate::error::*;
 use crate::events::*;
 use crate::guard::validate_program_update_authority;
-use crate::math::{
-    self, check_publication_id, check_reward_limits, deposit_shares, redeem_assets,
-    require_fresh_price, validate_max_reward_bps,
-};
-use crate::state::{StakePriceConfig, StakeRewardConfig, MAX_ADMINISTRATORS};
+use crate::state::{LastRewardPublication, StakePriceConfig, StakeRewardConfig, MAX_ADMINISTRATORS};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::{get_return_data, invoke};
 use anchor_spl::token::spl_token::instruction::AuthorityType;
@@ -55,7 +51,7 @@ pub fn initialize(
     // Only set vault token account to PDA authority if it's not already set to vault_authority
     if ctx.accounts.vault_token_account.owner == ctx.accounts.signer.key() {
         let seeds: &[&[u8]] = &[b"vault_authority", &[ctx.bumps.vault_authority]];
-        let signer = &[seeds];
+        let signer = &[&seeds[..]];
         token::set_authority(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
@@ -109,18 +105,35 @@ pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
     // Formula: shares = deposit_wYLDS * price_scale / price
     let price_config = &ctx.accounts.stake_price_config;
     let current_time = Clock::get()?.unix_timestamp;
+    require!(
+        price_config.price_timestamp > 0,
+        CustomErrorCode::PriceNotInitialized
+    );
     // Staleness is measured from price_timestamp, which (after a real verify_price) is the report’s
     // observations_timestamp — the end of the Chainlink-vouched applicability window, not the
     // on-chain time when verify_price was executed.
-    require_fresh_price(
-        price_config.price,
-        price_config.price_timestamp,
-        price_config.price_max_staleness,
-        current_time,
-    )?;
+    require!(
+        current_time
+            .checked_sub(price_config.price_timestamp)
+            .ok_or(CustomErrorCode::Overflow)?
+            <= price_config.price_max_staleness,
+        CustomErrorCode::PriceTooStale
+    );
+    require!(price_config.price > 0, CustomErrorCode::PriceNotInitialized);
 
-    let shares_to_mint_u64 = deposit_shares(amount, price_config.price, price_config.price_scale)?;
-    msg!("Shares to mint calculated: {}", shares_to_mint_u64);
+    let shares_to_mint = (amount as u128)
+        .checked_mul(price_config.price_scale as u128)
+        .ok_or(CustomErrorCode::Overflow)?
+        .checked_div(price_config.price as u128)
+        .ok_or(CustomErrorCode::DivisionByZero)?;
+    msg!("Shares to mint calculated: {}", shares_to_mint);
+
+    // Require that user receives at least some shares
+    require!(shares_to_mint > 0, CustomErrorCode::DepositTooSmall);
+
+    let shares_to_mint_u64: u64 = shares_to_mint
+        .try_into()
+        .map_err(|_| CustomErrorCode::Overflow)?;
 
     let cpi_accounts = Transfer {
         from: ctx.accounts.user_vault_token_account.to_account_info(),
@@ -133,7 +146,7 @@ pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
     )?;
 
     let seeds: &[&[u8]] = &[b"mint_authority", &[ctx.bumps.mint_authority]];
-    let signer = &[seeds];
+    let signer = &[&seeds[..]];
     let cpi_accounts = MintTo {
         mint: ctx.accounts.mint.to_account_info(),
         to: ctx.accounts.user_mint_token_account.to_account_info(),
@@ -192,13 +205,19 @@ pub fn redeem(ctx: Context<Redeem>, amount: u64) -> Result<()> {
     // Check price validity before user balance so oracle failures surface clearly.
     let price_config = &ctx.accounts.stake_price_config;
     let current_time = Clock::get()?.unix_timestamp;
+    require!(
+        price_config.price_timestamp > 0,
+        CustomErrorCode::PriceNotInitialized
+    );
     // Same staleness basis as deposit: age from the stored observations_timestamp, not the verify tx time.
-    require_fresh_price(
-        price_config.price,
-        price_config.price_timestamp,
-        price_config.price_max_staleness,
-        current_time,
-    )?;
+    require!(
+        current_time
+            .checked_sub(price_config.price_timestamp)
+            .ok_or(CustomErrorCode::Overflow)?
+            <= price_config.price_max_staleness,
+        CustomErrorCode::PriceTooStale
+    );
+    require!(price_config.price > 0, CustomErrorCode::PriceNotInitialized);
 
     let user_share_mint_balance = ctx.accounts.user_mint_token_account.amount;
     require!(
@@ -212,10 +231,20 @@ pub fn redeem(ctx: Context<Redeem>, amount: u64) -> Result<()> {
     msg!("total_shares: {}", total_shares);
     msg!("redeem amount (shares): {}", amount);
 
-    // Rejects dust amounts that round down to zero.
-    let amount_to_withdraw_u64 =
-        redeem_assets(amount, price_config.price, price_config.price_scale)?;
-    msg!("Amount to withdraw calculated: {}", amount_to_withdraw_u64);
+    let amount_to_withdraw = (amount as u128)
+        .checked_mul(price_config.price as u128)
+        .ok_or(CustomErrorCode::Overflow)?
+        .checked_div(price_config.price_scale as u128)
+        .ok_or(CustomErrorCode::DivisionByZero)?;
+
+    msg!("Amount to withdraw calculated: {}", amount_to_withdraw);
+
+    // Guard against dust amounts rounding down to zero
+    require!(amount_to_withdraw > 0, CustomErrorCode::InvalidAmount);
+
+    let amount_to_withdraw_u64: u64 = amount_to_withdraw
+        .try_into()
+        .map_err(|_| CustomErrorCode::Overflow)?;
 
     require!(
         ctx.accounts.vault_token_account.amount >= amount_to_withdraw_u64,
@@ -233,7 +262,7 @@ pub fn redeem(ctx: Context<Redeem>, amount: u64) -> Result<()> {
     )?;
 
     let seeds: &[&[u8]] = &[b"vault_authority", &[ctx.bumps.vault_authority]];
-    let signer = &[seeds];
+    let signer = &[&seeds[..]];
     let transfer_accounts = Transfer {
         from: ctx.accounts.vault_token_account.to_account_info(),
         to: ctx.accounts.user_vault_token_account.to_account_info(),
@@ -416,14 +445,63 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
     // the gap bound stops a single publish from jumping to u32::MAX and bricking future
     // publications, while still tolerating operational id skips.
     let last = &mut ctx.accounts.last_reward_publication;
-    check_publication_id(last.id, id)?;
+    require!(
+        id > last.id,
+        CustomErrorCode::RewardPublicationIdNotMonotonic
+    );
+    let gap = id.checked_sub(last.id).ok_or(CustomErrorCode::Overflow)?;
+    require!(
+        gap <= LastRewardPublication::MAX_GAP,
+        CustomErrorCode::RewardPublicationIdGapTooLarge
+    );
     last.id = id;
 
-    // Reward caps (bps of total_assets, per call, lifetime) and the cooldown between publishes.
     let config = &mut ctx.accounts.stake_reward_config;
+
+    // Enforce reward cap: amount must not exceed max_reward_bps % of current total_assets.
+    // Skip only when the vault is truly empty (bootstrap) — cap applies whenever assets exist.
+    let total_assets = ctx.accounts.vault_token_account.amount;
+    if total_assets > 0 {
+        let effective_bps = config.max_reward_bps;
+        let max_allowed = (total_assets as u128)
+            .checked_mul(effective_bps as u128)
+            .and_then(|v| v.checked_div(StakeRewardConfig::MAX_BPS as u128))
+            .and_then(|v| v.to_u64())
+            .ok_or(CustomErrorCode::Overflow)?;
+        require!(
+            amount <= max_allowed,
+            CustomErrorCode::RewardExceedsMaxDelta
+        );
+    }
+
+    // Absolute per-call cap.
+    require!(
+        amount <= config.max_period_rewards,
+        CustomErrorCode::ExceedsPeriodRewardCap
+    );
+
+    // Cooldown between reward publications (first publication is always allowed).
     let now = Clock::get()?.unix_timestamp;
-    let next_total =
-        check_reward_limits(config, ctx.accounts.vault_token_account.amount, amount, now)?;
+    if config.last_reward_distributed_at > 0 {
+        let next_allowed_at = config
+            .last_reward_distributed_at
+            .checked_add(config.reward_period_seconds)
+            .ok_or(CustomErrorCode::Overflow)?;
+        require!(
+            now >= next_allowed_at,
+            CustomErrorCode::RewardCooldownNotElapsed
+        );
+    }
+
+    // Lifetime cap.
+    let next_total = config
+        .total_rewards_distributed
+        .checked_add(amount)
+        .ok_or(CustomErrorCode::Overflow)?;
+    require!(
+        next_total <= config.max_total_rewards,
+        CustomErrorCode::ExceedsLifetimeRewardCap
+    );
 
     // Initialize the reward record
     let reward_record = &mut ctx.accounts.reward_record;
@@ -440,7 +518,7 @@ pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Re
         b"external_mint_authority",
         &[ctx.bumps.external_mint_authority],
     ];
-    let signer = &[seeds];
+    let signer = &[&seeds[..]];
 
     // CPI into vault-mint::external_program_mint.
     // calling_program (this_program) and allowed_external_mint_programs are the two new
@@ -518,7 +596,14 @@ pub fn set_price_for_testing(
 /// Returns value via return_data for efficient CPI access
 pub fn shares_to_assets(ctx: Context<ConversionView>, shares: u64) -> Result<u64> {
     let price_config = &ctx.accounts.stake_price_config;
-    let assets = math::shares_to_assets(shares, price_config.price, price_config.price_scale)?;
+    require!(price_config.price > 0, CustomErrorCode::PriceNotInitialized);
+
+    let assets = (shares as u128)
+        .checked_mul(price_config.price as u128)
+        .ok_or(CustomErrorCode::Overflow)?
+        .checked_div(price_config.price_scale as u128)
+        .ok_or(CustomErrorCode::DivisionByZero)?;
+    let assets: u64 = assets.try_into().map_err(|_| CustomErrorCode::Overflow)?;
 
     msg!("shares_to_assets: {} shares = {} assets", shares, assets);
 
@@ -532,7 +617,14 @@ pub fn shares_to_assets(ctx: Context<ConversionView>, shares: u64) -> Result<u64
 /// Returns value via return_data for efficient CPI access
 pub fn assets_to_shares(ctx: Context<ConversionView>, assets: u64) -> Result<u64> {
     let price_config = &ctx.accounts.stake_price_config;
-    let shares = math::assets_to_shares(assets, price_config.price, price_config.price_scale)?;
+    require!(price_config.price > 0, CustomErrorCode::PriceNotInitialized);
+
+    let shares = (assets as u128)
+        .checked_mul(price_config.price_scale as u128)
+        .ok_or(CustomErrorCode::Overflow)?
+        .checked_div(price_config.price as u128)
+        .ok_or(CustomErrorCode::DivisionByZero)?;
+    let shares: u64 = shares.try_into().map_err(|_| CustomErrorCode::Overflow)?;
 
     msg!("assets_to_shares: {} assets = {} shares", assets, shares);
 
@@ -619,8 +711,8 @@ pub fn update_price_config(
         msg!("Stored price invalidated due to semantic config change");
         emit!(PriceInvalidated {
             verifier: ctx.accounts.signer.key(),
-            feed_id,
-            price_scale,
+            feed_id: feed_id,
+            price_scale: price_scale,
         });
     }
 
@@ -706,7 +798,10 @@ pub fn update_last_reward_publication(
 /// Only callable by the program upgrade authority.
 pub fn update_max_reward_bps(ctx: Context<UpdateMaxRewardBps>, new_bps: u64) -> Result<()> {
     validate_program_update_authority(&ctx.accounts.program_data, &ctx.accounts.signer)?;
-    validate_max_reward_bps(new_bps)?;
+    require!(
+        new_bps > 0 && new_bps <= StakeRewardConfig::MAX_BPS,
+        CustomErrorCode::InvalidMaxRewardBps
+    );
 
     let config = &mut ctx.accounts.stake_reward_config;
     let old_bps = config.max_reward_bps;
@@ -890,7 +985,6 @@ fn apply_verified_report(
 ///   4. `exchange_rate` is stored as the new price, and `price_timestamp` is set to
 ///      `observations_timestamp` (the Chainlink vouched “latest” instant for the price; downstream
 ///      staleness uses that observation clock, not the local submission time of this instruction).
-///
 /// Only callable by rewards administrators.
 pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result<()> {
     // Authorization: signer must be a rewards administrator
@@ -990,7 +1084,15 @@ pub fn apply_verified_report_for_testing(
 /// Example: if 1 PRIME = 1.5 wYLDS, returns 1_500_000_000
 pub fn exchange_rate(ctx: Context<ConversionView>) -> Result<u64> {
     let price_config = &ctx.accounts.stake_price_config;
-    let rate = math::exchange_rate(price_config.price, price_config.price_scale)?;
+    require!(price_config.price > 0, CustomErrorCode::PriceNotInitialized);
+
+    const SCALE: u128 = 1_000_000_000;
+    let rate = (price_config.price as u128)
+        .checked_mul(SCALE)
+        .ok_or(CustomErrorCode::Overflow)?
+        .checked_div(price_config.price_scale as u128)
+        .ok_or(CustomErrorCode::DivisionByZero)?;
+    let rate: u64 = rate.try_into().map_err(|_| CustomErrorCode::Overflow)?;
 
     msg!("exchange_rate: {} (scaled by 1e9)", rate);
 

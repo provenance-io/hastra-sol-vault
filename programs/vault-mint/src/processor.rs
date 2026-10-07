@@ -5,8 +5,9 @@ use crate::guard::{validate_administrators, validate_program_update_authority};
 use crate::state::{AllowedExternalMintPrograms, EpochClaimedAmount, ProofNode};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::hash::hashv;
+use anchor_lang::solana_program::program::invoke;
 use anchor_lang::solana_program::program_option::COption;
-use anchor_lang::system_program;
+use anchor_lang::solana_program::system_instruction;
 use anchor_spl::token::spl_token::instruction::AuthorityType;
 use anchor_spl::token::{self, MintTo, Transfer};
 
@@ -57,7 +58,7 @@ pub fn initialize(
             b"redeem_vault_authority",
             &[ctx.bumps.redeem_vault_authority],
         ];
-        let signer = &[seeds];
+        let signer = &[&seeds[..]];
         token::set_authority(
             CpiContext::new_with_signer(
                 ctx.accounts.token_program.to_account_info(),
@@ -113,7 +114,7 @@ pub fn deposit(ctx: Context<Deposit>, amount: u64) -> Result<()> {
     )?;
 
     let seeds: &[&[u8]] = &[b"mint_authority", &[ctx.bumps.mint_authority]];
-    let signer = &[seeds];
+    let signer = &[&seeds[..]];
     let cpi_accounts = MintTo {
         mint: ctx.accounts.mint.to_account_info(),
         to: ctx.accounts.user_mint_token_account.to_account_info(),
@@ -290,7 +291,7 @@ pub fn complete_redeem(ctx: Context<CompleteRedeem>, expected_amount: u64) -> Re
         b"redeem_vault_authority",
         &[ctx.bumps.redeem_vault_authority],
     ];
-    let signer = &[seeds];
+    let signer = &[&seeds[..]];
 
     // Burn user's wYLDS using PDA as delegate
     token::burn(
@@ -578,7 +579,7 @@ pub fn claim_rewards(ctx: Context<ClaimRewards>, amount: u64, proof: Vec<ProofNo
 
     // mint tokens (wYLDS) to user
     let seeds: &[&[u8]] = &[b"mint_authority", &[ctx.bumps.mint_authority]];
-    let signer = &[seeds];
+    let signer = &[&seeds[..]];
     let cpi_accounts = MintTo {
         mint: ctx.accounts.mint.to_account_info(),
         to: ctx.accounts.user_mint_token_account.to_account_info(),
@@ -764,7 +765,7 @@ pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> 
             .allowed_external_mint_programs
             .try_borrow_data()?;
         if data.len() >= 8 {
-            let mut slice: &[u8] = &data;
+            let mut slice: &[u8] = &*data;
             AllowedExternalMintPrograms::try_deserialize(&mut slice)
                 .map(|allowed| allowed.programs.contains(&calling_key))
                 .unwrap_or(false)
@@ -782,7 +783,7 @@ pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> 
 
     // Mint tokens using the mint_authority PDA.
     let seeds: &[&[u8]] = &[b"mint_authority", &[ctx.bumps.mint_authority]];
-    let signer = &[seeds];
+    let signer = &[&seeds[..]];
     let cpi_accounts = MintTo {
         mint: ctx.accounts.mint.to_account_info(),
         to: ctx.accounts.destination.to_account_info(),
@@ -884,18 +885,20 @@ pub fn register_allowed_external_mint_program(
             let delta = required_lamports
                 .checked_sub(current_lamports)
                 .ok_or(ProgramError::ArithmeticOverflow)?;
-            system_program::transfer(
-                CpiContext::new(
-                    ctx.accounts.system_program.to_account_info(),
-                    system_program::Transfer {
-                        from: ctx.accounts.signer.to_account_info(),
-                        to: allowed_info.clone(),
-                    },
+            invoke(
+                &system_instruction::transfer(
+                    &ctx.accounts.signer.key(),
+                    &allowed_info.key(),
+                    delta,
                 ),
-                delta,
+                &[
+                    ctx.accounts.signer.to_account_info(),
+                    allowed_info.clone(),
+                    ctx.accounts.system_program.to_account_info(),
+                ],
             )?;
         }
-        allowed_info.resize(required_len)?;
+        allowed_info.realloc(required_len, false)?;
     }
 
     allowed.programs.push(program_key);
@@ -949,7 +952,7 @@ pub fn sweep_redeem_vault_funds(ctx: Context<SweepRedeemVaultFunds>, amount: u64
         b"redeem_vault_authority",
         &[ctx.bumps.redeem_vault_authority],
     ];
-    let signer = &[seeds];
+    let signer = &[&seeds[..]];
     // transfer from redeem vault to the vault token account
     // the vault token account is owned by the vault authority which is set in config
     token::transfer(
