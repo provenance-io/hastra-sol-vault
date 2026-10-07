@@ -212,7 +212,10 @@ jobs:
     - name: Anchor build (testing)
       run: anchor build -- --features testing
 
-    - name: Account and signer rejection tests, fuzz regressions
+    - name: Account rejection, conversion properties and fuzz regressions
+      env:
+        PROPTEST_CASES: 512
+        PROPTEST_RNG_SEED: 8675309
       run: cargo test --release --manifest-path trident-tests/Cargo.toml
 
     - name: Fast fuzz profile

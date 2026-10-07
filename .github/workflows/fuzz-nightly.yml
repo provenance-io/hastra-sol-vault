@@ -63,7 +63,13 @@ jobs:
     - name: Anchor build (testing)
       run: anchor build -- --features testing
 
+    - name: Conversion properties, deep profile
+      env:
+        PROPTEST_CASES: 100000
+      run: cargo test --release --manifest-path trident-tests/Cargo.toml --test conversions
+
     - name: Deep fuzz profile
+      if: success() || failure()
       run: trident-tests/run_fuzz.sh 120000 200 fuzz-out
 
     - name: Upload fuzz output
