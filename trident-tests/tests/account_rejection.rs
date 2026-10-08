@@ -74,7 +74,30 @@ const ACCEPTED: &[(Program, &str, &str, Mutation, &str)] = &[
         Mutation::TokenAccountOwner,
         "the caller picks the recipient",
     ),
+    (
+        Program::Mint,
+        "cpi_invoke_for_testing",
+        "signer",
+        Mutation::RandomSigner,
+        "testing-only CPI wrapper; any signer may relay",
+    ),
+    (
+        Program::Stake,
+        "cpi_invoke_for_testing",
+        "signer",
+        Mutation::RandomSigner,
+        "testing-only CPI wrapper; any signer may relay",
+    ),
 ];
+
+/// Sends instructions that reject direct invocation through `cpi_invoke_for_testing`.
+fn deliver(program: Program, name: &str, ix: Instruction) -> Instruction {
+    if (program, name) == (Program::Mint, "external_program_mint") {
+        via_cpi(ix)
+    } else {
+        ix
+    }
+}
 
 /// Errors that show the mutated account was caught by the check guarding it, rather than by an
 /// unrelated failure further on.
@@ -295,7 +318,8 @@ fn every_instruction_rejects_wrong_accounts_and_signers() {
                     trident.set_account_custom(key, patched);
                     (*key, original)
                 });
-                let result = trident.process_transaction(&[instruction], None);
+                let result =
+                    trident.process_transaction(&[deliver(program, name, instruction)], None);
                 if let Some((key, original)) = original {
                     trident.set_account_custom(&key, &original);
                 }
@@ -318,7 +342,8 @@ fn every_instruction_rejects_wrong_accounts_and_signers() {
                         result.get_result()
                     ));
                 }
-                let control = trident.process_transaction(&[call.instruction()], None);
+                let control = trident
+                    .process_transaction(&[deliver(program, name, call.instruction())], None);
                 if !control.is_success() {
                     problems.push(format!(
                         "{tag}: authorized control failed: {}",

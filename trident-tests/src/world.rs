@@ -209,20 +209,24 @@ impl Program {
 }
 
 /// A call with the authorized signer and valid accounts. `accounts` lists only what the IDL
-/// cannot derive.
+/// cannot derive; `remaining` is appended after the IDL accounts.
 #[derive(Clone)]
 pub struct Call {
     pub program: Program,
     pub name: &'static str,
     pub accounts: Vec<(&'static str, Pubkey)>,
     pub args: Vec<u8>,
+    pub remaining: Vec<AccountMeta>,
 }
 
 impl Call {
     pub fn instruction(&self) -> Instruction {
-        self.program
+        let mut ix = self
+            .program
             .idl()
-            .build(self.name, &self.accounts, self.args.clone())
+            .build(self.name, &self.accounts, self.args.clone());
+        ix.accounts.extend(self.remaining.iter().cloned());
+        ix
     }
 
     /// The address this call resolves for account `name`.
@@ -246,6 +250,33 @@ impl Call {
     pub fn with_args<T: BorshSerialize>(mut self, value: &T) -> Self {
         self.args = args(value);
         self
+    }
+}
+
+/// `ix` sent through its own program's `cpi_invoke_for_testing`, so it runs as a CPI. The
+/// wrapper's signer is the upgrade authority, which no CPI-reachable instruction lists, so it
+/// cannot lend a signer flag to the inner accounts.
+pub fn via_cpi(ix: Instruction) -> Instruction {
+    let program = if ix.program_id == mint_id() {
+        Program::Mint
+    } else {
+        Program::Stake
+    };
+    cpi_wrapper(program, ix).instruction()
+}
+
+/// TridentSVM requires the callee among the CPI account infos, so the program account is appended;
+/// the inner instruction sees it as an extra trailing account, which Anchor ignores.
+fn cpi_wrapper(program: Program, inner: Instruction) -> Call {
+    assert_eq!(inner.program_id, program.idl().program_id, "CPI target");
+    let mut remaining = inner.accounts;
+    remaining.push(AccountMeta::new_readonly(inner.program_id, false));
+    Call {
+        program,
+        name: "cpi_invoke_for_testing",
+        accounts: vec![("signer", UPGRADE_AUTHORITY)],
+        args: args(&inner.data),
+        remaining,
     }
 }
 
@@ -369,6 +400,10 @@ impl World {
 
     /// Authorized vault-mint call acting for user `u` where a user is involved.
     pub fn mint_call_for(&self, name: &str, u: usize) -> Call {
+        if name == "cpi_invoke_for_testing" {
+            let inner = self.mint_call_for("external_program_mint", u);
+            return cpi_wrapper(Program::Mint, inner.instruction());
+        }
         let user = &self.users[u];
         let (user_key, user_usdc, user_wylds) = (user.key, user.usdc, user.wylds);
         let pd = ("program_data", program_data(&mint_id()));
@@ -499,11 +534,16 @@ impl World {
             name,
             accounts,
             args: data,
+            remaining: Vec::new(),
         }
     }
 
     /// Authorized vault-stake call acting for user `u` where a user is involved.
     pub fn stake_call_for(&self, name: &str, u: usize) -> Call {
+        if name == "cpi_invoke_for_testing" {
+            let inner = self.stake_call_for("exchange_rate", u);
+            return cpi_wrapper(Program::Stake, inner.instruction());
+        }
         let user = &self.users[u];
         let (user_key, user_wylds, user_prime) = (user.key, user.wylds, user.prime);
         let pd = ("program_data", program_data(&stake_id()));
@@ -602,6 +642,7 @@ impl World {
             name,
             accounts,
             args: data,
+            remaining: Vec::new(),
         }
     }
 }

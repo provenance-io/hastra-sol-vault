@@ -513,8 +513,12 @@ impl FuzzTest {
         let program = candidate(t, &m.world);
         let u = t.random_from_range(0..USERS);
         let amount = t.random_from_range(1..=1_000_000_000u64);
+        // Occasionally probe the CPI-only guard with a direct call.
+        let direct = t.random_from_range(0..8u8) == 0;
         let expect = if program == m.world.wylds_mint {
             Expect::Code(ANCHOR_CONSTRAINT_EXECUTABLE)
+        } else if direct {
+            mint_err("ExternalMintMustBeCpi")
         } else if program == stake_id() || m.allowed.contains(&program) {
             Expect::Ok
         } else {
@@ -528,11 +532,12 @@ impl FuzzTest {
             .with("calling_program", program)
             .with_args(&amount)
             .instruction();
-        let minted = if run(t, ix, "external_program_mint", expect) {
-            amount
+        let (ix, label) = if direct {
+            (ix, "external_program_mint direct")
         } else {
-            0
+            (via_cpi(ix), "external_program_mint")
         };
+        let minted = if run(t, ix, label, expect) { amount } else { 0 };
         assert_eq!(token_balance(t, destination), before + minted);
     }
 
