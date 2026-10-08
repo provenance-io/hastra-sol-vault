@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd /workspace
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 export PATH="/home/ubuntu/.local/share/solana/install/active_release/bin:/usr/local/cargo/bin:${PATH}"
 
