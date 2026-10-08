@@ -777,31 +777,28 @@ $ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
 
 ## Testing
 
-Integration tests live under `tests/` (`vault-mint.test.ts`, `vault-stake-auto.test.ts`, `vault-stake.test.ts`, etc.). `Anchor.toml` runs them with:
+Integration tests live under `tests/` (`vault-mint.test.ts`, `vault-stake-auto.test.ts`, `vault-stake.test.ts`, etc.).
+
+Localnet uses the **production program IDs**, with no localnet program keypairs. `anchor test` and `anchor localnet` load each built `target/deploy/<lib>.so` at genesis at its `[programs.localnet]` address in `Anchor.toml`. The programs are upgradeable, with the provider wallet as upgrade authority (`[test] upgradeable = true`), so nothing is deployed.
+
+**Recommended:** run the full suite via `scripts/run-tests.sh` (copies to `/tmp`, builds with the `testing` feature, and runs `anchor test`).
+
+Manual flow (same steps CI uses):
 
 ```bash
-anchor test
+anchor build -- --features testing
+(cd programs/vault-stake && cargo build-sbf --features testing)
+anchor test --skip-build
 ```
 
-That starts a temporary local validator, deploys the workspace programs, and executes `yarn run ts-mocha … tests/**/*.ts` (see `[scripts] test`).
-
-To attach to a validator you already started:
-
-```bash
-solana-test-validator --reset
-# another terminal:
-anchor test --skip-local-validator
-```
+- Always pass `--skip-build`. A plain `anchor test` rebuilds **without** the `testing` feature (no `set_price_for_testing`), so tests fail.
+- Don't use `anchor deploy` on localnet. It deploys to the random `target/deploy/<lib>-keypair.json` address, which doesn't match `declare_id!`.
+- To load a rebuild into a running validator, restart it, or upgrade in place with `solana program deploy --program-id 9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV target/deploy/vault_mint.so` (or `97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY` / `vault_stake.so`).
+- Do not deploy a `testing` build to devnet or mainnet.
 
 Tests run in **lexical file order**. `vault-mint.test.ts` exercises **vault-stake-auto** `publish_rewards` before `vault-stake-auto.test.ts`, so both suites share validator state; reward cooldown and related assertions account for that ordering.
 
 ## Hastra Solana Vault - Local Development Setup
-
-**Start Local Validator**
-
-```bash
-$ solana-test-validator --reset
-```
 
 **Set Solana Configs**
 
@@ -811,14 +808,18 @@ $ solana-test-validator --reset
 $ solana-keygen new --no-passphrase --outfile ~/.config/solana/hastra-localnet-id.json 
 $ solana config set --url l
 $ solana config set --keypair ~/.config/solana/hastra-localnet-id.json
-$ solana airdrop 1000
 ```
 
-**Build and Deploy Programs**
+**Build Programs and Start Local Validator**
+
+Build with the `testing` feature so the localnet helpers that call `setPriceForTesting` (`scripts/localnet/initialize_price_config.ts --set_test_price`, `refresh_stake_test_price.ts`) work. `anchor localnet` loads the programs at their production IDs (see [Testing](#testing)), so there is no `anchor deploy` step.
 
 ```bash
-$ anchor build
-$ anchor deploy
+$ anchor build -- --features testing
+$ (cd programs/vault-stake && cargo build-sbf --features testing)
+$ anchor localnet --skip-build
+# another terminal:
+$ solana airdrop 1000
 ```
 
 **Initialize Programs and Accounts**
