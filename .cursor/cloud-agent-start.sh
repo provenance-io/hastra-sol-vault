@@ -4,12 +4,11 @@ set -euo pipefail
 export PATH="/home/ubuntu/.local/share/solana/install/active_release/bin:/usr/local/cargo/bin:/usr/local/bin:${PATH}"
 
 KEYPAIR="${HOME}/.config/solana/hastra-localnet-id.json"
-LEDGER_DIR="/workspace/.anchor/local-validator-ledger"
 LOG_FILE="/tmp/solana-validator.log"
 TMUX_CONF="/exec-daemon/tmux.portal.conf"
 SESSION_NAME="solana_validator"
 
-mkdir -p "${HOME}/.config/solana" "${LEDGER_DIR}"
+mkdir -p "${HOME}/.config/solana"
 
 if [[ ! -f "${KEYPAIR}" ]]; then
   solana-keygen new --no-passphrase --force --outfile "${KEYPAIR}"
@@ -33,8 +32,10 @@ stop_validator() {
 
 start_validator() {
   stop_validator
+  # anchor localnet loads the built programs at genesis at their [programs.localnet]
+  # (production) IDs, upgradeable by the provider wallet.
   tmux -f "${TMUX_CONF}" new-session -d -s "${SESSION_NAME}" -c /workspace -- \
-    "bash scripts/localnet-validator.sh --reset --ledger ${LEDGER_DIR} 2>&1 | tee ${LOG_FILE}"
+    "anchor localnet --skip-build 2>&1 | tee ${LOG_FILE}"
 
   for _ in $(seq 1 90); do
     if solana cluster-version >/dev/null 2>&1; then

@@ -12,7 +12,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 # ── Step 1: Copy project ──────────────────────────────────────────────────────
 echo ""
-echo "▶ Step 1/5  Copying project t o $TMP_DIR ..."
+echo "▶ Step 1/4  Copying project to $TMP_DIR ..."
 rsync -a --checksum \
   --exclude=node_modules \
   --exclude=target \
@@ -23,17 +23,14 @@ echo "  ✅ Copy done"
 
 # ── Step 2: Install dependencies ─────────────────────────────────────────────
 echo ""
-echo "▶ Step 2/5  Installing node dependencies ..."
+echo "▶ Step 2/4  Installing node dependencies ..."
 cd "$TMP_DIR"
 yarn install --frozen-lockfile --silent
 echo "  ✅ Dependencies ready"
 
 # ── Step 3: Build ────────────────────────────────────────────────────────────
 echo ""
-echo "▶ Step 3/5  Building ..."
-# Anchor rewrites declare_id! on the first build when target/deploy is absent;
-# creating it keeps the production program IDs.
-mkdir -p target/deploy
+echo "▶ Step 3/4  Building ..."
 # IDL and program binaries include testing-only instructions used by the suite
 # (set_price_for_testing, cpi_invoke_for_testing).
 anchor build -- --features testing
@@ -43,45 +40,21 @@ anchor build -- --features testing
 (cd programs/vault-mint && cargo build-sbf --features testing 2>&1)
 echo "  ✅ Build complete"
 
-# ── Step 4: Start validator ───────────────────────────────────────────────────
+# ── Step 4: Run tests ─────────────────────────────────────────────────────────
 echo ""
-echo "▶ Step 4/5  Starting solana-test-validator ..."
+echo "▶ Step 4/4  Running tests ..."
 
-# Kill any existing validator
+# anchor test starts its own validator on the configured RPC port.
 EXISTING=$(ps aux | grep solana-test-validator | grep -v grep | awk '{print $2}' || true)
 if [ -n "$EXISTING" ]; then
   echo "  Killing existing validator (PID $EXISTING) ..."
-  kill "$EXISTING" 2>/dev/null || true
+  kill $EXISTING 2>/dev/null || true
   sleep 2
 fi
 
-# Programs are loaded at genesis at their production IDs, so tests skip deploy.
-bash scripts/localnet-validator.sh --reset > /tmp/validator-test.log 2>&1 &
-VALIDATOR_PID=$!
-echo "  Validator started (PID $VALIDATOR_PID), waiting for it to be ready ..."
+# Anchor loads the programs at genesis at their [programs.localnet] (production) IDs.
+anchor test --skip-build
 
-# Wait up to 30s for RPC to respond
-for i in $(seq 1 30); do
-  if solana cluster-version > /dev/null 2>&1; then
-    echo "  ✅ Validator ready (${i}s)"
-    break
-  fi
-  if [ "$i" -eq 30 ]; then
-    echo "  ❌ Validator did not start in 30s. Check /tmp/validator-test.log"
-    exit 1
-  fi
-  sleep 1
-done
-
-# ── Step 5: Run tests ─────────────────────────────────────────────────────────
-echo ""
-echo "▶ Step 5/5  Running tests ..."
-anchor test --skip-local-validator --skip-build --skip-deploy
-
-# ── Cleanup ───────────────────────────────────────────────────────────────────
-echo ""
-echo "  Stopping validator (PID $VALIDATOR_PID) ..."
-kill "$VALIDATOR_PID" 2>/dev/null || true
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Done."

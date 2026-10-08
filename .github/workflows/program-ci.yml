@@ -68,12 +68,8 @@ jobs:
     - name: Install SBF platform tools
       run: cargo build-sbf --force-tools-install --manifest-path programs/vault-mint/Cargo.toml
 
-    # Anchor 0.31.1 rewrites declare_id! on the first build when target/deploy
-    # is absent. Create it first so tests run against the production program IDs.
     - name: Anchor build (testing)
-      run: |
-        mkdir -p target/deploy
-        anchor build -- --features testing
+      run: anchor build -- --features testing
 
     - name: Confirm build preserved checked-in IDs
       run: |
@@ -82,29 +78,16 @@ jobs:
           programs/vault-mint/src/lib.rs \
           programs/vault-stake/src/lib.rs
 
-    # Programs are loaded at genesis at their production IDs, upgradeable by this wallet.
-    - name: Start local validator
+    # The provider wallet becomes the programs' upgrade authority on localnet.
+    - name: Create provider wallet
       run: |
         mkdir -p ~/.config/solana/
         solana-keygen new --no-passphrase --outfile ~/.config/solana/hastra-localnet-id.json
-        solana config set --url localhost
-        solana config set --keypair ~/.config/solana/hastra-localnet-id.json
 
-        bash scripts/localnet-validator.sh --reset > /tmp/validator.log 2>&1 &
-        echo "VALIDATOR_PID=$!" >> "$GITHUB_ENV"
-        for _ in $(seq 1 60); do
-          solana cluster-version >/dev/null 2>&1 && break
-          sleep 1
-        done
-        solana cluster-version || { cat /tmp/validator.log; exit 1; }
-        solana airdrop 1000
-
+    # anchor test starts the validator with the programs loaded at genesis at their
+    # [programs.localnet] (production) IDs, so there is no deploy step.
     - name: Run Anchor tests
-      run: anchor test --skip-local-validator --skip-build --skip-deploy
-
-    - name: Stop local validator
-      if: always()
-      run: kill "${VALIDATOR_PID}" 2>/dev/null || true
+      run: anchor test --skip-build
 
   # One runner per program id. Stake builds all write target/deploy/vault_stake.so,
   # so they cannot share a checkout.
