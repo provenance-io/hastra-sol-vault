@@ -96,4 +96,6 @@ pub enum CustomErrorCode {
     RewardPublicationIdNotMonotonic = 52,
     #[msg("Reward publication id gap from last published id exceeds MAX_GAP")]
     RewardPublicationIdGapTooLarge = 53,
+    #[msg("Privileged instruction must be invoked directly, not via CPI")]
+    InstructionMustBeDirectInvocation = 54,
 }

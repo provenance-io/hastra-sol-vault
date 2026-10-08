@@ -64,9 +64,6 @@ jobs:
     - name: Install yarn dependencies
       run: yarn install --frozen-lockfile
 
-    - name: Install localnet deploy keypairs
-      run: bash scripts/sync-localnet-deploy-keypairs.sh
-
     # Ensure SBF platform tools exist before Anchor invokes cargo-build-sbf.
     - name: Install SBF platform tools
       run: cargo build-sbf --force-tools-install --manifest-path programs/vault-mint/Cargo.toml
@@ -88,24 +85,23 @@ jobs:
           fi
         done
 
-    - name: Start local validator
+    - name: Confirm build preserved checked-in IDs
       run: |
-        solana-test-validator --reset &
-        echo "VALIDATOR_PID=$!" >> "$GITHUB_ENV"
-        sleep 5
+        git diff --exit-code -- \
+          Anchor.toml \
+          programs/vault-mint/src/lib.rs \
+          programs/vault-stake/src/lib.rs
 
+    # The provider wallet becomes the programs' upgrade authority on localnet.
+    - name: Create provider wallet
+      run: |
         mkdir -p ~/.config/solana/
         solana-keygen new --no-passphrase --outfile ~/.config/solana/hastra-localnet-id.json
-        solana config set --url localhost
-        solana config set --keypair ~/.config/solana/hastra-localnet-id.json
-        solana airdrop 1000
 
+    # anchor test starts the validator with the programs loaded at genesis at their
+    # [programs.localnet] (production) IDs, so there is no deploy step.
     - name: Run Anchor tests
-      run: anchor test --skip-local-validator --skip-build
-
-    - name: Stop local validator
-      if: always()
-      run: kill "${VALIDATOR_PID}" 2>/dev/null || true
+      run: anchor test --skip-build
 
   rust-checks:
     runs-on: ubuntu-latest
@@ -202,9 +198,6 @@ jobs:
           trident-tests/target
         key: fuzz-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: fuzz-${{ runner.os }}-
-
-    - name: Install localnet deploy keypairs
-      run: bash scripts/sync-localnet-deploy-keypairs.sh
 
     - name: Install SBF platform tools
       run: cargo build-sbf --force-tools-install --manifest-path programs/vault-mint/Cargo.toml

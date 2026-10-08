@@ -83,10 +83,7 @@ security_txt! {
 // Specify exactly one pool-* feature at build time to embed the correct program ID.
 // Enabling multiple features produces a duplicate-ID compile error; enabling none
 // produces the compile_error! below.
-#[cfg(all(feature = "pool-prime", feature = "localnet-program-ids"))]
-declare_id!("GLCJS7CRsbH8eqnx1eSsAKwnB6CQBddLzF9ZwfukdS1C");
-
-#[cfg(all(feature = "pool-prime", not(feature = "localnet-program-ids")))]
+#[cfg(feature = "pool-prime")]
 declare_id!("97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY");
 
 #[cfg(feature = "pool-auto")]
@@ -125,8 +122,16 @@ pub mod vault_stake {
 
     /// Pauses or unpauses the protocol operations:
     /// - pause: true to pause, false to unpause
+    /// Must be invoked directly. CPI into this instruction is rejected.
     pub fn pause(ctx: Context<Pause>, pause: bool) -> Result<()> {
         processor::pause(ctx, pause)
+    }
+
+    /// FOR TESTING ONLY — CPIs this program with `data` and the remaining accounts so tests
+    /// can assert that privileged instructions reject cross-program invocation.
+    #[cfg(feature = "testing")]
+    pub fn cpi_invoke_for_testing(ctx: Context<CpiInvokeForTesting>, data: Vec<u8>) -> Result<()> {
+        processor::cpi_invoke_for_testing(ctx, data)
     }
 
     /// Handles user deposits of vault tokens (e.g., wYLDS):

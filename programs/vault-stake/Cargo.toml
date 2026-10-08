@@ -24,9 +24,7 @@ no-log-ix-name = []
 custom-heap = []
 idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 custom-panic = []
-# Localnet-only program IDs and test-only instructions; do not deploy to devnet/mainnet.
-localnet-program-ids = []
-testing = ["localnet-program-ids", "vault-mint/localnet-program-ids"]
+testing = []
 
 # Host builds (clippy -D warnings in CI) flag existing code and Anchor 0.31's generated code. They
 # are allowed here rather than fixed so the program source, and its verified build, stay unchanged.

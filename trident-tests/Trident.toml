@@ -1,13 +1,13 @@
-# Programs come from `anchor build -- --features testing` (localnet program ids).
+# Programs come from `anchor build -- --features testing` (production program ids).
 # The upgrade authority is a plain pubkey: TridentSVM does not verify signatures, so the harness
 # marks it as a signer without holding its keypair.
 
 [[fuzz.programs]]
-address = "AF46Np2fvFA9rWirgHcQpjuJgXPPUgHZPFCtiDYcaog5"
+address = "9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV"
 upgrade_authority = "UpgradeAuthority111111111111111111111111111"
 program = "../target/deploy/vault_mint.so"
 
 [[fuzz.programs]]
-address = "GLCJS7CRsbH8eqnx1eSsAKwnB6CQBddLzF9ZwfukdS1C"
+address = "97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY"
 upgrade_authority = "UpgradeAuthority111111111111111111111111111"
 program = "../target/deploy/vault_stake.so"

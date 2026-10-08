@@ -1,7 +1,10 @@
 use crate::account_structs::*;
 use crate::error::*;
 use crate::events::*;
-use crate::guard::{validate_administrators, validate_program_update_authority};
+use crate::guard::{
+    require_cpi_invocation, require_direct_invocation, validate_administrators,
+    validate_program_update_authority,
+};
 use crate::state::{AllowedExternalMintPrograms, EpochClaimedAmount, ProofNode};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::hash::hashv;
@@ -77,6 +80,7 @@ pub fn initialize(
 }
 
 pub fn pause(ctx: Context<Pause>, pause: bool) -> Result<()> {
+    require_direct_invocation()?;
     let config = &ctx.accounts.config;
     let signer = ctx.accounts.signer.key();
 
@@ -253,6 +257,7 @@ pub fn cancel_redeem(ctx: Context<CancelRedeem>) -> Result<()> {
 /// was actually reviewed. Solvency was never at risk — the full recorded amount is burned and paid
 /// to the same user either way — but amount-specific operational and compliance approval was.
 pub fn complete_redeem(ctx: Context<CompleteRedeem>, expected_amount: u64) -> Result<()> {
+    require_direct_invocation()?;
     // Admin gate
     require!(
         ctx.accounts
@@ -377,6 +382,7 @@ pub fn update_rewards_administrators(
 
 // Freeze a specific token account (only freeze administrators can do this)
 pub fn freeze_token_account(ctx: Context<FreezeTokenAccount>) -> Result<()> {
+    require_direct_invocation()?;
     let config = &ctx.accounts.config;
     let signer = ctx.accounts.signer.key();
 
@@ -413,6 +419,7 @@ pub fn freeze_token_account(ctx: Context<FreezeTokenAccount>) -> Result<()> {
 
 // Thaw a specific token account (only freeze administrators can do this)
 pub fn thaw_token_account(ctx: Context<ThawTokenAccount>) -> Result<()> {
+    require_direct_invocation()?;
     let config = &ctx.accounts.config;
     let signer = ctx.accounts.signer.key();
 
@@ -473,10 +480,7 @@ pub fn create_rewards_epoch(
         .index
         .checked_add(1)
         .ok_or(ProgramError::ArithmeticOverflow)?;
-    require!(
-        index == expected,
-        CustomErrorCode::EpochIndexNotContiguous
-    );
+    require!(index == expected, CustomErrorCode::EpochIndexNotContiguous);
     require!(
         total <= caps.max_epoch_cap,
         CustomErrorCode::EpochCapAboveGlobal
@@ -734,7 +738,11 @@ pub fn update_max_epoch_cap(ctx: Context<UpdateMaxEpochCap>, new_cap: u64) -> Re
 /// Cryptographic proof of caller identity comes from the `external_mint_authority` PDA
 /// signer: its address is derived with `seeds = [b"external_mint_authority"]` under
 /// `calling_program`'s program id, so only `calling_program` can produce a valid signer.
+///
+/// This instruction is CPI-only. Freeze and rewards admin instructions reject CPI.
+/// Upgrade-authority instructions may be invoked directly or via CPI.
 pub fn external_program_mint(ctx: Context<ExternalProgramMint>, amount: u64) -> Result<()> {
+    require_cpi_invocation()?;
     require!(!ctx.accounts.config.paused, CustomErrorCode::ProtocolPaused);
 
     let config = &ctx.accounts.config;
@@ -931,6 +939,7 @@ pub fn update_external_mint_programs_limit(
 }
 
 pub fn sweep_redeem_vault_funds(ctx: Context<SweepRedeemVaultFunds>, amount: u64) -> Result<()> {
+    require_direct_invocation()?;
     // Validate the signer is a rewards administrator
     require!(
         ctx.accounts
@@ -976,6 +985,43 @@ pub fn sweep_redeem_vault_funds(ctx: Context<SweepRedeemVaultFunds>, amount: u64
         vault: ctx.accounts.redeem_vault_token_account.mint,
     });
     msg!("Emitted SweepRedeemVaultEvent");
+
+    Ok(())
+}
+
+/// FOR TESTING ONLY — invokes this program via CPI using `data` as the inner instruction
+/// and `remaining_accounts` as its account list. The inner call is expected to fail with
+/// `InstructionMustBeDirectInvocation` for freeze and rewards admin instructions.
+#[cfg(feature = "testing")]
+pub fn cpi_invoke_for_testing(ctx: Context<CpiInvokeForTesting>, data: Vec<u8>) -> Result<()> {
+    require_direct_invocation()?;
+
+    let accounts: Vec<anchor_lang::solana_program::instruction::AccountMeta> = ctx
+        .remaining_accounts
+        .iter()
+        .map(|account| {
+            if account.is_writable {
+                anchor_lang::solana_program::instruction::AccountMeta::new(
+                    account.key(),
+                    account.is_signer,
+                )
+            } else {
+                anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+                    account.key(),
+                    account.is_signer,
+                )
+            }
+        })
+        .collect();
+
+    invoke(
+        &anchor_lang::solana_program::instruction::Instruction {
+            program_id: crate::ID,
+            accounts,
+            data,
+        },
+        ctx.remaining_accounts,
+    )?;
 
     Ok(())
 }

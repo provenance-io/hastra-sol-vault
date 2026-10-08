@@ -1,8 +1,10 @@
 use crate::account_structs::*;
 use crate::error::*;
 use crate::events::*;
-use crate::guard::validate_program_update_authority;
-use crate::state::{LastRewardPublication, StakePriceConfig, StakeRewardConfig, MAX_ADMINISTRATORS};
+use crate::guard::{require_direct_invocation, validate_program_update_authority};
+use crate::state::{
+    LastRewardPublication, StakePriceConfig, StakeRewardConfig, MAX_ADMINISTRATORS,
+};
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program::{get_return_data, invoke};
 use anchor_spl::token::spl_token::instruction::AuthorityType;
@@ -69,6 +71,7 @@ pub fn initialize(
 }
 
 pub fn pause(ctx: Context<Pause>, pause: bool) -> Result<()> {
+    require_direct_invocation()?;
     let config = &ctx.accounts.stake_config;
     let signer = ctx.accounts.signer.key();
 
@@ -356,6 +359,7 @@ pub fn update_rewards_administrators(
 
 // Freeze a specific token account (only freeze administrators can do this)
 pub fn freeze_token_account(ctx: Context<FreezeTokenAccount>) -> Result<()> {
+    require_direct_invocation()?;
     let config = &ctx.accounts.stake_config;
     let signer = ctx.accounts.signer.key();
 
@@ -392,6 +396,7 @@ pub fn freeze_token_account(ctx: Context<FreezeTokenAccount>) -> Result<()> {
 
 // Thaw a specific token account (only freeze administrators can do this)
 pub fn thaw_token_account(ctx: Context<ThawTokenAccount>) -> Result<()> {
+    require_direct_invocation()?;
     let config = &ctx.accounts.stake_config;
     let signer = ctx.accounts.signer.key();
 
@@ -427,6 +432,7 @@ pub fn thaw_token_account(ctx: Context<ThawTokenAccount>) -> Result<()> {
 }
 
 pub fn publish_rewards(ctx: Context<PublishRewards>, id: u32, amount: u64) -> Result<()> {
+    require_direct_invocation()?;
     require!(
         !ctx.accounts.stake_config.paused,
         CustomErrorCode::ProtocolPaused
@@ -987,6 +993,7 @@ fn apply_verified_report(
 ///      staleness uses that observation clock, not the local submission time of this instruction).
 /// Only callable by rewards administrators.
 pub fn verify_price(ctx: Context<VerifyPrice>, signed_report: Vec<u8>) -> Result<()> {
+    require_direct_invocation()?;
     // Authorization: signer must be a rewards administrator
     require!(
         ctx.accounts
@@ -1060,6 +1067,7 @@ pub fn apply_verified_report_for_testing(
     ctx: Context<ApplyVerifiedReportForTesting>,
     encoded_report: Vec<u8>,
 ) -> Result<()> {
+    require_direct_invocation()?;
     require!(
         ctx.accounts
             .stake_config
@@ -1099,4 +1107,41 @@ pub fn exchange_rate(ctx: Context<ConversionView>) -> Result<u64> {
     anchor_lang::solana_program::program::set_return_data(&rate.to_le_bytes());
 
     Ok(rate)
+}
+
+/// FOR TESTING ONLY — invokes this program via CPI using `data` as the inner instruction
+/// and `remaining_accounts` as its account list. The inner call is expected to fail with
+/// `InstructionMustBeDirectInvocation` for freeze and rewards admin instructions.
+#[cfg(feature = "testing")]
+pub fn cpi_invoke_for_testing(ctx: Context<CpiInvokeForTesting>, data: Vec<u8>) -> Result<()> {
+    require_direct_invocation()?;
+
+    let accounts: Vec<anchor_lang::solana_program::instruction::AccountMeta> = ctx
+        .remaining_accounts
+        .iter()
+        .map(|account| {
+            if account.is_writable {
+                anchor_lang::solana_program::instruction::AccountMeta::new(
+                    account.key(),
+                    account.is_signer,
+                )
+            } else {
+                anchor_lang::solana_program::instruction::AccountMeta::new_readonly(
+                    account.key(),
+                    account.is_signer,
+                )
+            }
+        })
+        .collect();
+
+    invoke(
+        &anchor_lang::solana_program::instruction::Instruction {
+            program_id: crate::ID,
+            accounts,
+            data,
+        },
+        ctx.remaining_accounts,
+    )?;
+
+    Ok(())
 }

@@ -1731,6 +1731,136 @@ describe("vault-stake", () => {
             await ensureShortRewardCooldownForTests();
         });
 
+        const rejectCpi = async (
+            builder: { instruction(): Promise<anchor.web3.TransactionInstruction> },
+            signers: Keypair[]
+        ) => {
+            const ix = await builder.instruction();
+            try {
+                await program.methods
+                    .cpiInvokeForTesting(Buffer.from(ix.data))
+                    .accounts({ signer: provider.wallet.publicKey })
+                    .remainingAccounts(
+                        ix.keys.map((meta) => ({
+                            pubkey: meta.pubkey,
+                            isSigner: meta.isSigner,
+                            isWritable: meta.isWritable,
+                        }))
+                    )
+                    .signers(signers)
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(String(err)).to.match(/InstructionMustBeDirectInvocation/);
+            }
+        };
+
+        it("rejects CPI into pause, freeze, and thaw", async () => {
+            const before = await program.account.stakeConfig.fetch(stakeConfigPda);
+            await rejectCpi(
+                program.methods.pause(!before.paused).accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    signer: freezeAdmin.publicKey,
+                }),
+                [freezeAdmin]
+            );
+            const after = await program.account.stakeConfig.fetch(stakeConfigPda);
+            assert.equal(after.paused, before.paused);
+
+            const frozenBefore = (await getAccount(provider.connection, userMintTokenAccount)).isFrozen;
+            const freezeAccounts = {
+                stakeConfig: stakeConfigPda,
+                tokenAccount: userMintTokenAccount,
+                mint: mintedToken,
+                freezeAuthorityPda: freezeAuthorityPda,
+                signer: freezeAdmin.publicKey,
+                tokenProgram: TOKEN_PROGRAM_ID,
+            };
+            await rejectCpi(
+                program.methods.freezeTokenAccount().accountsStrict(freezeAccounts),
+                [freezeAdmin]
+            );
+            await rejectCpi(
+                program.methods.thawTokenAccount().accountsStrict(freezeAccounts),
+                [freezeAdmin]
+            );
+            assert.equal(
+                (await getAccount(provider.connection, userMintTokenAccount)).isFrozen,
+                frozenBefore
+            );
+        });
+
+        it("rejects CPI into publish_rewards", async () => {
+            await ensureAllowedExternalMintProgramsPdaInitialized();
+            const vaultBefore = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+            const amount = new BN(1);
+            const rewardId = await allocNextPublishId();
+            const [rewardRecord] = anchor.web3.PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("reward_record"),
+                    Buffer.from(new Uint32Array([rewardId]).buffer),
+                    Buffer.from(new BigUint64Array([BigInt(1)]).buffer),
+                ],
+                program.programId
+            );
+            await rejectCpi(
+                program.methods.publishRewards(rewardId, amount).accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
+                    mintConfig: configPda,
+                    externalMintAuthority: externalMintAuthorityPda,
+                    mintProgram: mintProgram.programId,
+                    thisProgram: program.programId,
+                    vaultMintAllowedExternalPrograms: allowedExternalMintProgramsPda,
+                    admin: rewardsAdmin.publicKey,
+                    rewardsMint: vaultedToken,
+                    rewardsMintAuthority: rewardsMintAuthorityPda,
+                    vaultTokenAccount: vaultTokenAccount,
+                    vaultAuthority: vaultAuthorityPda,
+                    mint: mintedToken,
+                    rewardRecord,
+                    stakeRewardConfig: stakeRewardConfigPda,
+                    lastRewardPublication: lastRewardPublicationPda,
+                    systemProgram: SystemProgram.programId,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                }),
+                [rewardsAdmin]
+            );
+            assert.equal(
+                (await getAccount(provider.connection, vaultTokenAccount)).amount,
+                vaultBefore
+            );
+        });
+
+        it("rejects CPI into verify_price and apply_verified_report_for_testing", async () => {
+            const before = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
+            await rejectCpi(
+                program.methods.verifyPrice(Buffer.from([0])).accountsStrict({
+                    stakeConfig: stakeConfigPda,
+                    stakePriceConfig: stakePriceConfigPda,
+                    chainlinkVerifierAccount: program.programId,
+                    chainlinkAccessController: program.programId,
+                    chainlinkConfigAccount: program.programId,
+                    chainlinkProgram: program.programId,
+                    signer: rewardsAdmin.publicKey,
+                }),
+                [rewardsAdmin]
+            );
+            await rejectCpi(
+                program.methods
+                    .applyVerifiedReportForTesting(Buffer.from([0]))
+                    .accountsStrict({
+                        stakeConfig: stakeConfigPda,
+                        stakePriceConfig: stakePriceConfigPda,
+                        signer: rewardsAdmin.publicKey,
+                    }),
+                [rewardsAdmin]
+            );
+            const after = await program.account.stakePriceConfig.fetch(stakePriceConfigPda);
+            assert.equal(after.price.toString(), before.price.toString());
+            assert.equal(after.priceTimestamp.toString(), before.priceTimestamp.toString());
+        });
+
         it("pauses all functionality", async () => {
             await program.methods
                 .pause(true)
