@@ -1,0 +1,9 @@
+[advisories]
+ignore = [
+  # ed25519-dalek 1.0.1 and curve25519-dalek 3.2.0 reach the lockfile only through
+  # solana-keypair -> solana-sdk 2.x -> chainlink_solana_data_streams. That is host-side
+  # keypair code; it is not compiled into the SBF programs, and no solana-sdk 2.x release
+  # moves to the patched dalek versions. Revisit when the Chainlink crate supports solana-sdk 3.
+  "RUSTSEC-2022-0093",
+  "RUSTSEC-2024-0344",
+]

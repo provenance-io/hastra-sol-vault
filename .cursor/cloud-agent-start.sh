@@ -3,6 +3,7 @@ set -euo pipefail
 
 export PATH="/home/ubuntu/.local/share/solana/install/active_release/bin:/usr/local/cargo/bin:/usr/local/bin:${PATH}"
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KEYPAIR="${HOME}/.config/solana/hastra-localnet-id.json"
 LOG_FILE="/tmp/solana-validator.log"
 TMUX_CONF="/exec-daemon/tmux.portal.conf"
@@ -34,7 +35,7 @@ start_validator() {
   stop_validator
   # anchor localnet loads the built programs at genesis at their [programs.localnet]
   # (production) IDs, upgradeable by the provider wallet.
-  tmux -f "${TMUX_CONF}" new-session -d -s "${SESSION_NAME}" -c /workspace -- \
+  tmux -f "${TMUX_CONF}" new-session -d -s "${SESSION_NAME}" -c "${REPO_ROOT}" -- \
     "anchor localnet --skip-build 2>&1 | tee ${LOG_FILE}"
 
   for _ in $(seq 1 90); do

@@ -26,6 +26,19 @@ idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 custom-panic = []
 testing = []
 
+# Host builds (clippy -D warnings in CI) flag existing code and Anchor 0.31's generated code. They
+# are allowed here rather than fixed so the program source, and its verified build, stay unchanged.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
+deprecated = "allow"
+
+[lints.clippy]
+doc_lazy_continuation = "allow"
+explicit_auto_deref = "allow"
+needless_borrow = "allow"
+redundant_field_names = "allow"
+redundant_slicing = "allow"
+
 [dependencies]
 anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
 anchor-spl = "0.31.1"

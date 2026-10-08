@@ -71,6 +71,20 @@ jobs:
     - name: Anchor build (testing)
       run: anchor build -- --features testing
 
+    # Negative control for the release-artifact check in verified-build: it must flag this build.
+    - name: Release-artifact check flags the testing build
+      run: |
+        # Each artifact is checked on its own, so a match in one cannot hide a miss in another.
+        for artifact in target/idl/vault_mint.json target/deploy/vault_mint.so \
+            target/idl/vault_stake.json target/deploy/vault_stake.so; do
+          status=0
+          .github/scripts/check_release_artifacts.sh "${artifact}" || status=$?
+          if [ "${status}" -ne 1 ]; then
+            echo "${artifact}: expected exit 1 (testing instruction found), got ${status}"
+            exit 1
+          fi
+        done
+
     - name: Confirm build preserved checked-in IDs
       run: |
         git diff --exit-code -- \
@@ -88,6 +102,129 @@ jobs:
     # [programs.localnet] (production) IDs, so there is no deploy step.
     - name: Run Anchor tests
       run: anchor test --skip-build
+
+  rust-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          pkg-config \
+          libudev-dev \
+          llvm \
+          libclang-dev \
+          protobuf-compiler \
+          libssl-dev
+
+    # Pinned so a new stable release cannot add lints that fail unrelated PRs.
+    - uses: dtolnay/rust-toolchain@1.90.0
+      with:
+        components: clippy
+
+    - name: Cache Cargo registry and target
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: rust-checks-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+        restore-keys: rust-checks-${{ runner.os }}-
+
+    - name: Clippy (release features)
+      run: cargo clippy --workspace --all-targets -- -D warnings
+
+    - name: Clippy (testing features)
+      run: cargo clippy --workspace --all-targets --features vault-mint/testing,vault-stake/testing -- -D warnings
+
+    # --all-targets skips doctests: vault-mint's existing doc comments are not valid doctests.
+    - name: Unit tests
+      run: cargo test --workspace --all-targets
+
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-audit
+
+    # Ignored advisories and their reasons are in .cargo/audit.toml.
+    - name: Cargo audit
+      run: cargo audit
+
+  # Trident harness against the testing build: account and signer rejection tests, committed
+  # fuzz regressions, then the fast fuzz profile (fixed seed, bounded iterations).
+  fuzz-fast:
+    name: fuzz (fast)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      FUZZ_SEED: 8bf051387dd7e789a85ac9640efb7f15671a458995c54bf9c860466e7e707a6a
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          pkg-config \
+          libudev-dev \
+          llvm \
+          libclang-dev \
+          protobuf-compiler \
+          libssl-dev
+
+    - uses: solana-foundation/github-actions/extract-versions@v0.2.11
+      id: versions
+
+    - uses: solana-foundation/github-actions/setup-all@v0.2.11
+      with:
+        solana_version: ${{ steps.versions.outputs.solana_version }}
+        anchor_version: ${{ steps.versions.outputs.anchor_version }}
+
+    - name: Cache Cargo registry, git sources and harness build
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          trident-tests/target
+        key: fuzz-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: fuzz-${{ runner.os }}-
+
+    - name: Install SBF platform tools
+      run: cargo build-sbf --force-tools-install --manifest-path programs/vault-mint/Cargo.toml
+
+    - name: Anchor build (testing)
+      run: anchor build -- --features testing
+
+    - name: Account rejection, conversion properties and fuzz regressions
+      env:
+        PROPTEST_CASES: 512
+        PROPTEST_RNG_SEED: 8675309
+      run: cargo test --release --manifest-path trident-tests/Cargo.toml
+
+    - name: Fast fuzz profile
+      env:
+        # Pinned so the fixed seed replays the same run on any runner with at least 2 CPUs.
+        FUZZ_THREADS: 2
+      run: trident-tests/run_fuzz.sh 4000 100 fuzz-out "${FUZZ_SEED}"
+
+    - name: Upload fuzz output
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: fuzz-fast-${{ github.sha }}
+        retention-days: 14
+        if-no-files-found: ignore
+        path: fuzz-out/
 
   # One runner per program id. Stake builds all write target/deploy/vault_stake.so,
   # so they cannot share a checkout.
@@ -270,6 +407,12 @@ jobs:
         fi
         cp "target/deploy/${LIBRARY}.so" "artifacts/programs/${SO_NAME}"
 
+    - name: Release artifacts exclude testing instructions
+      env:
+        IDL_NAME: ${{ matrix.idl_name }}
+        SO_NAME: ${{ matrix.so_name }}
+      run: .github/scripts/check_release_artifacts.sh "artifacts/idl/${IDL_NAME}" "artifacts/programs/${SO_NAME}"
+
     - name: Upload program artifact
       uses: actions/upload-artifact@v4
       with:
@@ -281,7 +424,7 @@ jobs:
           artifacts/client/${{ matrix.ts_name }}
 
   assemble:
-    needs: [test, verified-build]
+    needs: [test, rust-checks, fuzz-fast, verified-build]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
