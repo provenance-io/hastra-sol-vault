@@ -122,8 +122,16 @@ pub mod vault_stake {
 
     /// Pauses or unpauses the protocol operations:
     /// - pause: true to pause, false to unpause
+    /// Must be invoked directly. CPI into this instruction is rejected.
     pub fn pause(ctx: Context<Pause>, pause: bool) -> Result<()> {
         processor::pause(ctx, pause)
+    }
+
+    /// FOR TESTING ONLY — CPIs this program with `data` and the remaining accounts so tests
+    /// can assert that privileged instructions reject cross-program invocation.
+    #[cfg(feature = "testing")]
+    pub fn cpi_invoke_for_testing(ctx: Context<CpiInvokeForTesting>, data: Vec<u8>) -> Result<()> {
+        processor::cpi_invoke_for_testing(ctx, data)
     }
 
     /// Handles user deposits of vault tokens (e.g., wYLDS):

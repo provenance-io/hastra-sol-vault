@@ -325,7 +325,10 @@ sequenceDiagram
 - Program upgrade authority can modify configurations
 - Separate administrator lists for freeze and rewards functions (each must be 1–5 unique pubkeys; empty or duplicate lists are rejected)
 - `deposit` requires the user vault token account to differ from the configured deposit vault token account (blocks self-transfer minting)
-- `external_program_mint` requires a rewards administrator who signed the outer transaction (in addition to the calling program's `external_mint_authority` PDA)
+- Freeze and rewards admin instructions (`pause`, freeze/thaw, `complete_redeem`, `sweep_redeem_vault_funds`, `publish_rewards`, `verify_price`) must be the top-level instruction in the transaction. A cross-program invocation into them is rejected, so an admin signature on an outer transaction cannot be reused to drive those handlers
+- Upgrade-authority instructions may be invoked directly or via CPI. Production upgrade authority is a Squads vault PDA, which signs through Squads `vaultTransactionExecute`
+- `external_program_mint` must be invoked via CPI (staking `publish_rewards`). It also requires a rewards administrator who signed the outer transaction (in addition to the calling program's `external_mint_authority` PDA)
+- User instructions (`deposit`, `request_redeem`, `cancel_redeem`, `claim_rewards`, and stake `deposit` / `redeem`) may still be invoked via CPI
 - All sensitive operations require proper authority validation
 
 **Account Structure:**

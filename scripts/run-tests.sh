@@ -32,11 +32,13 @@ echo "  ✅ Dependencies ready"
 echo ""
 echo "▶ Step 3/5  Syncing program IDs and building ..."
 anchor keys sync
-# First: plain anchor build generates correct IDL (idl-build feature implies testing)
-anchor build
-# Second: rebuild vault-stake BPF binary with testing feature so set_price_for_testing
-# is present in the on-chain binary during tests. cd into the crate to avoid manifest-path issues.
+# IDL and program binaries include testing-only instructions used by the suite
+# (set_price_for_testing, cpi_invoke_pause_for_testing).
+anchor build -- --features testing
+# Rebuild BPF binaries with the testing feature so those instructions are in the
+# on-chain binaries. cd into each crate to avoid manifest-path issues.
 (cd programs/vault-stake && cargo build-sbf --features testing 2>&1)
+(cd programs/vault-mint && cargo build-sbf --features testing 2>&1)
 echo "  ✅ Build complete"
 
 # ── Step 4: Start validator ───────────────────────────────────────────────────

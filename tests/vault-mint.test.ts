@@ -2,7 +2,7 @@ import * as anchor from "@coral-xyz/anchor";
 import {Program} from "@coral-xyz/anchor";
 import {VaultMint} from "../target/types/vault_mint";
 import {VaultStake} from "../target/types/vault_stake";
-import {Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram} from "@solana/web3.js";
+import {Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction} from "@solana/web3.js";
 import * as fs from "fs";
 import * as path from "path";
 import {
@@ -1747,6 +1747,144 @@ describe("vault-mint", () => {
     });
 
     describe("paused protocol", () => {
+        const rejectCpi = async (
+            builder: { instruction(): Promise<anchor.web3.TransactionInstruction> },
+            signers: Keypair[]
+        ) => {
+            const ix = await builder.instruction();
+            try {
+                await program.methods
+                    .cpiInvokeForTesting(Buffer.from(ix.data))
+                    .accounts({ signer: provider.wallet.publicKey })
+                    .remainingAccounts(
+                        ix.keys.map((meta) => ({
+                            pubkey: meta.pubkey,
+                            isSigner: meta.isSigner,
+                            isWritable: meta.isWritable,
+                        }))
+                    )
+                    .signers(signers)
+                    .rpc();
+                assert.fail("Should have thrown error");
+            } catch (err) {
+                expect(String(err)).to.match(/InstructionMustBeDirectInvocation/);
+            }
+        };
+
+        it("rejects CPI into pause", async () => {
+            const before = await program.account.config.fetch(configPda);
+            await rejectCpi(
+                program.methods.pause(!before.paused).accountsStrict({
+                    config: configPda,
+                    signer: freezeAdmin.publicKey,
+                }),
+                [freezeAdmin]
+            );
+            const after = await program.account.config.fetch(configPda);
+            assert.equal(after.paused, before.paused);
+        });
+
+        it("rejects CPI into freeze and thaw", async () => {
+            const before = await getAccount(provider.connection, userMintTokenAccount);
+            const accounts = {
+                config: configPda,
+                tokenAccount: userMintTokenAccount,
+                mint: mintedToken,
+                freezeAuthorityPda: freezeAuthorityPda,
+                signer: freezeAdmin.publicKey,
+                tokenProgram: TOKEN_PROGRAM_ID,
+            };
+            await rejectCpi(
+                program.methods.freezeTokenAccount().accountsStrict(accounts),
+                [freezeAdmin]
+            );
+            await rejectCpi(
+                program.methods.thawTokenAccount().accountsStrict(accounts),
+                [freezeAdmin]
+            );
+            const after = await getAccount(provider.connection, userMintTokenAccount);
+            assert.equal(after.isFrozen, before.isFrozen);
+        });
+
+        it("rejects CPI into sweep_redeem_vault_funds", async () => {
+            const redeemBefore = (await getAccount(provider.connection, redeemVaultTokenAccount)).amount;
+            const vaultBefore = (await getAccount(provider.connection, vaultTokenAccount)).amount;
+            await rejectCpi(
+                program.methods.sweepRedeemVaultFunds(new BN(1)).accountsStrict({
+                    config: configPda,
+                    vaultTokenAccountConfig: vaultTokenAccountConfigPda,
+                    signer: rewardsAdmin.publicKey,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    redeemVaultTokenAccount: redeemVaultTokenAccount,
+                    vaultTokenAccount: vaultTokenAccount,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                }),
+                [rewardsAdmin]
+            );
+            assert.equal(
+                (await getAccount(provider.connection, redeemVaultTokenAccount)).amount,
+                redeemBefore
+            );
+            assert.equal(
+                (await getAccount(provider.connection, vaultTokenAccount)).amount,
+                vaultBefore
+            );
+        });
+
+        it("rejects CPI into complete_redeem", async () => {
+            const [redemptionRequestPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [Buffer.from("redemption_request"), user.publicKey.toBuffer()],
+                program.programId
+            );
+            const amount = new BN(1_000);
+            await program.methods
+                .requestRedeem(amount)
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    systemProgram: anchor.web3.SystemProgram.programId,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                })
+                .signers([user])
+                .rpc();
+
+            await rejectCpi(
+                program.methods.completeRedeem(amount).accountsStrict({
+                    admin: rewardsAdmin.publicKey,
+                    user: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    userVaultTokenAccount: userVaultTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultTokenAccount: redeemVaultTokenAccount,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    mint: mintedToken,
+                    config: configPda,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                }),
+                [rewardsAdmin]
+            );
+
+            const request = await program.account.redemptionRequest.fetch(redemptionRequestPda);
+            assert.equal(request.amount.toString(), amount.toString());
+
+            await program.methods
+                .cancelRedeem()
+                .accountsStrict({
+                    signer: user.publicKey,
+                    userMintTokenAccount: userMintTokenAccount,
+                    redemptionRequest: redemptionRequestPda,
+                    redeemVaultAuthority: redeemVaultAuthorityPda,
+                    config: configPda,
+                    tokenProgram: TOKEN_PROGRAM_ID,
+                })
+                .signers([user])
+                .rpc();
+        });
+
         it("pauses all functionality", async () => {
             await program.methods
                 .pause(true)
@@ -2127,6 +2265,57 @@ describe("vault-mint", () => {
                     /Signature verification failed|missing required signature|Transaction simulation failed/i
                 );
             }
+        });
+
+        it("rejects top-level external_program_mint before minting", async () => {
+            const [externalMintAuthorityPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [Buffer.from("external_mint_authority")],
+                stakeProgram.programId
+            );
+            const [allowedExternalMintProgramsPda] = anchor.web3.PublicKey.findProgramAddressSync(
+                [
+                    Buffer.from("allowed_external_mint_programs"),
+                    configPda.toBuffer(),
+                ],
+                program.programId
+            );
+            const supplyBefore = (await getMint(provider.connection, mintedToken)).supply;
+
+            // Signature checks run before the program. Skip them so the instruction
+            // actually executes at stack height 1 and hits the CPI-only guard.
+            // The stake PDA stays an unsigned required signer.
+            const ix = await program.methods
+                .externalProgramMint(new BN(1_000_000))
+                .accountsStrict({
+                    config: configPda,
+                    callingProgram: stakeProgram.programId,
+                    externalMintAuthority: externalMintAuthorityPda,
+                    mint: mintedToken,
+                    mintAuthority: mintAuthorityPda,
+                    admin: rewardsAdmin.publicKey,
+                    destination: userMintTokenAccount,
+                    allowedExternalMintPrograms: allowedExternalMintProgramsPda,
+                    tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+                })
+                .instruction();
+            const {blockhash} = await provider.connection.getLatestBlockhash();
+            const message = new TransactionMessage({
+                payerKey: provider.wallet.publicKey,
+                recentBlockhash: blockhash,
+                instructions: [ix],
+            }).compileToV0Message();
+            const tx = new VersionedTransaction(message);
+            tx.sign([provider.wallet.payer, rewardsAdmin]);
+            const sim = await provider.connection.simulateTransaction(tx, {
+                sigVerify: false,
+                replaceRecentBlockhash: true,
+            });
+            const logs = (sim.value.logs ?? []).join("\n");
+            expect(sim.value.err, logs).to.exist;
+            expect(logs).to.match(/ExternalMintMustBeCpi/);
+
+            const supplyAfter = (await getMint(provider.connection, mintedToken)).supply;
+            assert.equal(supplyAfter, supplyBefore);
         });
 
         it("requires rewards admin signature on external_program_mint", async () => {
