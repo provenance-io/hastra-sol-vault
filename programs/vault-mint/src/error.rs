@@ -88,4 +88,8 @@ pub enum CustomErrorCode {
     EpochIndexNotContiguous = 47,
     #[msg("Redeem vault token account does not match config.redeem_vault")]
     InvalidRedeemVault = 48,
+    #[msg("Privileged instruction must be invoked directly, not via CPI")]
+    InstructionMustBeDirectInvocation = 49,
+    #[msg("external_program_mint must be invoked via CPI")]
+    ExternalMintMustBeCpi = 50,
 }

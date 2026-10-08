@@ -85,6 +85,15 @@ pub struct Pause<'info> {
     pub signer: Signer<'info>,
 }
 
+/// FOR TESTING ONLY — top-level instruction that CPIs this program with the supplied
+/// instruction data and remaining accounts. Used to assert privileged instructions
+/// reject cross-program invocation. Not for production.
+#[cfg(feature = "testing")]
+#[derive(Accounts)]
+pub struct CpiInvokeForTesting<'info> {
+    pub signer: Signer<'info>,
+}
+
 #[derive(Accounts)]
 pub struct Deposit<'info> {
     #[account(

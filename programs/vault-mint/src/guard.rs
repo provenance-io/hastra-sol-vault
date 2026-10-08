@@ -1,5 +1,6 @@
 use crate::error::*;
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::instruction::{get_stack_height, TRANSACTION_LEVEL_STACK_HEIGHT};
 
 #[allow(deprecated)]
 use anchor_lang::solana_program::bpf_loader_upgradeable::UpgradeableLoaderState;
@@ -54,5 +55,25 @@ pub fn validate_program_update_authority(
         _ => return Err(CustomErrorCode::InvalidProgramData.into()),
     }
 
+    Ok(())
+}
+
+/// Privileged instructions must be the top-level instruction in the transaction.
+/// Stack height 1 is a direct invocation; anything higher is CPI.
+pub fn require_direct_invocation() -> Result<()> {
+    require!(
+        get_stack_height() == TRANSACTION_LEVEL_STACK_HEIGHT,
+        CustomErrorCode::InstructionMustBeDirectInvocation
+    );
+    Ok(())
+}
+
+/// `external_program_mint` is the only vault-mint entrypoint that accepts CPI,
+/// and it must be reached that way (staking `publish_rewards`).
+pub fn require_cpi_invocation() -> Result<()> {
+    require!(
+        get_stack_height() > TRANSACTION_LEVEL_STACK_HEIGHT,
+        CustomErrorCode::ExternalMintMustBeCpi
+    );
     Ok(())
 }
