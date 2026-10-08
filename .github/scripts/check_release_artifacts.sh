@@ -14,8 +14,8 @@ if [ "$#" -eq 0 ]; then
   exit 2
 fi
 
-TESTING_INSTRUCTIONS='["set_price_for_testing", "apply_verified_report_for_testing"]'
-BINARY_PATTERN='set_?price_?for_?testing|apply_?verified_?report_?for_?testing'
+TESTING_INSTRUCTIONS='["set_price_for_testing", "apply_verified_report_for_testing", "cpi_invoke_for_testing"]'
+BINARY_PATTERN='set_?price_?for_?testing|apply_?verified_?report_?for_?testing|cpi_?invoke_?for_?testing'
 
 found=0
 for artifact in "$@"; do
