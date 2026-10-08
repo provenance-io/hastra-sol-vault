@@ -34,7 +34,7 @@ stop_validator() {
 start_validator() {
   stop_validator
   tmux -f "${TMUX_CONF}" new-session -d -s "${SESSION_NAME}" -c /workspace -- \
-    "solana-test-validator --reset --ledger ${LEDGER_DIR} 2>&1 | tee ${LOG_FILE}"
+    "bash scripts/localnet-validator.sh --reset --ledger ${LEDGER_DIR} 2>&1 | tee ${LOG_FILE}"
 
   for _ in $(seq 1 90); do
     if solana cluster-version >/dev/null 2>&1; then

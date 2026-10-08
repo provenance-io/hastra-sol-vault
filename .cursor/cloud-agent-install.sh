@@ -76,7 +76,7 @@ install_anchor() {
 
 build_programs() {
   yarn install --frozen-lockfile
-  bash scripts/sync-localnet-deploy-keypairs.sh
+  mkdir -p target/deploy
   cargo build-sbf --force-tools-install --manifest-path programs/vault-mint/Cargo.toml
   anchor build -- --features testing
   (cd programs/vault-stake && cargo build-sbf --features testing)

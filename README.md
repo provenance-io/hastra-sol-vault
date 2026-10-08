@@ -779,36 +779,34 @@ $ ANCHOR_PROVIDER_URL=https://api.devnet.solana.com \
 
 Integration tests live under `tests/` (`vault-mint.test.ts`, `vault-stake-auto.test.ts`, `vault-stake.test.ts`, etc.).
 
-**Recommended:** run the full suite via `scripts/run-tests.sh` (copies to `/tmp`, installs localnet deploy keypairs, builds with the `testing` feature, starts a validator, and runs tests).
+Localnet uses the **production program IDs**. There are no localnet program keypairs: `scripts/localnet-validator.sh` starts `solana-test-validator` with each built `target/deploy/<lib>.so` loaded at its `[programs.localnet]` address, as an upgradeable program whose upgrade authority is the local wallet. Tests therefore skip `anchor deploy`.
+
+**Recommended:** run the full suite via `scripts/run-tests.sh` (copies to `/tmp`, builds with the `testing` feature, starts the validator with the programs loaded, and runs tests).
 
 Manual flow (same steps CI uses):
 
 ```bash
-bash scripts/sync-localnet-deploy-keypairs.sh
+mkdir -p target/deploy   # without it, Anchor's first build rewrites declare_id!
 anchor build -- --features testing
 (cd programs/vault-stake && cargo build-sbf --features testing)
-solana-test-validator --reset &
+bash scripts/localnet-validator.sh --reset &
 # wait for RPC, then:
-anchor test --skip-local-validator --skip-build
+anchor test --skip-local-validator --skip-build --skip-deploy
 ```
 
-Plain `anchor test` builds **without** the `testing` feature (production program IDs, no `set_price_for_testing`), so it does not match the committed localnet keypairs in `keys/localnet/` and tests will fail. Always build with `--features testing` first, or use `run-tests.sh`.
+Plain `anchor test` builds **without** the `testing` feature (no `set_price_for_testing`), so tests will fail. Always build with `--features testing` first, or use `run-tests.sh`.
 
-To attach to a validator you already started, use the build lines above, then:
+Programs are loaded at genesis, so after a rebuild either restart the validator with `--reset` or upgrade in place (the wallet is the upgrade authority):
 
 ```bash
-anchor test --skip-local-validator --skip-build
+solana program deploy --program-id 9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV target/deploy/vault_mint.so
 ```
+
+Do not deploy a `testing` build to devnet or mainnet.
 
 Tests run in **lexical file order**. `vault-mint.test.ts` exercises **vault-stake-auto** `publish_rewards` before `vault-stake-auto.test.ts`, so both suites share validator state; reward cooldown and related assertions account for that ordering.
 
 ## Hastra Solana Vault - Local Development Setup
-
-**Start Local Validator**
-
-```bash
-$ solana-test-validator --reset
-```
 
 **Set Solana Configs**
 
@@ -818,14 +816,18 @@ $ solana-test-validator --reset
 $ solana-keygen new --no-passphrase --outfile ~/.config/solana/hastra-localnet-id.json 
 $ solana config set --url l
 $ solana config set --keypair ~/.config/solana/hastra-localnet-id.json
-$ solana airdrop 1000
 ```
 
-**Build and Deploy Programs**
+**Build Programs and Start Local Validator**
+
+The validator loads the programs at their production IDs (see [Testing](#testing)), so there is no `anchor deploy` step.
 
 ```bash
+$ mkdir -p target/deploy
 $ anchor build
-$ anchor deploy
+$ bash scripts/localnet-validator.sh --reset
+# another terminal:
+$ solana airdrop 1000
 ```
 
 **Initialize Programs and Accounts**

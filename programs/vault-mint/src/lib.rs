@@ -50,7 +50,7 @@ security_txt! {
     source_code: "https://github.com/provenance-io/hastra-sol-vault"
 }
 
-include!("program_id.rs");
+declare_id!("9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV");
 
 #[program]
 pub mod vault_mint {

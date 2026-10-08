@@ -35,10 +35,11 @@ address = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 [[test.validator.clone]]
 address = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
 
-# Localnet program IDs match keys/localnet/*-keypair.json (testing / local builds only).
+# Localnet uses the production program IDs: scripts/localnet-validator.sh loads
+# target/deploy/<lib>.so at each address below, so no localnet keypairs are needed.
 [programs.localnet]
-vault-mint = "AF46Np2fvFA9rWirgHcQpjuJgXPPUgHZPFCtiDYcaog5"
-vault-stake = "GLCJS7CRsbH8eqnx1eSsAKwnB6CQBddLzF9ZwfukdS1C"
+vault-mint = "9WUyNREiPDMgwMh5Gt81Fd3JpiCKxpjZ5Dpq9Bo1RhMV"
+vault-stake = "97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY"
 
 # Cluster address book for Anchor CLI / clients (does not select declare_id! at build time).
 # Workspace builds: vault-mint + vault-stake only.

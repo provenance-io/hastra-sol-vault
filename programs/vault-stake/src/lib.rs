@@ -84,7 +84,7 @@ security_txt! {
 // Enabling multiple features produces a duplicate-ID compile error; enabling none
 // produces the compile_error! below.
 #[cfg(feature = "pool-prime")]
-include!("prime_program_id.rs");
+declare_id!("97V7JsExNC6yFWu5KjK1FLfVkNVvtMpAFL5QkLWKEGxY");
 
 #[cfg(feature = "pool-auto")]
 declare_id!("5uJgCDrQHfA58fPqLsuU14Srg9quxXNHz91cZ54cq4pK");

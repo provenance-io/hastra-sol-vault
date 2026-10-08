@@ -28,12 +28,14 @@ cd "$TMP_DIR"
 yarn install --frozen-lockfile --silent
 echo "  ✅ Dependencies ready"
 
-# ── Step 3: Sync program IDs and build ───────────────────────────────────────
+# ── Step 3: Build ────────────────────────────────────────────────────────────
 echo ""
-echo "▶ Step 3/5  Installing localnet keypairs and building ..."
-bash scripts/sync-localnet-deploy-keypairs.sh
-# Build with testing: localnet program IDs, and the IDL and program binaries include
-# testing-only instructions used by the suite (set_price_for_testing, cpi_invoke_for_testing).
+echo "▶ Step 3/5  Building ..."
+# Anchor rewrites declare_id! on the first build when target/deploy is absent;
+# creating it keeps the production program IDs.
+mkdir -p target/deploy
+# IDL and program binaries include testing-only instructions used by the suite
+# (set_price_for_testing, cpi_invoke_for_testing).
 anchor build -- --features testing
 # Rebuild BPF binaries with the testing feature so those instructions are in the
 # on-chain binaries. cd into each crate to avoid manifest-path issues.
@@ -53,7 +55,8 @@ if [ -n "$EXISTING" ]; then
   sleep 2
 fi
 
-solana-test-validator --reset > /tmp/validator-test.log 2>&1 &
+# Programs are loaded at genesis at their production IDs, so tests skip deploy.
+bash scripts/localnet-validator.sh --reset > /tmp/validator-test.log 2>&1 &
 VALIDATOR_PID=$!
 echo "  Validator started (PID $VALIDATOR_PID), waiting for it to be ready ..."
 
@@ -73,7 +76,7 @@ done
 # ── Step 5: Run tests ─────────────────────────────────────────────────────────
 echo ""
 echo "▶ Step 5/5  Running tests ..."
-anchor test --skip-local-validator --skip-build
+anchor test --skip-local-validator --skip-build --skip-deploy
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
 echo ""
