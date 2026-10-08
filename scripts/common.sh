@@ -150,18 +150,20 @@ get_program_id_from_anchor_toml() {
   local program_slug="$1"
   local anchor_toml_path="../Anchor.toml"
   local cluster="$SOLANA_NETWORK"
-  local program_key="${program_slug//_/-}"
+  # [programs.localnet] uses snake_case lib names; other clusters use kebab-case.
+  local kebab_key="${program_slug//_/-}"
+  local snake_key="${program_slug//-/_}"
 
   if [ ! -f "$anchor_toml_path" ] || [ -z "$cluster" ]; then
     return 0
   fi
 
-  awk -v section="[programs.${cluster}]" -v key="$program_key" '
+  awk -v section="[programs.${cluster}]" -v kebab="$kebab_key" -v snake="$snake_key" '
     /^\[.*\]$/ {
       in_section = ($0 == section)
       next
     }
-    in_section && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+    in_section && ($0 ~ "^[[:space:]]*" kebab "[[:space:]]*=" || $0 ~ "^[[:space:]]*" snake "[[:space:]]*=") {
       if (match($0, /"[^"]+"/)) {
         value = substr($0, RSTART + 1, RLENGTH - 2)
         if (length(value) > 0) {
