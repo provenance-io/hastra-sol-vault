@@ -353,6 +353,13 @@ fn every_instruction_rejects_wrong_accounts_and_signers() {
             }
         }
     }
+    for ((program, ix, account, mutation, _), hit) in ACCEPTED.iter().zip(exercised) {
+        if !hit {
+            problems.push(format!(
+                "{program:?}::{ix}: {mutation:?} {account} is listed in ACCEPTED but never exercised"
+            ));
+        }
+    }
     assert!(
         problems.is_empty(),
         "{total} cases\n{}",
