@@ -157,7 +157,8 @@ jobs:
       run: cargo audit
 
   # Trident harness against the testing build: account and signer rejection tests, committed
-  # fuzz regressions, then the fast fuzz profile (fixed seed, bounded iterations).
+  # fuzz regressions, then the fast fuzz profile (fixed seed, bounded iterations) and the
+  # coverage gate over its metrics.
   fuzz-fast:
     name: fuzz (fast)
     runs-on: ubuntu-latest
@@ -216,6 +217,11 @@ jobs:
         # Pinned so the fixed seed replays the same run on any runner with at least 2 CPUs.
         FUZZ_THREADS: 2
       run: trident-tests/run_fuzz.sh 4000 100 fuzz-out "${FUZZ_SEED}"
+
+    - name: Coverage gate (required outcomes reached)
+      env:
+        FUZZ_METRICS: ${{ github.workspace }}/fuzz-out/metrics.json
+      run: cargo test --release --manifest-path trident-tests/Cargo.toml --test coverage -- --ignored
 
     - name: Upload fuzz output
       if: failure()
