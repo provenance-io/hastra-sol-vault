@@ -7,7 +7,7 @@ All stake pools share the same instruction surface and PDA seed strings. Only th
 **Related docs**
 
 - vault-mint (USDC ↔ wYLDS, merkle claims, USDC off-ramp): [`hastra-sol-vault-mint-integration-guide.md`](./hastra-sol-vault-mint-integration-guide.md)
-- Operator addresses / config fields: [`Mainnet Solana Program Configuration Reference.md`](./Mainnet%20Solana%20Program%20Configuration%20Reference.md)
+- Live config fields: [`scripts/vault-stake/fetch_stake_vault_token_account_config.ts`](../scripts/vault-stake/fetch_stake_vault_token_account_config.ts), [`fetch_stake_reward_config.ts`](../scripts/vault-stake/fetch_stake_reward_config.ts), [`fetch_last_reward_publication.ts`](../scripts/vault-stake/fetch_last_reward_publication.ts)
 
 Codebase: https://github.com/provenance-io/hastra-sol-vault
 
@@ -23,9 +23,9 @@ Program IDs match [`Anchor.toml`](../Anchor.toml). PRIME is the `vault-stake` pr
 | AUTO | `pool-auto` (mainnet) / `pool-auto-devnet` (devnet) | `5uJgCDrQHfA58fPqLsuU14Srg9quxXNHz91cZ54cq4pK` | `B8FDo5EGA2hZ7YMugcw8wPHUYDBQJfNkEYpduXFLHfdZ` | AUTO |
 | SMB | `pool-smb` | `FtpEAgur3VALsDw91PfNre82eXVrtgiDNf9EG3JeBd2r` | same as mainnet | SMB |
 
-AUTO used different keypairs at deploy time, so its program id differs by cluster. Always pass the cluster-matching `--program_id` when targeting AUTO.
+AUTO used different keypairs at deploy time, so its program id differs by cluster. Always pass the cluster-matching `--program_id` when targeting AUTO. Release artifacts ship one IDL per program id (`idl/vault_stake_prime.json`, `vault_stake_auto.json`, `vault_stake_auto_devnet.json`, `vault_stake_smb.json`).
 
-**CPI allow-list (vault-mint):** PRIME is typically authorized via mint config `allowed_external_mint_program`. AUTO / SMB are registered on the mint `AllowedExternalMintPrograms` PDA. Details: [configuration reference](./Mainnet%20Solana%20Program%20Configuration%20Reference.md).
+**CPI allow-list (vault-mint):** PRIME is typically authorized via mint config `allowed_external_mint_program`. AUTO / SMB are registered on the mint `AllowedExternalMintPrograms` PDA. Inspect both with `scripts/vault-mint/fetch_external_mint_pdas.ts`.
 
 Examples below use `vaultStakeProgramId` and `shareMint` — substitute from the table for your pool and cluster.
 
@@ -43,6 +43,8 @@ wYLDS_returned  = shares_burned * price / price_scale
 
 where: price = (wYLDS per 1 share) * price_scale  [Chainlink Data Streams]
 ```
+
+Both divisions round down. A deposit that rounds to zero shares fails with `DepositTooSmall`; a redeem that rounds to zero wYLDS fails with `InvalidAmount`.
 
 **PRIME product note:** Yield for the Democratized Prime / Demo Prime HELOC pool is generated off-chain on Provenance and bridged back as YLDS/wYLDS before `publish_rewards`. AUTO and SMB follow the same on-chain mechanics with their own off-chain yield sources.
 
@@ -79,16 +81,33 @@ const [stakeRewardConfigPda] = PublicKey.findProgramAddressSync(
     [Buffer.from("stake_reward_config"), stakeConfigPda.toBuffer()],
     vaultStakeProgramId
 );
+const [lastRewardPublicationPda] = PublicKey.findProgramAddressSync(
+    [Buffer.from("last_reward_publication"), stakeConfigPda.toBuffer()],
+    vaultStakeProgramId
+);
 ```
+
+The stake vault wYLDS ATA is `StakeVaultTokenAccountConfig.vault_token_account`.
 
 ---
 
-## 1. Stake: wYLDS → shares
+## 1. Price freshness
 
-Requires a live Chainlink price on `StakePriceConfig` (`price_timestamp != 0` and within `price_max_staleness`).
+`deposit` and `redeem` read the stored price on `StakePriceConfig` and reject it unless all of these hold:
+
+- `price_timestamp != 0` and `price > 0` (`PriceNotInitialized` otherwise)
+- `now - price_timestamp <= price_max_staleness` (`PriceTooStale` otherwise)
+
+`price_timestamp` is the Chainlink report’s `observations_timestamp`, not the time `verify_price` landed, so a report submitted late is already partly aged. Rewards administrators refresh the price with `verify_price`, which also rejects a report whose observation is not strictly newer than the stored one (`ObservationTimestampNotIncreasing`), is outside its validity window (`ReportStale`, `FutureReportValidFromTimestamp`, `FutureObservationTimestamp`), or carries the wrong feed (`InvalidFeedId`).
+
+If the upgrade authority changes any `update_price_config` field other than `price_max_staleness` (Chainlink program, verifier, access controller, feed id, or `price_scale`), the stored price and timestamp are zeroed and `PriceInvalidated` is emitted. Deposits and redeems halt until the next successful `verify_price`. A staleness-only update leaves the price intact.
+
+---
+
+## 2. Stake: wYLDS → shares
 
 ```typescript
-const vaultStake = new Program(idl, provider); // IDL is the same crate; program id = pool
+const vaultStake = new Program(idl, provider); // IDL for this pool's program id
 
 await vaultStake.methods
     .deposit(new BN(amount))
@@ -110,9 +129,11 @@ await vaultStake.methods
     .rpc();
 ```
 
+Emits `DepositEvent`.
+
 ---
 
-## 2. Redeem: shares → wYLDS
+## 3. Redeem: shares → wYLDS
 
 Single-step: burns shares and transfers wYLDS from the stake vault. No unbonding period.
 
@@ -137,49 +158,105 @@ await vaultStake.methods
     .rpc();
 ```
 
-> **Legacy:** Optional `ticket` supports deprecated v1 `UnbondingTicket` accounts. If none exists, pass the stake program id; Anchor treats it as `None`.
+The price check runs before the balance check, so a stale oracle fails first regardless of the user's holdings. Fails with `InsufficientBalance` if the user holds fewer shares than requested, or `InsufficientVaultBalance` if the stake vault cannot cover the payout. Emits `RedeemEvent`.
+
+> **Legacy:** Optional `ticket` supports deprecated v1 `UnbondingTicket` accounts (`[b"ticket", user]`). If one exists, pass it and it is closed with rent returned to the user. If none exists, pass the stake program id; Anchor treats it as `None`.
 
 To convert wYLDS back to USDC, use vault-mint `request_redeem` / `complete_redeem` — see the [mint guide](./hastra-sol-vault-mint-integration-guide.md).
 
 ---
 
-## 3. Yield: `publish_rewards`
+## 4. Quote views
 
-Rewards administrators call `publish_rewards`, which CPIs vault-mint `external_program_mint` to mint wYLDS into the stake vault. Caps / cooldown live on `StakeRewardConfig`. Publication ids must be greater than the per-pool `LastRewardPublication.id` and within `MAX_GAP` of it (`RewardPublicationIdNotMonotonic` / `RewardPublicationIdGapTooLarge` otherwise). The counter is initialized once by the upgrade authority (`initialize_last_reward_publication`); a wrongly seeded floor is corrected with `update_last_reward_publication`. The admin must sign and be listed on **both** stake and mint rewards-admin lists.
+`shares_to_assets`, `assets_to_shares`, and `exchange_rate` compute conversions from the stored price without moving funds. They require `price > 0` but do **not** check staleness, so a quote can succeed while a deposit or redeem would fail with `PriceTooStale`. Each returns a `u64` through return data (little-endian), readable via simulation.
 
-Integrators typically only monitor this (and subsequent `verify_price`); they do not call it unless operating as a rewards admin.
+| View | Result |
+|------|--------|
+| `shares_to_assets(shares)` | `shares * price / price_scale` |
+| `assets_to_shares(assets)` | `assets * price_scale / price` |
+| `exchange_rate()` | `price * 1_000_000_000 / price_scale` (wYLDS per share, scaled by 1e9) |
+
+```typescript
+const quote = await vaultStake.methods
+    .sharesToAssets(new BN(shareAmount))
+    .accountsStrict({
+        stakeConfig: stakeConfigPda,
+        mint: shareMint,
+        vaultTokenAccount: stakeVaultWyldsAta,
+        vaultAuthority: vaultAuthorityPda,
+        stakePriceConfig: stakePriceConfigPda,
+    })
+    .view();
+```
 
 ---
 
-## 4. Optional: merkle wYLDS claims
+## 5. Yield: `publish_rewards`
 
-Supplemental merkle rewards are on **vault-mint**, not the stake program. Claim wYLDS there, then stake if desired. See [mint guide §3](./hastra-sol-vault-mint-integration-guide.md).
+Rewards administrators call `publish_rewards(id, amount)`, which CPIs vault-mint `external_program_mint` to mint wYLDS into the stake vault. Integrators typically only monitor this (and `verify_price`); they do not call it unless operating as a rewards admin.
+
+Requirements:
+
+- Must be the top-level instruction (`InstructionMustBeDirectInvocation`).
+- Neither the stake pool nor vault-mint may be paused.
+- The admin signs and is listed on **both** the stake and mint `rewards_administrators`.
+- The pool must be authorized on vault-mint (legacy field or `AllowedExternalMintPrograms`), and the mint allow-list PDA must be passed and exist.
+- `id > LastRewardPublication.id` and `id - LastRewardPublication.id <= MAX_GAP` (255); otherwise `RewardPublicationIdNotMonotonic` / `RewardPublicationIdGapTooLarge`. The counter is per pool, initialized once by the upgrade authority (`initialize_last_reward_publication`) and corrected with `update_last_reward_publication`.
+- Each publication creates a `RewardPublicationRecord` at `[b"reward_record", id_le_u32, amount_le_u64]`.
+
+`StakeRewardConfig` limits (defaults set by `initialize_stake_reward_config`, changeable by the upgrade authority):
+
+| Field | Default | Error |
+|-------|---------|-------|
+| `max_reward_bps` (of current vault balance; skipped when the vault is empty) | 75 (0.75%) | `RewardExceedsMaxDelta` |
+| `max_period_rewards` (per call) | 1,000,000 wYLDS | `ExceedsPeriodRewardCap` |
+| `reward_period_seconds` (cooldown since last publish) | 3540 (59 min) | `RewardCooldownNotElapsed` |
+| `max_total_rewards` (lifetime) | 10,000,000 wYLDS | `ExceedsLifetimeRewardCap` |
+
+Emits `RewardsPublished`.
 
 ---
 
-## 5. Troubleshooting
+## 6. Optional: merkle wYLDS claims
+
+Supplemental merkle rewards are on **vault-mint**, not the stake program. Claim wYLDS there, then stake if desired. See [mint guide §3](./hastra-sol-vault-mint-integration-guide.md#3-merkle-reward-claims-wylds).
+
+---
+
+## 7. Troubleshooting
 
 | Scenario | Check | Notes |
 |----------|-------|-------|
-| Deposit / redeem fails (pause) | `stakeConfig.paused` | Freeze admins can pause the pool |
-| Deposit / redeem fails (price) | `stakePriceConfig.priceTimestamp`, `priceMaxStaleness` | Rewards admins must `verify_price` |
-| Redeem fails (liquidity) | Stake vault wYLDS balance | Large exits may need a subsequent `publish_rewards` |
+| Deposit / redeem fails (`ProtocolPaused`) | `stakeConfig.paused` | Freeze admins can pause the pool |
+| Deposit / redeem fails (`PriceNotInitialized`) | `stakePriceConfig.price`, `priceTimestamp` | Never verified, or cleared by `update_price_config`; rewards admin must `verify_price` |
+| Deposit / redeem fails (`PriceTooStale`) | `now - priceTimestamp` vs `priceMaxStaleness` | Age is measured from the report observation time |
+| Deposit fails (`DepositTooSmall`) | Amount vs price | Deposit rounds to zero shares |
+| Redeem fails (`InsufficientVaultBalance`) | Stake vault wYLDS balance | Large exits may need a subsequent `publish_rewards` |
+| Quote succeeds but deposit fails | Staleness | Views skip the staleness check |
 | Account frozen | Share mint freeze authority | Freeze admins / TRM |
-| `publish_rewards` fails | Admin lists on stake **and** mint; mint pause; allow-list; caps; `LastRewardPublication` | Dual-list + CPI authorization |
-| `RewardPublicationIdNotMonotonic` / `RewardPublicationIdGapTooLarge` | `last_reward_publication.id` vs `--reward_id` | Id must be `> last.id` and within `MAX_GAP` (10); counter is per pool |
-| Publish stuck after bad `start_id` | `last_reward_publication.id` | Too-low / too-high floor vs next legitimate id; recover with `update_last_reward_publication` |
+| `verify_price` fails (`ObservationTimestampNotIncreasing`) | Report vs stored `priceTimestamp` | Submit a newer report |
+| `publish_rewards` fails (authorization) | Admin on stake **and** mint lists; mint pause; allow-list | Dual-list + CPI authorization |
+| `publish_rewards` fails (caps) | `StakeRewardConfig` fields and `total_rewards_distributed` | See the limits table above |
+| `RewardPublicationIdNotMonotonic` / `RewardPublicationIdGapTooLarge` | `last_reward_publication.id` vs `--reward_id` | Id must be `> last.id` and within `MAX_GAP` (255); counter is per pool |
+| Publish stuck after bad `start_id` | `last_reward_publication.id` | Recover with `update_last_reward_publication` |
 
 ---
 
-## 6. Events / logs to monitor
+## 8. Events to monitor
 
-- **Deposit / Redeem** — share mint/burn and wYLDS vault movements
-- **`publish_rewards` / External Program Mint** — yield minted into the pool
-- **`verify_price`** — Chainlink rate refreshed; deposits/redeems unblocked if previously stale
+| Event | Emitted by | Key fields |
+|-------|-----------|------------|
+| `DepositEvent` | `deposit` | `user`, `deposit_amount`, `minted_amount`, `vault_balance`, `total_assets`, `total_shares` |
+| `RedeemEvent` | `redeem` | `user`, `shares_burned`, `redeemed_vault_amount`, `total_assets`, `total_shares` |
+| `RewardsPublished` | `publish_rewards` | `admin`, `id`, `amount`, `vault_token_account`, `total_assets`, `total_shares` |
+| `PriceVerifiedEvent` | `verify_price` | `verifier`, `feed_id`, `price`, `price_scale`, `price_timestamp`, `expires_at` |
+| `PriceInvalidated` | `update_price_config` | `verifier`, `feed_id`, `price_scale` — deposits/redeems halted until next `verify_price` |
+
+vault-mint also emits `ExternalProgramMintEvent` for each `publish_rewards`.
 
 ---
 
-## 7. vs ETH staking analogue
+## 9. vs ETH staking analogue
 
 | Concept | ETH | Solana vault-stake |
 |---------|-----|-------------------|
