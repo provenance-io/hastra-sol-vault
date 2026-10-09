@@ -1,5 +1,5 @@
 //! Share/asset conversions run through the compiled vault-stake program: `deposit`, `redeem` and
-//! the `assets_to_shares` / `shares_to_assets` views. A hand-worked table covers the extremes, and
+//! the `assets_to_shares` / `shares_to_assets` / `exchange_rate` views. A hand-worked table covers the extremes, and
 //! property tests cover amounts, prices and price scales drawn log-uniformly from their full
 //! ranges. The price config and token balances are rewritten before every call, so each call
 //! starts unconstrained (empty PRIME supply, no balance that could overflow).
@@ -63,6 +63,7 @@ enum Ix {
     Redeem,
     AssetsToShares,
     SharesToAssets,
+    ExchangeRate,
 }
 
 impl Ix {
@@ -72,6 +73,7 @@ impl Ix {
             Ix::Redeem => "redeem",
             Ix::AssetsToShares => "assets_to_shares",
             Ix::SharesToAssets => "shares_to_assets",
+            Ix::ExchangeRate => "exchange_rate",
         }
     }
 
@@ -97,15 +99,6 @@ fn patch(trident: &mut Trident, key: Pubkey, offset: usize, bytes: &[u8]) {
     let mut account = trident.get_account(&key);
     account.data_as_mut_slice()[offset..offset + bytes.len()].copy_from_slice(bytes);
     trident.set_account_custom(&key, &account);
-}
-
-/// Value logged by the views (`... = <value> shares|assets`).
-fn view_value(logs: &str) -> u64 {
-    let line = logs
-        .lines()
-        .find(|l| l.contains("assets_to_shares:") || l.contains("shares_to_assets:"))
-        .expect("view logs its result");
-    line.rsplit(' ').nth(1).unwrap().parse().unwrap()
 }
 
 /// One set-up world whose price config and balances are overwritten before each call.
@@ -170,15 +163,20 @@ impl Bench {
     }
 
     /// Calls `ix` with the current state; returns shares minted, assets paid or the view's value.
+    /// `exchange_rate` takes no amount.
     fn call(&mut self, ix: Ix, amount: u64) -> Raw {
         let call = match ix {
             Ix::Deposit | Ix::Redeem => self.world.stake_call_for(ix.name(), 0),
             _ => self.world.call(Program::Stake, ix.name()),
         };
+        let call = match ix {
+            Ix::ExchangeRate => call,
+            _ => call.with_args(&amount),
+        };
         let before = self.balances();
         let result = self
             .trident
-            .process_transaction(&[call.with_args(&amount).instruction()], None);
+            .process_transaction(&[call.instruction()], None);
         if !result.is_success() {
             let name = result
                 .get_custom_error_code()
@@ -187,7 +185,9 @@ impl Bench {
         }
         let (wylds, prime, vault) = self.balances();
         match ix {
-            Ix::AssetsToShares | Ix::SharesToAssets => Ok(view_value(&result.logs())),
+            Ix::AssetsToShares | Ix::SharesToAssets | Ix::ExchangeRate => {
+                Ok(view_value(&result.logs(), ix.name()))
+            }
             Ix::Deposit => {
                 assert_eq!(wylds, before.0 - amount);
                 assert_eq!(vault, before.2 + amount);
@@ -201,7 +201,8 @@ impl Bench {
         }
     }
 
-    /// Runs `ix` on `amount` with fresh balances that cannot limit the result.
+    /// Runs `ix` on `amount` with fresh balances that cannot limit the result; for
+    /// `exchange_rate`, `amount` is only the PRIME supply.
     fn run(&mut self, ix: Ix, amount: u64, price: i128, scale: u64) -> Raw {
         self.set_price(price, scale);
         match ix {
@@ -327,6 +328,21 @@ proptest! {
             }
             Ok(())
         })?;
+    }
+
+    /// The rate is the value of one share (1e9 base units), floored, whatever the PRIME supply.
+    #[test]
+    fn exchange_rate_is_the_value_of_one_share(supply in wide_u64(), price in wide_price(), scale in wide_u64()) {
+        const ONE_SHARE: u64 = 1_000_000_000;
+        let (rate, value) = with_bench(|b| {
+            (b.run(Ix::ExchangeRate, supply, price, scale), b.run(Ix::SharesToAssets, ONE_SHARE, price, scale))
+        });
+        prop_assert_eq!(rate, value);
+        if price <= 0 {
+            prop_assert_eq!(rate, Err("PriceNotInitialized"));
+        } else {
+            check_floor((price as u128).checked_mul(ONE_SHARE as u128), scale as u128, rate).map_err(TestCaseError::fail)?;
+        }
     }
 
     #[test]
