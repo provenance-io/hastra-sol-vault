@@ -54,7 +54,7 @@ const OUTCOMES: &[(Program, &str, &[&str])] = &[
     (Program::Mint, "update_last_rewards_epoch", &["ok", "EpochIndexBelowFirstCapped"]),
     (Program::Mint, "update_vault_token_account", &["ok", "InvalidVaultMint"]),
     (Program::Mint, "update_redeem_vault", &["ok", "InvalidVaultMint", "InvalidVaultAuthority"]),
-    // SPL overflow (14) of the PRIME supply is predicted but needs a supply near u64::MAX.
+    // SPL overflow (14) of the PRIME supply needs a supply near u64::MAX; regressions.rs covers it.
     (Program::Stake, "deposit", &["ok", "InvalidAmount", "ProtocolPaused", "PriceNotInitialized", "PriceTooStale", "Overflow", "DepositTooSmall", "1", "17"]),
     (Program::Stake, "redeem", &["ok", "InvalidAmount", "ProtocolPaused", "PriceNotInitialized", "PriceTooStale", "InsufficientBalance", "Overflow", "DivisionByZero", "InsufficientVaultBalance", "17"]),
     (Program::Stake, "publish_rewards", &["ok", "0", "ProtocolPaused", "InvalidRewardsAdministrator", "InvalidAmount", "RewardPublicationIdNotMonotonic", "RewardPublicationIdGapTooLarge", "RewardExceedsMaxDelta", "ExceedsPeriodRewardCap", "RewardCooldownNotElapsed", "ExceedsLifetimeRewardCap", "Mint::ProtocolPaused", "Mint::InvalidRewardsAdministrator"]),
