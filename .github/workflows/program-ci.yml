@@ -218,7 +218,7 @@ jobs:
         FUZZ_THREADS: 2
       run: trident-tests/run_fuzz.sh 4000 100 fuzz-out "${FUZZ_SEED}"
 
-    - name: Every instruction's success path reached
+    - name: Coverage gate (required outcomes reached)
       env:
         FUZZ_METRICS: ${{ github.workspace }}/fuzz-out/metrics.json
       run: cargo test --release --manifest-path trident-tests/Cargo.toml --test coverage -- --ignored
