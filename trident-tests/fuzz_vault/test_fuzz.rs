@@ -1,9 +1,17 @@
 //! Stateful fuzzing of vault-mint and vault-stake (pool-prime) against the compiled programs.
 //!
 //! Each flow predicts the outcome of one instruction from an independent model (success, or the
-//! exact error code) and checks the resulting balances; `end` checks supply conservation and
-//! the per-epoch claim counters. Profiles: `FUZZ_ITERATIONS` x `FUZZ_FLOWS` (defaults below).
-//! A failure prints `(seed: <hex>)`; rerun it alone with `TRIDENT_FUZZ_DEBUG=<hex>`.
+//! exact error code) and checks the resulting balances. `run` also checks that an instruction
+//! changes no tracked account it was not given, and that a failed one changes none. The global
+//! invariants run at the start of every flow and in `end`, so they hold after every flow; `end`
+//! also checks the per-epoch claim counters. Profiles: `FUZZ_ITERATIONS` x `FUZZ_FLOWS`
+//! (defaults below). A failure prints `(seed: <hex>)`; rerun it alone with
+//! `TRIDENT_FUZZ_DEBUG=<hex>`.
+//!
+//! Metrics labels are `<Program>::<instruction>`, optionally followed by ` (<case>)`;
+//! `tests/coverage.rs` reads them to check that every instruction's success path is reached.
+
+use std::collections::{HashMap, HashSet};
 
 use hastra_fuzz::world::*;
 use trident_fuzz::fuzzing::*;
@@ -11,12 +19,18 @@ use trident_fuzz::fuzzing::*;
 const USERS: usize = 3;
 const MAX_GAP: u32 = 255;
 const MAX_BPS: u64 = 10_000;
+const MAX_ADMINISTRATORS: usize = 5;
 const ANCHOR_ACCOUNT_NOT_INITIALIZED: u32 = 3012;
 const ANCHOR_CONSTRAINT_EXECUTABLE: u32 = 2007;
 /// System program: `init` of an account that already exists.
 const ACCOUNT_ALREADY_IN_USE: u32 = 0;
 const SPL_INSUFFICIENT_FUNDS: u32 = 1;
+/// SPL Token: freezing a frozen account, or thawing one that is not frozen.
+const SPL_INVALID_STATE: u32 = 13;
 const SPL_OVERFLOW: u32 = 14;
+const SPL_ACCOUNT_FROZEN: u32 = 17;
+const OTHER_FEED: [u8; 32] = [8; 32];
+const EXCHANGE_RATE_SCALE: u64 = 1_000_000_000;
 
 const EXECUTABLES: [Pubkey; 4] = [
     pubkey!("11111111111111111111111111111111"),
@@ -25,9 +39,30 @@ const EXECUTABLES: [Pubkey; 4] = [
     SOME_EXECUTABLE,
 ];
 
+/// Candidates for every administrator list and administrator signer.
+const ADMIN_POOL: [Pubkey; 4] = [
+    FREEZE_ADMIN,
+    REWARDS_ADMIN,
+    Pubkey::new_from_array([0xa1; 32]),
+    Pubkey::new_from_array([0xa2; 32]),
+];
+
+/// Instructions that `init` a singleton during setup, so any later call must fail.
+const ONE_SHOT: [(Program, &str); 7] = [
+    (Program::Mint, "initialize"),
+    (Program::Mint, "initialize_epoch_caps"),
+    (Program::Mint, "initialize_last_rewards_epoch"),
+    (Program::Stake, "initialize"),
+    (Program::Stake, "initialize_price_config"),
+    (Program::Stake, "initialize_stake_reward_config"),
+    (Program::Stake, "initialize_last_reward_publication"),
+];
+
 enum Expect {
     Ok,
     Code(u32),
+    /// Rejected by the runtime rather than a program (no custom error code).
+    Runtime,
 }
 
 fn mint_err(name: &str) -> Expect {
@@ -38,9 +73,26 @@ fn stake_err(name: &str) -> Expect {
     Expect::Code(stake_idl().error(name))
 }
 
-/// Runs `ix` and asserts the predicted outcome; returns whether it succeeded.
-fn run(trident: &mut Trident, ix: Instruction, label: &str, expect: Expect) -> bool {
-    let result = trident.process_transaction(&[ix], Some(label));
+fn err(program: Program, name: &str) -> Expect {
+    Expect::Code(program.idl().error(name))
+}
+
+/// Runs `ix`, asserts the predicted outcome and returns whether it succeeded, with its logs. No account in `tracked` that
+/// `ix` does not list as writable may change, and none may change when `ix` fails. `case` is
+/// appended to the metrics label.
+fn run_result(
+    t: &mut Trident,
+    tracked: &[Pubkey],
+    ix: Instruction,
+    case: &str,
+    expect: Expect,
+) -> (bool, String) {
+    let mut label = instruction_label(&ix);
+    if !case.is_empty() {
+        label = format!("{label} ({case})");
+    }
+    let before = snapshot(t, tracked);
+    let result = t.process_transaction(std::slice::from_ref(&ix), Some(&label));
     match expect {
         Expect::Ok => assert!(
             result.is_success(),
@@ -54,13 +106,37 @@ fn run(trident: &mut Trident, ix: Instruction, label: &str, expect: Expect) -> b
             result.get_result(),
             result.logs()
         ),
+        Expect::Runtime => assert!(
+            !result.is_success() && result.get_custom_error_code().is_none(),
+            "{label}: expected a runtime error, got {:?}\n{}",
+            result.get_result(),
+            result.logs()
+        ),
     }
-    result.is_success()
+    let after = snapshot(t, tracked);
+    for ((key, b), a) in tracked.iter().zip(&before).zip(&after) {
+        let given = ix
+            .accounts
+            .iter()
+            .any(|m| m.pubkey == *key && m.is_writable);
+        assert!(
+            b == a || (result.is_success() && given),
+            "{label}: changed {key}, which it {}",
+            if given { "failed on" } else { "was not given" }
+        );
+    }
+    (result.is_success(), result.logs())
+}
+
+fn run(t: &mut Trident, tracked: &[Pubkey], ix: Instruction, case: &str, expect: Expect) -> bool {
+    run_result(t, tracked, ix, case, expect).0
 }
 
 struct Epoch {
     index: u64,
     total: u64,
+    /// `max_epoch_cap` when the epoch was created.
+    cap: u64,
     capped: bool,
     tree: MerkleTree,
     leaves: Vec<(usize, u64)>,
@@ -76,22 +152,101 @@ struct RewardConfig {
     distributed: u64,
     last_at: i64,
     last_id: u32,
+    /// `(id, amount)` of every publication; each has a record account.
+    published: HashSet<(u32, u64)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum Role {
+    Freeze,
+    Rewards,
+}
+
+impl Role {
+    fn update(self) -> &'static str {
+        match self {
+            Role::Freeze => "update_freeze_administrators",
+            Role::Rewards => "update_rewards_administrators",
+        }
+    }
 }
 
 struct Model {
     world: World,
+    tracked: Vec<Pubkey>,
     usdc_minted: u64,
+    /// wYLDS minted 1:1 against USDC by `deposit` and not yet burned by `complete_redeem`.
+    backed: u64,
+    /// wYLDS minted without USDC: claims, external program mints and published rewards.
+    unbacked: u64,
+    /// USDC sent straight to the redeem vault.
+    funded: u64,
+    /// Current deposit vault and redeem vault of vault-mint.
+    vault: Pubkey,
+    redeem_vault: Pubkey,
     epochs: Vec<Epoch>,
     last_epoch: u64,
+    max_cap: u64,
     unused_uncapped: Vec<u64>,
     pending_redeem: Vec<Option<u64>>,
     allowed: Vec<Pubkey>,
     limit: u8,
+    admins: HashMap<(Program, Role), Vec<Pubkey>>,
+    paused: HashSet<Program>,
+    frozen: HashSet<Pubkey>,
     price: i128,
     price_ts: i64,
+    scale: u64,
+    staleness: i64,
+    feed: [u8; 32],
     /// Authoritative time; flows pin the SVM clock to it before time-sensitive calls.
     now: i64,
     rewards: RewardConfig,
+}
+
+impl Model {
+    fn admins(&self, program: Program, role: Role) -> &[Pubkey] {
+        &self.admins[&(program, role)]
+    }
+
+    fn is_admin(&self, program: Program, role: Role, key: &Pubkey) -> bool {
+        self.admins(program, role).contains(key)
+    }
+
+    fn paused(&self, program: Program) -> bool {
+        self.paused.contains(&program)
+    }
+
+    fn frozen(&self, account: Pubkey) -> bool {
+        self.frozen.contains(&account)
+    }
+
+    fn epoch_exists(&self, index: u64) -> bool {
+        self.epochs.iter().any(|e| e.index == index)
+    }
+
+    /// The deposit vault, or (`stale`) the one it is not.
+    fn mint_vault(&self, stale: bool) -> Pubkey {
+        let w = &self.world;
+        other_if(stale, self.vault, [w.mint_vault, w.spare_mint_vault])
+    }
+
+    fn redeem_vault(&self, stale: bool) -> Pubkey {
+        let w = &self.world;
+        other_if(
+            stale,
+            self.redeem_vault,
+            [w.redeem_vault, w.spare_redeem_vault],
+        )
+    }
+}
+
+fn other_if(stale: bool, current: Pubkey, pair: [Pubkey; 2]) -> Pubkey {
+    match stale {
+        false => current,
+        true if pair[0] == current => pair[1],
+        true => pair[0],
+    }
 }
 
 #[derive(FuzzTestMethods)]
@@ -109,6 +264,13 @@ impl FuzzTest {
         }
     }
 
+    /// The SVM and model after checking the global invariants on the state the last flow left.
+    fn begin(&mut self) -> (&mut Trident, &mut Model) {
+        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
+        invariants(t, m);
+        (t, m)
+    }
+
     #[init]
     fn start(&mut self) {
         let t = &mut self.trident;
@@ -119,17 +281,43 @@ impl FuzzTest {
                 "{program} must be executable"
             );
         }
+        // Administrators pay for the accounts they create (e.g. reward records).
+        for admin in ADMIN_POOL {
+            t.airdrop(&admin, 100 * LAMPORTS_PER_SOL);
+        }
         let allowed = allowed_programs(t, &world);
+        let admins = [Program::Mint, Program::Stake]
+            .into_iter()
+            .flat_map(|p| {
+                [
+                    ((p, Role::Freeze), vec![FREEZE_ADMIN]),
+                    ((p, Role::Rewards), vec![REWARDS_ADMIN]),
+                ]
+            })
+            .collect();
         let mut model = Model {
+            tracked: world.tracked(),
             usdc_minted: USER_USDC * USERS as u64,
+            backed: USER_USDC / 2 * USERS as u64,
+            unbacked: 0,
+            funded: 0,
+            vault: world.mint_vault,
+            redeem_vault: world.redeem_vault,
             epochs: Vec::new(),
             last_epoch: FIRST_CAPPED_EPOCH - 1,
+            max_cap: MAX_EPOCH_CAP,
             unused_uncapped: (0..FIRST_CAPPED_EPOCH).collect(),
             pending_redeem: vec![None; USERS],
             allowed,
             limit: MAX_EXTERNAL_PROGRAMS,
+            admins,
+            paused: HashSet::new(),
+            frozen: HashSet::new(),
             price: PRICE_SCALE as i128,
             price_ts: START_TIME,
+            scale: PRICE_SCALE,
+            staleness: PRICE_MAX_STALENESS,
+            feed: FEED_ID,
             now: START_TIME,
             rewards: RewardConfig {
                 bps: 75,
@@ -139,6 +327,7 @@ impl FuzzTest {
                 distributed: 0,
                 last_at: 0,
                 last_id: 0,
+                published: HashSet::new(),
             },
             world,
         };
@@ -163,8 +352,53 @@ impl FuzzTest {
     }
 
     #[flow]
+    fn mint_deposit(&mut self) {
+        let (t, m) = self.begin();
+        let u = t.random_from_range(0..USERS);
+        let user = &m.world.users[u];
+        let usdc = token_balance(t, user.usdc);
+        let wylds = token_balance(t, user.wylds);
+        let amount = pick_amount(t, usdc);
+        let stale = t.random_from_range(0..8u8) == 0;
+        let vault = m.mint_vault(stale);
+        let vault_before = token_balance(t, vault);
+        // Both deposit vaults belong to the treasury, so only the key pin tells them apart.
+        let expect = if stale {
+            mint_err("InvalidVaultTokenAccount")
+        } else if m.paused(Program::Mint) {
+            mint_err("ProtocolPaused")
+        } else if amount == 0 {
+            mint_err("InvalidAmount")
+        } else if amount > usdc {
+            Expect::Code(SPL_INSUFFICIENT_FUNDS)
+        } else if m.frozen(user.wylds) {
+            Expect::Code(SPL_ACCOUNT_FROZEN)
+        } else {
+            Expect::Ok
+        };
+        let ix = m
+            .world
+            .mint_call_for("deposit", u)
+            .with("vault_token_account", vault)
+            .with_args(&amount)
+            .instruction();
+        if run(
+            t,
+            &m.tracked,
+            ix,
+            if stale { "stale vault" } else { "" },
+            expect,
+        ) {
+            assert_eq!(token_balance(t, user.usdc), usdc - amount);
+            assert_eq!(token_balance(t, user.wylds), wylds + amount);
+            assert_eq!(token_balance(t, vault), vault_before + amount);
+            m.backed += amount;
+        }
+    }
+
+    #[flow]
     fn create_epoch(&mut self) {
-        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
+        let (t, m) = self.begin();
         let mut leaves = Vec::new();
         for u in 0..USERS {
             if t.random_bool() {
@@ -192,61 +426,66 @@ impl FuzzTest {
                 .collect(),
         );
 
-        if uncapped {
+        let total = if uncapped {
             inject_legacy_epoch(t, index, tree.root(), total);
+            total
         } else {
             let create = |at: u64, total: u64| {
-                m.world
+                let ix = m
+                    .world
                     .call(Program::Mint, "create_rewards_epoch")
                     .with("epoch", epoch_pda(at))
                     .with("epoch_claimed", epoch_claimed_pda(at))
                     .with_args(&(at, tree.root(), total))
-                    .instruction()
+                    .instruction();
+                // The epoch accounts are created before the handler runs.
+                let expect = if m.epoch_exists(at) {
+                    Expect::Code(ACCOUNT_ALREADY_IN_USE)
+                } else if m.paused(Program::Mint) {
+                    mint_err("ProtocolPaused")
+                } else if at < FIRST_CAPPED_EPOCH {
+                    mint_err("EpochIndexBelowFirstCapped")
+                } else if at != m.last_epoch + 1 {
+                    mint_err("EpochIndexNotContiguous")
+                } else if total > m.max_cap {
+                    mint_err("EpochCapAboveGlobal")
+                } else {
+                    Expect::Ok
+                };
+                (ix, expect)
             };
             // Occasionally probe the index and budget guards before the valid create.
-            match t.random_from_range(0..6u8) {
-                0 => {
-                    let below = t.random_from_range(0..FIRST_CAPPED_EPOCH);
-                    // Injected legacy epochs already occupy their index.
-                    let expect = if m.unused_uncapped.contains(&below) {
-                        mint_err("EpochIndexBelowFirstCapped")
-                    } else {
-                        Expect::Code(ACCOUNT_ALREADY_IN_USE)
-                    };
-                    run(
-                        t,
-                        create(below, total),
-                        "create_epoch below first capped",
-                        expect,
-                    );
-                }
-                1 => {
-                    let skip = index + t.random_from_range(1..=3u64);
-                    run(
-                        t,
-                        create(skip, total),
-                        "create_epoch not contiguous",
-                        mint_err("EpochIndexNotContiguous"),
-                    );
-                }
-                2 => {
-                    let ix = create(index, MAX_EPOCH_CAP + 1);
-                    run(
-                        t,
-                        ix,
-                        "create_epoch above global cap",
-                        mint_err("EpochCapAboveGlobal"),
-                    );
-                }
-                _ => {}
+            let probe = match t.random_from_range(0..6u8) {
+                0 => Some((
+                    t.random_from_range(0..FIRST_CAPPED_EPOCH),
+                    total,
+                    "below first capped",
+                )),
+                1 => Some((
+                    index + t.random_from_range(1..=3u64),
+                    total,
+                    "not contiguous",
+                )),
+                2 => Some((index, m.max_cap + 1, "above global cap")),
+                _ => None,
+            };
+            if let Some((at, total, case)) = probe {
+                let (ix, expect) = create(at, total);
+                run(t, &m.tracked, ix, case, expect);
             }
-            run(t, create(index, total), "create_epoch", Expect::Ok);
+            let total = total.min(m.max_cap);
+            let (ix, expect) = create(index, total);
+            if !run(t, &m.tracked, ix, "", expect) {
+                return;
+            }
             m.last_epoch = index;
-        }
+            total
+        };
         let claimed = vec![false; leaves.len()];
         m.epochs.push(Epoch {
             index,
             total,
+            cap: m.max_cap,
             capped: index >= FIRST_CAPPED_EPOCH,
             tree,
             leaves,
@@ -257,7 +496,7 @@ impl FuzzTest {
 
     #[flow]
     fn claim(&mut self) {
-        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
+        let (t, m) = self.begin();
         if m.epochs.is_empty() {
             return;
         }
@@ -297,10 +536,14 @@ impl FuzzTest {
             .any(|((u, _), done)| *u == claimant && *done);
         let expect = if has_record {
             Expect::Code(ACCOUNT_ALREADY_IN_USE)
+        } else if m.paused(Program::Mint) {
+            mint_err("ProtocolPaused")
         } else if corrupt {
             mint_err("InvalidMerkleProof")
         } else if epoch.capped && epoch.claimed_sum + amount > epoch.total {
             mint_err("EpochCapExceeded")
+        } else if m.frozen(user.wylds) {
+            Expect::Code(SPL_ACCOUNT_FROZEN)
         } else {
             Expect::Ok
         };
@@ -312,12 +555,8 @@ impl FuzzTest {
             .with_args(&(claim_amount, proof))
             .instruction();
         let before = token_balance(t, user.wylds);
-        let label = if epoch.capped {
-            "claim capped"
-        } else {
-            "claim uncapped"
-        };
-        let claimed = run(t, ix, label, expect);
+        let case = if epoch.capped { "capped" } else { "uncapped" };
+        let claimed = run(t, &m.tracked, ix, case, expect);
         let delta = if claimed { amount } else { 0 };
         assert_eq!(
             token_balance(t, user.wylds),
@@ -328,21 +567,27 @@ impl FuzzTest {
             let epoch = &mut m.epochs[e];
             epoch.claimed[leaf] = true;
             epoch.claimed_sum += amount;
+            m.unbacked += amount;
         }
     }
 
     #[flow]
     fn request_redeem(&mut self) {
-        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
+        let (t, m) = self.begin();
         let u = t.random_from_range(0..USERS);
-        let balance = token_balance(t, m.world.users[u].wylds);
+        let wylds = m.world.users[u].wylds;
+        let balance = token_balance(t, wylds);
         let amount = pick_amount(t, balance.min(200_000_000_000));
         let expect = if m.pending_redeem[u].is_some() {
             Expect::Code(ACCOUNT_ALREADY_IN_USE)
+        } else if m.paused(Program::Mint) {
+            mint_err("ProtocolPaused")
         } else if amount == 0 {
             mint_err("InvalidAmount")
         } else if amount > balance {
             mint_err("InsufficientBalance")
+        } else if m.frozen(wylds) {
+            Expect::Code(SPL_ACCOUNT_FROZEN)
         } else {
             Expect::Ok
         };
@@ -351,53 +596,53 @@ impl FuzzTest {
             .mint_call_for("request_redeem", u)
             .with_args(&amount)
             .instruction();
-        if run(t, ix, "request_redeem", expect) {
+        if run(t, &m.tracked, ix, "", expect) {
             m.pending_redeem[u] = Some(amount);
         }
     }
 
     #[flow]
     fn cancel_redeem(&mut self) {
-        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
+        let (t, m) = self.begin();
         let u = t.random_from_range(0..USERS);
+        // Cancelling revokes the burn delegate, which SPL Token refuses on a frozen account.
         let expect = match m.pending_redeem[u] {
-            Some(_) => Expect::Ok,
             None => Expect::Code(ANCHOR_ACCOUNT_NOT_INITIALIZED),
+            Some(_) if m.frozen(m.world.users[u].wylds) => Expect::Code(SPL_ACCOUNT_FROZEN),
+            Some(_) => Expect::Ok,
         };
         let ix = m.world.mint_call_for("cancel_redeem", u).instruction();
-        if run(t, ix, "cancel_redeem", expect) {
+        if run(t, &m.tracked, ix, "", expect) {
             m.pending_redeem[u] = None;
         }
     }
 
     #[flow]
     fn fund_redeem_vault(&mut self) {
-        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
+        let (t, m) = self.begin();
         let amount = t.random_from_range(1..=100_000_000_000u64);
-        m.world.mint_usdc(t, m.world.redeem_vault, amount);
+        m.world.mint_usdc(t, m.redeem_vault, amount);
         m.usdc_minted += amount;
+        m.funded += amount;
     }
 
     #[flow]
     fn complete_redeem(&mut self) {
-        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
+        let (t, m) = self.begin();
         let u = t.random_from_range(0..USERS);
         let user = &m.world.users[u];
-        let request = m
+        let admin = pick_signer(t, m.admins(Program::Mint, Role::Rewards));
+        let stale = t.random_from_range(0..8u8) == 0;
+        let redeem_vault = m.redeem_vault(stale);
+        let call = m
             .world
             .mint_call_for("complete_redeem", u)
-            .account("redemption_request");
-        let watched = [
-            user.wylds,
-            user.usdc,
-            m.world.redeem_vault,
-            m.world.wylds_mint,
-            request,
-        ];
-        let before = snapshot(t, &watched);
+            .with("admin", admin)
+            .with("redeem_vault_token_account", redeem_vault);
+        let request = call.account("redemption_request");
         let wylds = token_balance(t, user.wylds);
         let usdc = token_balance(t, user.usdc);
-        let vault = token_balance(t, m.world.redeem_vault);
+        let vault = token_balance(t, redeem_vault);
 
         let (approved, expect) = match m.pending_redeem[u] {
             None => (1, Expect::Code(ANCHOR_ACCOUNT_NOT_INITIALIZED)),
@@ -407,12 +652,18 @@ impl FuzzTest {
                 } else {
                     amount
                 };
-                let expect = if approved != amount {
+                let expect = if stale {
+                    mint_err("InvalidRedeemVault")
+                } else if !m.is_admin(Program::Mint, Role::Rewards, &admin) {
+                    mint_err("InvalidRewardsAdministrator")
+                } else if approved != amount {
                     mint_err("RedemptionAmountMismatch")
                 } else if wylds < amount {
                     mint_err("InsufficientRedemptionBalance")
                 } else if vault < amount {
                     mint_err("InsufficientVaultBalance")
+                } else if m.frozen(user.wylds) {
+                    Expect::Code(SPL_ACCOUNT_FROZEN)
                 } else {
                     Expect::Ok
                 };
@@ -420,38 +671,38 @@ impl FuzzTest {
             }
         };
         let short_vault = matches!(m.pending_redeem[u], Some(a) if vault < a);
-        let ix = m
-            .world
-            .mint_call_for("complete_redeem", u)
-            .with_args(&approved)
-            .instruction();
-        let label = if short_vault {
-            "complete_redeem short vault"
-        } else {
-            "complete_redeem"
+        let ix = call.with_args(&approved).instruction();
+        let case = match (stale, short_vault) {
+            (true, _) => "stale redeem vault",
+            (_, true) => "short vault",
+            _ => "",
         };
-        if run(t, ix, label, expect) {
+        if run(t, &m.tracked, ix, case, expect) {
             let amount = m.pending_redeem[u].take().unwrap();
             assert_eq!(token_balance(t, user.wylds), wylds - amount);
             assert_eq!(token_balance(t, user.usdc), usdc + amount);
-            assert_eq!(token_balance(t, m.world.redeem_vault), vault - amount);
+            assert_eq!(token_balance(t, redeem_vault), vault - amount);
             assert_eq!(t.get_account(&request).lamports(), 0, "request closed");
-        } else {
-            assert_eq!(
-                snapshot(t, &watched),
-                before,
-                "failed complete_redeem changed state"
-            );
+            m.backed -= amount;
         }
     }
 
     #[flow]
     fn sweep(&mut self) {
-        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
-        let vault = token_balance(t, m.world.redeem_vault);
-        let treasury = token_balance(t, m.world.mint_vault);
+        let (t, m) = self.begin();
+        let signer = pick_signer(t, m.admins(Program::Mint, Role::Rewards));
+        let probe = t.random_from_range(0..8u8);
+        let (from, to) = (m.redeem_vault(probe == 0), m.mint_vault(probe == 1));
+        let vault = token_balance(t, from);
+        let treasury = token_balance(t, to);
         let amount = pick_amount(t, vault);
-        let expect = if amount == 0 {
+        let expect = if probe == 0 {
+            mint_err("InvalidRedeemVault")
+        } else if probe == 1 {
+            mint_err("InvalidVaultTokenAccount")
+        } else if !m.is_admin(Program::Mint, Role::Rewards, &signer) {
+            mint_err("InvalidRewardsAdministrator")
+        } else if amount == 0 {
             mint_err("InvalidAmount")
         } else if amount > vault {
             mint_err("InsufficientRedeemVaultFunds")
@@ -461,20 +712,55 @@ impl FuzzTest {
         let ix = m
             .world
             .call(Program::Mint, "sweep_redeem_vault_funds")
+            .with("signer", signer)
+            .with("redeem_vault_token_account", from)
+            .with("vault_token_account", to)
             .with_args(&amount)
             .instruction();
-        let swept = if run(t, ix, "sweep", expect) {
-            amount
+        let case = ["stale redeem vault", "stale vault"]
+            .get(probe as usize)
+            .unwrap_or(&"");
+        if run(t, &m.tracked, ix, case, expect) {
+            assert_eq!(token_balance(t, from), vault - amount);
+            assert_eq!(token_balance(t, to), treasury + amount);
+        }
+    }
+
+    /// Repoints the deposit vault or the redeem vault; later flows must use only the new one.
+    #[flow]
+    fn update_vaults(&mut self) {
+        let (t, m) = self.begin();
+        let w = &m.world;
+        if t.random_bool() {
+            let to = [w.mint_vault, w.spare_mint_vault][t.random_from_range(0..2usize)];
+            let ix = w
+                .call(Program::Mint, "update_vault_token_account")
+                .with("vault_token_account", to)
+                .instruction();
+            run(t, &m.tracked, ix, "", Expect::Ok);
+            m.vault = to;
         } else {
-            0
-        };
-        assert_eq!(token_balance(t, m.world.redeem_vault), vault - swept);
-        assert_eq!(token_balance(t, m.world.mint_vault), treasury + swept);
+            let to = [w.redeem_vault, w.spare_redeem_vault, w.mint_vault]
+                [t.random_from_range(0..3usize)];
+            // The deposit vault is not owned by the redeem vault authority.
+            let expect = if to == w.mint_vault {
+                mint_err("InvalidVaultAuthority")
+            } else {
+                Expect::Ok
+            };
+            let ix = w
+                .call(Program::Mint, "update_redeem_vault")
+                .with("redeem_vault_token_account", to)
+                .instruction();
+            if run(t, &m.tracked, ix, "", expect) {
+                m.redeem_vault = to;
+            }
+        }
     }
 
     #[flow]
     fn register_external_program(&mut self) {
-        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
+        let (t, m) = self.begin();
         let program = candidate(t, &m.world);
         let expect = if program == m.world.wylds_mint {
             Expect::Code(ANCHOR_CONSTRAINT_EXECUTABLE)
@@ -488,7 +774,7 @@ impl FuzzTest {
             .call(Program::Mint, "register_allowed_external_mint_program")
             .with("external_program", program)
             .instruction();
-        if run(t, ix, "register_external_program", expect) && !m.allowed.contains(&program) {
+        if run(t, &m.tracked, ix, "", expect) && !m.allowed.contains(&program) {
             m.allowed.push(program);
         }
         assert_eq!(allowed_programs(t, &m.world), m.allowed);
@@ -496,79 +782,291 @@ impl FuzzTest {
 
     #[flow]
     fn update_external_program_limit(&mut self) {
-        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
+        let (t, m) = self.begin();
         let limit = t.random_from_range(0..=EXECUTABLES.len() as u8 + 2);
         let ix = m
             .world
             .call(Program::Mint, "update_external_mint_programs_limit")
             .with_args(&limit)
             .instruction();
-        run(t, ix, "update_external_program_limit", Expect::Ok);
+        run(t, &m.tracked, ix, "", Expect::Ok);
         m.limit = limit;
     }
 
     #[flow]
     fn external_program_mint(&mut self) {
-        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
+        let (t, m) = self.begin();
         let program = candidate(t, &m.world);
         let u = t.random_from_range(0..USERS);
         let amount = t.random_from_range(1..=1_000_000_000u64);
+        let admin = pick_signer(t, m.admins(Program::Mint, Role::Rewards));
         // Occasionally probe the CPI-only guard with a direct call.
         let direct = t.random_from_range(0..8u8) == 0;
+        let destination = m.world.users[u].wylds;
         let expect = if program == m.world.wylds_mint {
             Expect::Code(ANCHOR_CONSTRAINT_EXECUTABLE)
         } else if direct {
             mint_err("ExternalMintMustBeCpi")
-        } else if program == stake_id() || m.allowed.contains(&program) {
-            Expect::Ok
-        } else {
+        } else if m.paused(Program::Mint) {
+            mint_err("ProtocolPaused")
+        } else if !m.is_admin(Program::Mint, Role::Rewards, &admin) {
+            mint_err("InvalidRewardsAdministrator")
+        } else if program != stake_id() && !m.allowed.contains(&program) {
             mint_err("InvalidMintProgramCaller")
+        } else if m.frozen(destination) {
+            Expect::Code(SPL_ACCOUNT_FROZEN)
+        } else {
+            Expect::Ok
         };
-        let destination = m.world.users[u].wylds;
         let before = token_balance(t, destination);
         let ix = m
             .world
             .mint_call_for("external_program_mint", u)
             .with("calling_program", program)
+            .with("admin", admin)
             .with_args(&amount)
             .instruction();
-        let (ix, label) = if direct {
-            (ix, "external_program_mint direct")
+        let (ix, case) = if direct {
+            (ix, "direct")
         } else {
-            (via_cpi(ix), "external_program_mint")
+            (via_cpi(ix), "")
         };
-        let minted = if run(t, ix, label, expect) { amount } else { 0 };
+        let minted = if run(t, &m.tracked, ix, case, expect) {
+            amount
+        } else {
+            0
+        };
         assert_eq!(token_balance(t, destination), before + minted);
+        m.unbacked += minted;
+    }
+
+    #[flow]
+    fn pause(&mut self) {
+        let (t, m) = self.begin();
+        let program = pick_program(t);
+        let signer = pick_signer(t, m.admins(program, Role::Freeze));
+        // Mostly unpause, so paused stretches stay short.
+        let pause = t.random_from_range(0..4u8) == 0;
+        let expect = if m.is_admin(program, Role::Freeze, &signer) {
+            Expect::Ok
+        } else {
+            err(program, "UnauthorizedFreezeAdministrator")
+        };
+        let ix = m
+            .world
+            .call(program, "pause")
+            .with("signer", signer)
+            .with_args(&pause)
+            .instruction();
+        let case = if pause { "pause" } else { "unpause" };
+        if run(t, &m.tracked, ix, case, expect) {
+            if pause {
+                m.paused.insert(program);
+            } else {
+                m.paused.remove(&program);
+            }
+        }
+    }
+
+    /// Freezes or thaws a user's wYLDS (vault-mint) or PRIME (vault-stake) account.
+    #[flow]
+    fn freeze_or_thaw(&mut self) {
+        let (t, m) = self.begin();
+        let program = pick_program(t);
+        let user = &m.world.users[t.random_from_range(0..USERS)];
+        let account = match program {
+            Program::Mint => user.wylds,
+            Program::Stake => user.prime,
+        };
+        let signer = pick_signer(t, m.admins(program, Role::Freeze));
+        let freeze = t.random_from_range(0..3u8) == 0;
+        let expect = if !m.is_admin(program, Role::Freeze, &signer) {
+            err(program, "UnauthorizedFreezeAdministrator")
+        } else if freeze == m.frozen(account) {
+            Expect::Code(SPL_INVALID_STATE)
+        } else {
+            Expect::Ok
+        };
+        let name = if freeze {
+            "freeze_token_account"
+        } else {
+            "thaw_token_account"
+        };
+        let ix = m
+            .world
+            .call(program, name)
+            .with("token_account", account)
+            .with("signer", signer)
+            .instruction();
+        let case = match (freeze, m.frozen(account)) {
+            (true, true) => "already frozen",
+            (false, false) => "not frozen",
+            _ => "",
+        };
+        if run(t, &m.tracked, ix, case, expect) {
+            if freeze {
+                m.frozen.insert(account);
+            } else {
+                m.frozen.remove(&account);
+            }
+        }
+    }
+
+    /// A plain SPL transfer of wYLDS or PRIME between users, which freezing must block.
+    #[flow]
+    fn transfer(&mut self) {
+        let (t, m) = self.begin();
+        let a = t.random_from_range(0..USERS);
+        let b = (a + t.random_from_range(1..USERS)) % USERS;
+        let (from, to) = if t.random_bool() {
+            (m.world.users[a].wylds, m.world.users[b].wylds)
+        } else {
+            (m.world.users[a].prime, m.world.users[b].prime)
+        };
+        let (from_before, to_before) = (token_balance(t, from), token_balance(t, to));
+        let amount = pick_amount(t, from_before);
+        let expect = if m.frozen(from) || m.frozen(to) {
+            Expect::Code(SPL_ACCOUNT_FROZEN)
+        } else if amount > from_before {
+            Expect::Code(SPL_INSUFFICIENT_FUNDS)
+        } else {
+            Expect::Ok
+        };
+        let ix = spl_transfer(from, to, m.world.users[a].key, amount);
+        if run(t, &m.tracked, ix, "transfer", expect) {
+            assert_eq!(token_balance(t, from), from_before - amount);
+            assert_eq!(token_balance(t, to), to_before + amount);
+        }
+    }
+
+    #[flow]
+    fn update_admins(&mut self) {
+        let (t, m) = self.begin();
+        let program = pick_program(t);
+        let role = if t.random_bool() {
+            Role::Freeze
+        } else {
+            Role::Rewards
+        };
+        let list = admin_list(t);
+        let duplicate = list.iter().enumerate().any(|(i, k)| list[..i].contains(k));
+        // vault-stake only bounds the length; vault-mint also rejects empty and duplicate lists.
+        let expect = match program {
+            Program::Mint if list.is_empty() => mint_err("EmptyAdministrators"),
+            _ if list.len() > MAX_ADMINISTRATORS => err(program, "TooManyAdministrators"),
+            Program::Mint if duplicate => mint_err("DuplicateAdministrators"),
+            _ => Expect::Ok,
+        };
+        let ix = m
+            .world
+            .call(program, role.update())
+            .with_args(&list)
+            .instruction();
+        if run(t, &m.tracked, ix, "", expect) {
+            m.admins.insert((program, role), list);
+        }
+    }
+
+    /// `update_max_epoch_cap` or `update_last_rewards_epoch`. Rewinding the epoch counter makes
+    /// `create_epoch` collide with existing epochs, which must not reopen them.
+    #[flow]
+    fn update_epoch_config(&mut self) {
+        let (t, m) = self.begin();
+        let w = &m.world;
+        if t.random_bool() {
+            let cap = match t.random_from_range(0..4u8) {
+                0 => 0,
+                1 => MAX_EPOCH_CAP,
+                // Within the range of epoch totals, so the cap binds.
+                _ => t.random_from_range(1..=100_000_000u64),
+            };
+            let expect = if cap == 0 {
+                mint_err("InvalidGlobalCap")
+            } else {
+                Expect::Ok
+            };
+            let ix = w
+                .call(Program::Mint, "update_max_epoch_cap")
+                .with_args(&cap)
+                .instruction();
+            if run(t, &m.tracked, ix, "", expect) {
+                m.max_cap = cap;
+            }
+        } else {
+            let highest = m
+                .epochs
+                .iter()
+                .filter(|e| e.capped)
+                .map(|e| e.index)
+                .max()
+                .unwrap_or(FIRST_CAPPED_EPOCH - 1);
+            let (index, case) = match t.random_from_range(0..5u8) {
+                0 => (
+                    t.random_from_range(0..FIRST_CAPPED_EPOCH - 1),
+                    "below first capped",
+                ),
+                1 => (
+                    m.last_epoch.saturating_sub(t.random_from_range(1..=3u64)),
+                    "rewind",
+                ),
+                2 => (m.last_epoch + t.random_from_range(1..=3u64), "skip"),
+                _ => (highest, "restore"),
+            };
+            let expect = if index + 1 < FIRST_CAPPED_EPOCH {
+                mint_err("EpochIndexBelowFirstCapped")
+            } else {
+                Expect::Ok
+            };
+            let ix = w
+                .call(Program::Mint, "update_last_rewards_epoch")
+                .with_args(&index)
+                .instruction();
+            if run(t, &m.tracked, ix, case, expect) {
+                m.last_epoch = index;
+            }
+        }
+    }
+
+    /// Repeats a one-shot initializer, which must fail without changing any state.
+    #[flow]
+    fn reinitialize(&mut self) {
+        let (t, m) = self.begin();
+        let (program, name) = ONE_SHOT[t.random_from_range(0..ONE_SHOT.len())];
+        let ix = m.world.call(program, name).instruction();
+        run(t, &m.tracked, ix, "", Expect::Code(ACCOUNT_ALREADY_IN_USE));
     }
 
     #[flow]
     fn stake_price_report(&mut self) {
-        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
+        let (t, m) = self.begin();
         let now = pin_clock(t, m);
-        let random = now - t.random_from_range(-2..=PRICE_MAX_STALENESS);
+        let signer = pick_signer(t, m.admins(Program::Stake, Role::Rewards));
+        let random = now - t.random_from_range(-2..=m.staleness);
         let observed = edge_or(t, &[now, now + 1, m.price_ts, m.price_ts + 1], random);
         let random = observed - t.random_from_range(-1..=10i64);
-        let valid_from = edge_or(t, &[now, now + 1, observed, observed + 1], random);
+        let valid_from = edge_or(t, &[now, now + 1, observed, observed + 1], random).max(0);
         let random = now + t.random_from_range(-2..=120i64);
-        let expires_at = edge_or(t, &[now, now - 1, observed, observed - 1], random);
+        let expires_at = edge_or(t, &[now, now - 1, observed, observed - 1], random).max(0);
         let feed = if t.random_from_range(0..10u8) == 0 {
-            [8; 32]
+            other_feed(m.feed)
         } else {
-            FEED_ID
+            m.feed
         };
-        let price = pick_price(t);
+        let price = pick_price(t, m.scale);
 
-        let expect = if now < valid_from {
+        let expect = if !m.is_admin(Program::Stake, Role::Rewards, &signer) {
+            stake_err("InvalidRewardsAdministrator")
+        } else if now < valid_from {
             stake_err("FutureReportValidFromTimestamp")
         } else if now > expires_at {
             stake_err("ReportStale")
-        } else if feed != FEED_ID {
+        } else if feed != m.feed {
             stake_err("InvalidFeedId")
         } else if !(valid_from <= observed && observed <= expires_at) {
             stake_err("InvalidReportTimestamps")
         } else if observed > now {
             stake_err("FutureObservationTimestamp")
-        } else if observed <= m.price_ts {
+        } else if m.price_ts != 0 && observed <= m.price_ts {
             stake_err("ObservationTimestampNotIncreasing")
         } else {
             Expect::Ok
@@ -583,17 +1081,127 @@ impl FuzzTest {
         let ix = m
             .world
             .call(Program::Stake, "apply_verified_report_for_testing")
+            .with("signer", signer)
             .with_args(&report)
             .instruction();
-        if run(t, ix, "stake_price_report", expect) {
+        if run(t, &m.tracked, ix, "", expect) {
             m.price = price;
             m.price_ts = observed;
         }
     }
 
+    /// The Chainlink verifier is not deployed, so `verify_price` can only get as far as its CPI;
+    /// this checks the authorization and account checks in front of it.
+    #[flow]
+    fn verify_price(&mut self) {
+        let (t, m) = self.begin();
+        let signer = pick_signer(t, m.admins(Program::Stake, Role::Rewards));
+        let mut call = m
+            .world
+            .call(Program::Stake, "verify_price")
+            .with("signer", signer);
+        let mut mismatch = false;
+        for account in [
+            "chainlink_program",
+            "chainlink_verifier_account",
+            "chainlink_access_controller",
+        ] {
+            if t.random_from_range(0..6u8) == 0 {
+                call = call.with(account, t.random_pubkey());
+                mismatch = true;
+            }
+        }
+        let expect = if !m.is_admin(Program::Stake, Role::Rewards, &signer) {
+            stake_err("InvalidRewardsAdministrator")
+        } else if mismatch {
+            stake_err("InvalidAuthority")
+        } else {
+            Expect::Runtime
+        };
+        run(t, &m.tracked, call.instruction(), "", expect);
+    }
+
+    /// A feed or scale change invalidates the stored price; a staleness change keeps it.
+    #[flow]
+    fn update_price_config(&mut self) {
+        let (t, m) = self.begin();
+        let scale = if t.random_bool() {
+            m.scale
+        } else {
+            [1_000_000, PRICE_SCALE, 1_000_000_000_000][t.random_from_range(0..3usize)]
+        };
+        let feed = if t.random_from_range(0..4u8) == 0 {
+            other_feed(m.feed)
+        } else {
+            m.feed
+        };
+        let staleness = if t.random_bool() {
+            m.staleness
+        } else {
+            t.random_from_range(0..=2 * PRICE_MAX_STALENESS)
+        };
+        let ix = m
+            .world
+            .call(Program::Stake, "update_price_config")
+            .with_args(&(
+                CHAINLINK_PROGRAM,
+                CHAINLINK_VERIFIER,
+                CHAINLINK_ACCESS_CONTROLLER,
+                feed,
+                scale,
+                staleness,
+            ))
+            .instruction();
+        let invalidates = scale != m.scale || feed != m.feed;
+        run(
+            t,
+            &m.tracked,
+            ix,
+            if invalidates { "invalidates price" } else { "" },
+            Expect::Ok,
+        );
+        if invalidates {
+            m.price = 0;
+            m.price_ts = 0;
+        }
+        (m.scale, m.feed, m.staleness) = (scale, feed, staleness);
+    }
+
+    /// The conversion views ignore pause and staleness; only the stored price and scale matter.
+    #[flow]
+    fn views(&mut self) {
+        let (t, m) = self.begin();
+        let amount = pick_amount(t, 1_000_000_000_000);
+        let price = m.price.max(0) as u128;
+        let (name, value) = match t.random_from_range(0..3u8) {
+            0 => ("shares_to_assets", mul_div(amount, price, m.scale as i128)),
+            1 => (
+                "assets_to_shares",
+                mul_div(amount, m.scale as u128, m.price),
+            ),
+            _ => (
+                "exchange_rate",
+                mul_div(EXCHANGE_RATE_SCALE, price, m.scale as i128),
+            ),
+        };
+        let expect = match value {
+            _ if m.price <= 0 => stake_err("PriceNotInitialized"),
+            None => stake_err("Overflow"),
+            Some(_) => Expect::Ok,
+        };
+        let mut call = m.world.call(Program::Stake, name);
+        if name != "exchange_rate" {
+            call = call.with_args(&amount);
+        }
+        let (ok, logs) = run_result(t, &m.tracked, call.instruction(), "", expect);
+        if ok {
+            assert_eq!(Some(view_value(&logs, name)), value, "{name}");
+        }
+    }
+
     #[flow]
     fn stake_deposit(&mut self) {
-        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
+        let (t, m) = self.begin();
         let u = t.random_from_range(0..USERS);
         let user = &m.world.users[u];
         let wylds = token_balance(t, user.wylds);
@@ -603,16 +1211,20 @@ impl FuzzTest {
         let amount = pick_amount(t, wylds);
         let now = pin_clock(t, m);
 
-        let shares = mul_div(amount, PRICE_SCALE as u128, m.price);
+        let shares = mul_div(amount, m.scale as u128, m.price);
         let expect = if amount == 0 {
             stake_err("InvalidAmount")
+        } else if m.paused(Program::Stake) {
+            stake_err("ProtocolPaused")
         } else if let Some(err) = price_error(m, now) {
             err
         } else {
             match shares {
                 None => stake_err("Overflow"),
                 Some(0) => stake_err("DepositTooSmall"),
+                Some(_) if m.frozen(user.wylds) => Expect::Code(SPL_ACCOUNT_FROZEN),
                 Some(_) if amount > wylds => Expect::Code(SPL_INSUFFICIENT_FUNDS),
+                Some(_) if m.frozen(user.prime) => Expect::Code(SPL_ACCOUNT_FROZEN),
                 Some(s) if supply.checked_add(s).is_none() => Expect::Code(SPL_OVERFLOW),
                 Some(_) => Expect::Ok,
             }
@@ -622,18 +1234,24 @@ impl FuzzTest {
             .stake_call_for("deposit", u)
             .with_args(&amount)
             .instruction();
-        let label = stake_label("stake_deposit", m, now);
-        if run(t, ix, &label, expect) {
-            let shares = shares.unwrap();
+        if run(t, &m.tracked, ix, staleness_case(m, now), expect) {
+            let minted = token_balance(t, user.prime) - prime;
+            assert_eq!(Some(minted), shares);
             assert_eq!(token_balance(t, user.wylds), wylds - amount);
-            assert_eq!(token_balance(t, user.prime), prime + shares);
             assert_eq!(token_balance(t, m.world.stake_vault), vault + amount);
+            // The minted shares are worth no more than the deposit.
+            let value = (minted as u128).checked_mul(m.price as u128);
+            assert!(
+                value.is_some_and(|v| v <= amount as u128 * m.scale as u128),
+                "deposit of {amount} minted {minted} shares at price {}",
+                m.price
+            );
         }
     }
 
     #[flow]
     fn stake_redeem(&mut self) {
-        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
+        let (t, m) = self.begin();
         let u = t.random_from_range(0..USERS);
         let user = &m.world.users[u];
         let wylds = token_balance(t, user.wylds);
@@ -642,9 +1260,11 @@ impl FuzzTest {
         let shares = pick_amount(t, prime);
         let now = pin_clock(t, m);
 
-        let assets = mul_div(shares, m.price.max(0) as u128, PRICE_SCALE as i128);
+        let assets = mul_div(shares, m.price.max(0) as u128, m.scale as i128);
         let expect = if shares == 0 {
             stake_err("InvalidAmount")
+        } else if m.paused(Program::Stake) {
+            stake_err("ProtocolPaused")
         } else if let Some(err) = price_error(m, now) {
             err
         } else if shares > prime {
@@ -654,6 +1274,9 @@ impl FuzzTest {
                 None => stake_err("Overflow"),
                 Some(0) => stake_err("InvalidAmount"),
                 Some(a) if a > vault => stake_err("InsufficientVaultBalance"),
+                Some(_) if m.frozen(user.prime) || m.frozen(user.wylds) => {
+                    Expect::Code(SPL_ACCOUNT_FROZEN)
+                }
                 Some(_) => Expect::Ok,
             }
         };
@@ -662,12 +1285,17 @@ impl FuzzTest {
             .stake_call_for("redeem", u)
             .with_args(&shares)
             .instruction();
-        let label = stake_label("stake_redeem", m, now);
-        if run(t, ix, &label, expect) {
-            let assets = assets.unwrap();
+        if run(t, &m.tracked, ix, staleness_case(m, now), expect) {
+            let paid = token_balance(t, user.wylds) - wylds;
+            assert_eq!(Some(paid), assets);
             assert_eq!(token_balance(t, user.prime), prime - shares);
-            assert_eq!(token_balance(t, user.wylds), wylds + assets);
-            assert_eq!(token_balance(t, m.world.stake_vault), vault - assets);
+            assert_eq!(token_balance(t, m.world.stake_vault), vault - paid);
+            // The vault pays out no more than the burned shares are worth.
+            assert!(
+                paid as u128 * m.scale as u128 <= shares as u128 * m.price as u128,
+                "redeem of {shares} shares paid {paid} at price {}",
+                m.price
+            );
         }
     }
 
@@ -675,7 +1303,7 @@ impl FuzzTest {
     /// observed balances only, so it does not rely on the model's conversion formula.
     #[flow]
     fn stake_round_trip(&mut self) {
-        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
+        let (t, m) = self.begin();
         let u = t.random_from_range(0..USERS);
         let user = &m.world.users[u];
         let wylds = token_balance(t, user.wylds);
@@ -727,7 +1355,8 @@ impl FuzzTest {
 
     #[flow]
     fn publish_rewards(&mut self) {
-        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
+        let (t, m) = self.begin();
+        let admin = pick_signer(t, m.admins(Program::Stake, Role::Rewards));
         let r = &m.rewards;
         let id = match t.random_from_range(0..8u8) {
             0 => r.last_id.saturating_sub(t.random_from_range(0..=1u32)),
@@ -750,13 +1379,14 @@ impl FuzzTest {
             _ => t.random_from_range(0..=bps_cap.min(r.period_cap)),
         };
         let now = pin_clock(t, m);
-        let record = pda(
-            &[b"reward_record", &id.to_le_bytes(), &amount.to_le_bytes()],
-            &stake_id(),
-        );
-        let expect = if t.get_account(&record).lamports() > 0 {
+        // The stake-side checks, then vault-mint's own checks on the external mint CPI.
+        let expect = if r.published.contains(&(id, amount)) {
             // Replaying a published (id, amount) fails creating its record.
             Expect::Code(ACCOUNT_ALREADY_IN_USE)
+        } else if m.paused(Program::Stake) {
+            stake_err("ProtocolPaused")
+        } else if !m.is_admin(Program::Stake, Role::Rewards, &admin) {
+            stake_err("InvalidRewardsAdministrator")
         } else if amount == 0 {
             stake_err("InvalidAmount")
         } else if id <= r.last_id {
@@ -771,16 +1401,25 @@ impl FuzzTest {
             stake_err("RewardCooldownNotElapsed")
         } else if r.distributed + amount > r.lifetime_cap {
             stake_err("ExceedsLifetimeRewardCap")
+        } else if m.paused(Program::Mint) {
+            mint_err("ProtocolPaused")
+        } else if !m.is_admin(Program::Mint, Role::Rewards, &admin) {
+            mint_err("InvalidRewardsAdministrator")
         } else {
             Expect::Ok
         };
+        let record = pda(
+            &[b"reward_record", &id.to_le_bytes(), &amount.to_le_bytes()],
+            &stake_id(),
+        );
         let ix = m
             .world
             .call(Program::Stake, "publish_rewards")
+            .with("admin", admin)
             .with("reward_record", record)
             .with_args(&(id, amount))
             .instruction();
-        let published = run(t, ix, "publish_rewards", expect);
+        let published = run(t, &m.tracked, ix, "", expect);
         assert_eq!(
             token_balance(t, m.world.stake_vault),
             vault + if published { amount } else { 0 }
@@ -790,16 +1429,19 @@ impl FuzzTest {
             r.last_id = id;
             r.last_at = now;
             r.distributed += amount;
+            r.published.insert((id, amount));
             assert!(r.distributed <= r.lifetime_cap);
+            m.unbacked += amount;
         }
     }
 
     #[flow]
     fn stake_reward_config_update(&mut self) {
-        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
+        let (t, m) = self.begin();
         let r = &mut m.rewards;
         let call = |name| m.world.call(Program::Stake, name);
-        match t.random_from_range(0..4u8) {
+        let tracked = &m.tracked;
+        match t.random_from_range(0..5u8) {
             0 => {
                 let bps = t.random_from_range(0..=MAX_BPS + 1);
                 let ok = bps > 0 && bps <= MAX_BPS;
@@ -808,13 +1450,8 @@ impl FuzzTest {
                 } else {
                     stake_err("InvalidMaxRewardBps")
                 };
-                run(
-                    t,
-                    call("update_max_reward_bps").with_args(&bps).instruction(),
-                    "update_max_reward_bps",
-                    expect,
-                );
-                if ok {
+                let ix = call("update_max_reward_bps").with_args(&bps).instruction();
+                if run(t, tracked, ix, "", expect) {
                     r.bps = bps;
                 }
             }
@@ -828,7 +1465,7 @@ impl FuzzTest {
                 let ix = call("update_max_period_rewards")
                     .with_args(&cap)
                     .instruction();
-                if run(t, ix, "update_max_period_rewards", expect) {
+                if run(t, tracked, ix, "", expect) {
                     r.period_cap = cap;
                 }
             }
@@ -842,11 +1479,11 @@ impl FuzzTest {
                 let ix = call("update_reward_period_seconds")
                     .with_args(&seconds)
                     .instruction();
-                if run(t, ix, "update_reward_period_seconds", expect) {
+                if run(t, tracked, ix, "", expect) {
                     r.period_seconds = seconds;
                 }
             }
-            _ => {
+            3 => {
                 let cap = r
                     .distributed
                     .saturating_add(t.random_from_range(0..=10_000_000_000u64));
@@ -863,9 +1500,29 @@ impl FuzzTest {
                 let ix = call("update_max_total_rewards")
                     .with_args(&cap)
                     .instruction();
-                if run(t, ix, "update_max_total_rewards", expect) {
+                if run(t, tracked, ix, "", expect) {
                     r.lifetime_cap = cap;
                 }
+            }
+            _ => {
+                // Any floor is accepted; rewinding it lets an id be published again.
+                let (id, case) = match t.random_from_range(0..4u8) {
+                    0 => (
+                        r.last_id.saturating_sub(t.random_from_range(1..=3u32)),
+                        "rewind",
+                    ),
+                    1 => (r.last_id.saturating_add(MAX_GAP + 1), "beyond gap"),
+                    2 => (u32::MAX, "max"),
+                    _ => (
+                        r.last_id.saturating_add(t.random_from_range(0..=MAX_GAP)),
+                        "",
+                    ),
+                };
+                let ix = call("update_last_reward_publication")
+                    .with_args(&id)
+                    .instruction();
+                run(t, tracked, ix, case, Expect::Ok);
+                r.last_id = id;
             }
         }
     }
@@ -873,9 +1530,9 @@ impl FuzzTest {
     /// Moves the clock forward, often onto the price staleness or reward cooldown boundary.
     #[flow]
     fn warp(&mut self) {
-        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
+        let (t, m) = self.begin();
         let now = m.now;
-        let stale_at = m.price_ts + PRICE_MAX_STALENESS;
+        let stale_at = m.price_ts + m.staleness;
         let cooldown_ends = m.rewards.last_at + m.rewards.period_seconds;
         let target = match t.random_from_range(0..6u8) {
             0 => stale_at,
@@ -889,33 +1546,7 @@ impl FuzzTest {
 
     #[end]
     fn end(&mut self) {
-        let (t, m) = (&mut self.trident, self.fuzz_accounts.as_mut().unwrap());
-        let w = &m.world;
-        let wylds: u64 = w
-            .users
-            .iter()
-            .map(|u| token_balance(t, u.wylds))
-            .sum::<u64>()
-            + token_balance(t, w.stake_vault);
-        assert_eq!(
-            mint_supply(t, w.wylds_mint),
-            wylds,
-            "wYLDS supply equals holdings"
-        );
-        let prime: u64 = w.users.iter().map(|u| token_balance(t, u.prime)).sum();
-        assert_eq!(
-            mint_supply(t, w.prime_mint),
-            prime,
-            "PRIME supply equals holdings"
-        );
-        let usdc: u64 = w
-            .users
-            .iter()
-            .map(|u| token_balance(t, u.usdc))
-            .sum::<u64>()
-            + token_balance(t, w.mint_vault)
-            + token_balance(t, w.redeem_vault);
-        assert_eq!(usdc, m.usdc_minted, "USDC is conserved");
+        let (t, m) = self.begin();
         for epoch in &m.epochs {
             let data = t
                 .get_account(&epoch_claimed_pda(epoch.index))
@@ -936,12 +1567,62 @@ impl FuzzTest {
                 epoch.index
             );
             assert!(
-                claimed <= epoch.total,
-                "epoch {} exceeded its cap",
-                epoch.index
+                claimed <= epoch.total && epoch.total <= epoch.cap,
+                "epoch {} claimed {claimed} of {} under cap {}",
+                epoch.index,
+                epoch.total,
+                epoch.cap
             );
         }
     }
+}
+
+/// Supply and balance invariants, cheap enough to check after every flow.
+fn invariants(t: &mut Trident, m: &Model) {
+    let w = &m.world;
+    let sum = |t: &mut Trident, keys: &mut dyn Iterator<Item = Pubkey>| -> u64 {
+        keys.map(|k| token_balance(t, k)).sum()
+    };
+    let wylds = sum(
+        t,
+        &mut w.users.iter().map(|u| u.wylds).chain([w.stake_vault]),
+    );
+    let supply = mint_supply(t, w.wylds_mint);
+    assert_eq!(supply, wylds, "wYLDS supply equals holdings");
+    assert_eq!(
+        supply,
+        m.backed + m.unbacked,
+        "wYLDS supply is deposits not yet redeemed plus reward mints"
+    );
+    let vaults = [
+        w.mint_vault,
+        w.spare_mint_vault,
+        w.redeem_vault,
+        w.spare_redeem_vault,
+    ];
+    let vault_usdc = sum(t, &mut vaults.into_iter());
+    assert_eq!(
+        vault_usdc,
+        m.backed + m.funded,
+        "vault USDC covers every deposited wYLDS"
+    );
+    let user_usdc = sum(t, &mut w.users.iter().map(|u| u.usdc));
+    assert_eq!(user_usdc + vault_usdc, m.usdc_minted, "USDC is conserved");
+    let prime = sum(t, &mut w.users.iter().map(|u| u.prime));
+    assert_eq!(
+        mint_supply(t, w.prime_mint),
+        prime,
+        "PRIME supply equals holdings"
+    );
+    // StakeRewardConfig: max_total_rewards, then total_rewards_distributed.
+    let config = t.get_account(&m.tracked[m.tracked.len() - 3]);
+    let field = |at: usize| u64::from_le_bytes(config.data()[at..at + 8].try_into().unwrap());
+    let (max_total, distributed) = (field(40), field(48));
+    assert_eq!(distributed, m.rewards.distributed, "rewards distributed");
+    assert!(
+        distributed <= max_total,
+        "distributed {distributed} over the lifetime cap {max_total}"
+    );
 }
 
 /// TridentSVM adds elapsed wall-clock time to the Clock after every transaction, so time-sensitive
@@ -953,7 +1634,9 @@ fn pin_clock(t: &mut Trident, m: &Model) -> i64 {
 
 /// Mirrors the stored-price checks of deposit and redeem.
 fn price_error(m: &Model, now: i64) -> Option<Expect> {
-    if now - m.price_ts > PRICE_MAX_STALENESS {
+    if m.price_ts == 0 {
+        Some(stake_err("PriceNotInitialized"))
+    } else if now - m.price_ts > m.staleness {
         Some(stake_err("PriceTooStale"))
     } else if m.price <= 0 {
         Some(stake_err("PriceNotInitialized"))
@@ -970,16 +1653,15 @@ fn mul_div(value: u64, mul: u128, div: i128) -> Option<u64> {
     u64::try_from((value as u128).checked_mul(mul)? / div as u128).ok()
 }
 
-fn stake_label(flow: &str, m: &Model, now: i64) -> String {
+fn staleness_case(m: &Model, now: i64) -> &'static str {
     let age = now - m.price_ts;
-    let tag = if age == PRICE_MAX_STALENESS {
-        " at staleness boundary"
-    } else if age == PRICE_MAX_STALENESS + 1 {
-        " one second stale"
+    if age == m.staleness {
+        "at staleness boundary"
+    } else if age == m.staleness + 1 {
+        "one second stale"
     } else {
         ""
-    };
-    format!("{flow}{tag}")
+    }
 }
 
 /// Zero, one, the full balance, one more than the balance, or anything up to the balance.
@@ -994,7 +1676,7 @@ fn pick_amount(t: &mut Trident, balance: u64) -> u64 {
     }
 }
 
-fn pick_price(t: &mut Trident) -> i128 {
+fn pick_price(t: &mut Trident, scale: u64) -> i128 {
     match t.random_from_range(0..10u8) {
         0 => -t.random_from_range(0..=i128::MAX),
         1 => 0,
@@ -1004,8 +1686,68 @@ fn pick_price(t: &mut Trident) -> i128 {
             let bits = t.random_from_range(0..127u32);
             (1i128 << bits) | (t.random_from_range(0..=i128::MAX) & ((1i128 << bits) - 1))
         }
-        _ => t.random_from_range(PRICE_SCALE as i128 / 2..=PRICE_SCALE as i128 * 2),
+        _ => t.random_from_range(scale as i128 / 2..=scale as i128 * 2),
     }
+}
+
+fn pick_program(t: &mut Trident) -> Program {
+    if t.random_bool() {
+        Program::Mint
+    } else {
+        Program::Stake
+    }
+}
+
+/// Usually a current administrator, otherwise any pool member (who may not be one).
+fn pick_signer(t: &mut Trident, admins: &[Pubkey]) -> Pubkey {
+    if !admins.is_empty() && t.random_from_range(0..4u8) != 0 {
+        admins[t.random_from_range(0..admins.len())]
+    } else {
+        ADMIN_POOL[t.random_from_range(0..ADMIN_POOL.len())]
+    }
+}
+
+/// Mostly 1-4 distinct pool members; otherwise empty, too long, or with a duplicate.
+fn admin_list(t: &mut Trident) -> Vec<Pubkey> {
+    let any = |t: &mut Trident| ADMIN_POOL[t.random_from_range(0..ADMIN_POOL.len())];
+    match t.random_from_range(0..8u8) {
+        0 => vec![],
+        1 => (0..=MAX_ADMINISTRATORS).map(|_| any(t)).collect(),
+        2 => {
+            let key = any(t);
+            vec![key, any(t), key]
+        }
+        _ => {
+            let mut pool = ADMIN_POOL.to_vec();
+            let len = t.random_from_range(1..=pool.len());
+            (0..len)
+                .map(|_| pool.swap_remove(t.random_from_range(0..pool.len())))
+                .collect()
+        }
+    }
+}
+
+fn other_feed(feed: [u8; 32]) -> [u8; 32] {
+    if feed == FEED_ID {
+        OTHER_FEED
+    } else {
+        FEED_ID
+    }
+}
+
+/// SPL Token `Transfer` signed by the source account's owner.
+fn spl_transfer(from: Pubkey, to: Pubkey, owner: Pubkey, amount: u64) -> Instruction {
+    let mut data = vec![3];
+    data.extend(amount.to_le_bytes());
+    Instruction::new_with_bytes(
+        TOKEN_PROGRAM,
+        &data,
+        vec![
+            AccountMeta::new(from, false),
+            AccountMeta::new(to, false),
+            AccountMeta::new_readonly(owner, true),
+        ],
+    )
 }
 
 /// Half the time one of the boundary values a check compares against, otherwise `random`.
@@ -1060,6 +1802,7 @@ fn snapshot(t: &mut Trident, keys: &[Pubkey]) -> Vec<(u64, Vec<u8>)> {
         })
         .collect()
 }
+
 fn main() {
     let env = |name: &str, default: u64| {
         std::env::var(name)
