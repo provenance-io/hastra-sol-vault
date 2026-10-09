@@ -25,6 +25,8 @@ pub const START_TIME: i64 = 1_750_000_000;
 pub const USER_USDC: u64 = 1_000_000_000_000;
 pub const USER_STAKE_DEPOSIT: u64 = 100_000_000_000;
 pub const CLAIM_AMOUNT: u64 = 5_000_000;
+/// `exchange_rate` returns assets per share scaled by this.
+pub const EXCHANGE_RATE_SCALE: u64 = 1_000_000_000;
 /// Chainlink accounts recorded by `initialize_price_config`; nothing is deployed at them.
 pub const CHAINLINK_PROGRAM: Pubkey = Pubkey::new_from_array([1; 32]);
 pub const CHAINLINK_VERIFIER: Pubkey = Pubkey::new_from_array([2; 32]);
@@ -151,6 +153,10 @@ pub fn token_balance(trident: &mut Trident, account: Pubkey) -> u64 {
         .unwrap_or(0)
 }
 
+pub fn token_owner(trident: &mut Trident, account: Pubkey) -> Pubkey {
+    trident.get_token_account(account).unwrap().account.owner
+}
+
 pub fn mint_supply(trident: &mut Trident, mint: Pubkey) -> u64 {
     trident.get_mint(mint).unwrap().mint.supply
 }
@@ -175,6 +181,8 @@ pub struct World {
     /// originals (treasury / redeem vault authority PDA).
     pub spare_mint_vault: Pubkey,
     pub spare_redeem_vault: Pubkey,
+    /// A USDC account owned by neither the treasury nor the redeem vault authority.
+    pub foreign_vault: Pubkey,
     pub stake_vault: Pubkey,
     pub users: Vec<User>,
 }
@@ -193,6 +201,32 @@ pub const STAKE_SETUP: &[&str] = &[
     "initialize_stake_reward_config",
     "initialize_last_reward_publication",
 ];
+
+/// Instructions that `init` a singleton during setup, so any later call must fail.
+pub const ONE_SHOT: [(Program, &str); 7] = [
+    (Program::Mint, "initialize"),
+    (Program::Mint, "initialize_epoch_caps"),
+    (Program::Mint, "initialize_last_rewards_epoch"),
+    (Program::Stake, "initialize"),
+    (Program::Stake, "initialize_price_config"),
+    (Program::Stake, "initialize_stake_reward_config"),
+    (Program::Stake, "initialize_last_reward_publication"),
+];
+
+/// The singleton state accounts of both programs.
+pub struct StateAccounts {
+    pub config: Pubkey,
+    pub epoch_caps: Pubkey,
+    pub last_rewards_epoch: Pubkey,
+    pub vault_config: Pubkey,
+    pub allowed_programs: Pubkey,
+    pub programs_limit: Pubkey,
+    pub stake_config: Pubkey,
+    pub stake_vault_config: Pubkey,
+    pub reward_config: Pubkey,
+    pub last_publication: Pubkey,
+    pub price_config: Pubkey,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Program {
@@ -360,6 +394,8 @@ impl World {
             &usdc_mint,
             &pda(&[b"redeem_vault_authority"], &mint_id()),
         );
+        let stranger = trident.random_pubkey();
+        let foreign_vault = new_token_account(trident, &usdc_mint, &stranger);
         let stake_vault = new_token_account(trident, &wylds_mint, &UPGRADE_AUTHORITY);
 
         let users = (0..users)
@@ -385,65 +421,42 @@ impl World {
             redeem_vault,
             spare_mint_vault,
             spare_redeem_vault,
+            foreign_vault,
             stake_vault,
             users,
         }
     }
 
-    /// Every mint and token account, plus the singleton state accounts of both programs.
-    pub fn tracked(&self) -> Vec<Pubkey> {
-        let mut keys = vec![
-            self.usdc_mint,
-            self.wylds_mint,
-            self.prime_mint,
-            self.mint_vault,
-            self.redeem_vault,
-            self.spare_mint_vault,
-            self.spare_redeem_vault,
-            self.stake_vault,
-        ];
-        for u in &self.users {
-            keys.extend([u.usdc, u.wylds, u.prime]);
+    pub fn state_accounts(&self) -> StateAccounts {
+        let mint = |account| {
+            self.call(Program::Mint, "register_allowed_external_mint_program")
+                .account(account)
+        };
+        let stake = |account| {
+            self.call(Program::Stake, "publish_rewards")
+                .account(account)
+        };
+        StateAccounts {
+            config: mint("config"),
+            epoch_caps: self
+                .call(Program::Mint, "update_max_epoch_cap")
+                .account("epoch_caps_config"),
+            last_rewards_epoch: self
+                .call(Program::Mint, "update_last_rewards_epoch")
+                .account("last_rewards_epoch"),
+            vault_config: self
+                .call(Program::Mint, "update_vault_token_account")
+                .account("vault_token_account_config"),
+            allowed_programs: mint("allowed_external_mint_programs"),
+            programs_limit: mint("external_mint_programs_limit_config"),
+            stake_config: stake("stake_config"),
+            stake_vault_config: stake("stake_vault_token_account_config"),
+            reward_config: stake("stake_reward_config"),
+            last_publication: stake("last_reward_publication"),
+            price_config: self
+                .call(Program::Stake, "deposit")
+                .account("stake_price_config"),
         }
-        let state = [
-            (Program::Mint, "update_last_rewards_epoch", "config"),
-            (
-                Program::Mint,
-                "update_last_rewards_epoch",
-                "epoch_caps_config",
-            ),
-            (
-                Program::Mint,
-                "update_last_rewards_epoch",
-                "last_rewards_epoch",
-            ),
-            (
-                Program::Mint,
-                "update_vault_token_account",
-                "vault_token_account_config",
-            ),
-            (
-                Program::Mint,
-                "register_allowed_external_mint_program",
-                "allowed_external_mint_programs",
-            ),
-            (
-                Program::Mint,
-                "register_allowed_external_mint_program",
-                "external_mint_programs_limit_config",
-            ),
-            (Program::Stake, "publish_rewards", "stake_config"),
-            (
-                Program::Stake,
-                "publish_rewards",
-                "stake_vault_token_account_config",
-            ),
-            (Program::Stake, "publish_rewards", "stake_reward_config"),
-            (Program::Stake, "publish_rewards", "last_reward_publication"),
-            (Program::Stake, "deposit", "stake_price_config"),
-        ];
-        keys.extend(state.map(|(p, ix, account)| self.call(p, ix).account(account)));
-        keys
     }
 
     /// Runs the setup steps of both programs (stopping before `stop_before`, if given), then
