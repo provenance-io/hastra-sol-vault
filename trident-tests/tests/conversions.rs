@@ -1,7 +1,7 @@
-//! Share/asset conversions run through the compiled vault-stake program: `deposit`, `redeem` and
-//! the `assets_to_shares` / `shares_to_assets` / `exchange_rate` views. A hand-worked table covers the extremes, and
-//! property tests cover amounts, prices and price scales drawn log-uniformly from their full
-//! ranges. The price config and token balances are rewritten before every call, so each call
+//! Share/asset conversions run through the compiled vault-stake program: `deposit`, `redeem`
+//! and the `assets_to_shares` / `shares_to_assets` / `exchange_rate` views. A hand-worked table
+//! covers the extremes, and property tests cover amounts, prices and price scales drawn
+//! log-uniformly from their full ranges. The price config and token balances are rewritten before every call, so each call
 //! starts unconstrained (empty PRIME supply, no balance that could overflow).
 
 use hastra_fuzz::world::*;
@@ -330,18 +330,17 @@ proptest! {
         })?;
     }
 
-    /// The rate is the value of one share (1e9 base units), floored, whatever the PRIME supply.
+    /// The rate is the value of `EXCHANGE_RATE_SCALE` shares, floored, whatever the PRIME supply.
     #[test]
     fn exchange_rate_is_the_value_of_one_share(supply in wide_u64(), price in wide_price(), scale in wide_u64()) {
-        const ONE_SHARE: u64 = 1_000_000_000;
         let (rate, value) = with_bench(|b| {
-            (b.run(Ix::ExchangeRate, supply, price, scale), b.run(Ix::SharesToAssets, ONE_SHARE, price, scale))
+            (b.run(Ix::ExchangeRate, supply, price, scale), b.run(Ix::SharesToAssets, EXCHANGE_RATE_SCALE, price, scale))
         });
         prop_assert_eq!(rate, value);
         if price <= 0 {
             prop_assert_eq!(rate, Err("PriceNotInitialized"));
         } else {
-            check_floor((price as u128).checked_mul(ONE_SHARE as u128), scale as u128, rate).map_err(TestCaseError::fail)?;
+            check_floor((price as u128).checked_mul(EXCHANGE_RATE_SCALE as u128), scale as u128, rate).map_err(TestCaseError::fail)?;
         }
     }
 
