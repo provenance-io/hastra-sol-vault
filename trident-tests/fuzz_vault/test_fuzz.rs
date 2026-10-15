@@ -147,12 +147,12 @@ struct Model {
     world: World,
     state: StateAccounts,
     usdc_minted: u64,
-    /// wYLDS minted 1:1 against USDC by `deposit` and not yet burned by `complete_redeem`.
-    backed: u64,
-    /// wYLDS minted without USDC: claims, external program mints and published rewards.
-    unbacked: u64,
-    /// USDC sent straight to the redeem vault.
-    funded: u64,
+    /// Expected wYLDS supply: deposits, claims, external program mints and published rewards,
+    /// less wYLDS burned by `complete_redeem`.
+    wylds_supply: u64,
+    /// Expected USDC across mint and redeem vaults: deposits plus direct redeem vault funding,
+    /// less USDC paid out by `complete_redeem`.
+    vault_usdc: u64,
     /// Current deposit vault and redeem vault of vault-mint.
     vault: Pubkey,
     redeem_vault: Pubkey,
@@ -305,9 +305,8 @@ impl FuzzTest {
             unbonding_period: 0,
             stake_vault_authority: Pubkey::default(),
             usdc_minted: USER_USDC * USERS as u64,
-            backed: USER_USDC / 2 * USERS as u64,
-            unbacked: 0,
-            funded: 0,
+            wylds_supply: USER_USDC / 2 * USERS as u64,
+            vault_usdc: USER_USDC / 2 * USERS as u64,
             vault: world.mint_vault,
             redeem_vault: world.redeem_vault,
             epochs: Vec::new(),
@@ -402,7 +401,8 @@ impl FuzzTest {
             assert_eq!(token_balance(t, user.usdc), usdc - amount);
             assert_eq!(token_balance(t, user.wylds), wylds + amount);
             assert_eq!(token_balance(t, vault), vault_before + amount);
-            m.backed += amount;
+            m.wylds_supply += amount;
+            m.vault_usdc += amount;
         }
     }
 
@@ -580,7 +580,7 @@ impl FuzzTest {
             let epoch = &mut m.epochs[e];
             epoch.claimed[leaf] = true;
             epoch.claimed_sum += amount;
-            m.unbacked += amount;
+            m.wylds_supply += amount;
         }
     }
 
@@ -636,7 +636,7 @@ impl FuzzTest {
         let amount = t.random_from_range(1..=100_000_000_000u64);
         m.world.mint_usdc(t, m.redeem_vault, amount);
         m.usdc_minted += amount;
-        m.funded += amount;
+        m.vault_usdc += amount;
     }
 
     #[flow]
@@ -695,7 +695,8 @@ impl FuzzTest {
             assert_eq!(token_balance(t, user.usdc), usdc + amount);
             assert_eq!(token_balance(t, redeem_vault), vault - amount);
             assert_eq!(t.get_account(&request).lamports(), 0, "request closed");
-            m.backed -= amount;
+            m.wylds_supply -= amount;
+            m.vault_usdc -= amount;
         }
     }
 
@@ -868,7 +869,7 @@ impl FuzzTest {
         };
         let minted = if run(t, ix, case, expect) { amount } else { 0 };
         assert_eq!(token_balance(t, destination), before + minted);
-        m.unbacked += minted;
+        m.wylds_supply += minted;
     }
 
     #[flow]
@@ -1466,7 +1467,7 @@ impl FuzzTest {
             r.distributed += amount;
             r.published.insert((id, amount));
             assert!(r.distributed <= r.lifetime_cap);
-            m.unbacked += amount;
+            m.wylds_supply += amount;
         }
     }
 
@@ -1630,9 +1631,8 @@ fn invariants(t: &mut Trident, m: &Model) {
     let supply = mint_supply(t, w.wylds_mint);
     assert_eq!(supply, wylds, "wYLDS supply equals holdings");
     assert_eq!(
-        supply,
-        m.backed + m.unbacked,
-        "wYLDS supply is deposits not yet redeemed plus reward mints"
+        supply, m.wylds_supply,
+        "wYLDS supply is mints less redemptions"
     );
     let vaults = [
         w.mint_vault,
@@ -1643,9 +1643,8 @@ fn invariants(t: &mut Trident, m: &Model) {
     ];
     let vault_usdc = sum(t, &mut vaults.into_iter());
     assert_eq!(
-        vault_usdc,
-        m.backed + m.funded,
-        "vault USDC covers every deposited wYLDS"
+        vault_usdc, m.vault_usdc,
+        "vault USDC is deposits and funding less redemptions"
     );
     let user_usdc = sum(t, &mut w.users.iter().map(|u| u.usdc));
     assert_eq!(user_usdc + vault_usdc, m.usdc_minted, "USDC is conserved");
