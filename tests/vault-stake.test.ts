@@ -1395,7 +1395,7 @@ describe("vault-stake", () => {
             // shares = 10_000 * ONE_BIG_TOKEN * 1e9 / 1e9 = 10_000 * ONE_BIG_TOKEN
             assert.equal(user2Shares, ONE_BIG_SHARE * createBigInt(10_000), "User 2 should receive 10,000 PRIME at 1:1 price");
 
-            // step 4 - user 1 redeems; expects to receive 1 wYLDS per PRIME (1:1 price)
+            // step 4 - user 1 redeems immediately (no unbonding period); expects 1 wYLDS per PRIME (1:1 price)
             await program.methods.redeem(new BN(user1Shares.toString()))
                 .accountsStrict({
                     stakeConfig: stakeConfigPda,
@@ -1403,7 +1403,7 @@ describe("vault-stake", () => {
                     stakeVaultTokenAccountConfig: stakeVaultTokenAccountConfigPda,
                     vaultAuthority: vaultAuthorityPda,
                     signer: user.publicKey,
-                    ticket: program.programId,
+                    ticket: program.programId, // no legacy ticket
                     userVaultTokenAccount: userVaultTokenAccount,
                     userMintTokenAccount: userMintTokenAccount,
                     mint: mintedToken,
