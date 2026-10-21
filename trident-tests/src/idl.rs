@@ -115,6 +115,13 @@ impl Idl {
             .unwrap_or_else(|| panic!("instruction {name} is not in the IDL"))
     }
 
+    /// The instruction whose discriminator starts `data`.
+    pub fn instruction_for(&self, data: &[u8]) -> Option<&IdlInstruction> {
+        self.instructions
+            .iter()
+            .find(|ix| data.starts_with(&ix.discriminator))
+    }
+
     /// Custom error code for `name` (e.g. `EpochCapExceeded` -> 6xxx).
     pub fn error(&self, name: &str) -> u32 {
         *self

@@ -339,9 +339,14 @@ sequenceDiagram
 
 **Protocol pause (vault-mint and each stake program)**  
 
-- **vault-mint** `pause` stops user-facing mint instructions (including CPIs such as `external_program_mint` used by `publish_rewards`).  
-- **vault-stake** / **vault-stake-auto** `pause` stops deposit, redeem, and other guarded instructions for that pool.  
-- Merkle **claim_rewards** in vault-mint respects the mint program pause flag.
+A paused program rejects these instructions with `ProtocolPaused`; every other instruction still runs.
+
+| Program | Blocked while paused | Not blocked |
+|---|---|---|
+| vault-mint | `deposit`, `request_redeem`, `claim_rewards`, `create_rewards_epoch`, `external_program_mint` (so also vault-stake's `publish_rewards`, which mints through it) | `cancel_redeem`, `complete_redeem`, `sweep_redeem_vault_funds`, freeze/thaw, `pause`, and the administrator and configuration updates |
+| vault-stake | `deposit`, `redeem` (a zero amount fails `InvalidAmount` first), `publish_rewards` | freeze/thaw, `pause`, price reports and `verify_price`, the views, and the administrator and configuration updates |
+
+`cancel_redeem` stays open so a pause cannot trap a user's pending request; it releases an obligation and moves no protocol funds. The Trident fuzz harness (`trident-tests/`) asserts this table in both directions.
 
 This creates a secure, flexible vault protocol suitable for DeFi protocols requiring both liquidity and governance controls.
 

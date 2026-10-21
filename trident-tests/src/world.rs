@@ -25,6 +25,12 @@ pub const START_TIME: i64 = 1_750_000_000;
 pub const USER_USDC: u64 = 1_000_000_000_000;
 pub const USER_STAKE_DEPOSIT: u64 = 100_000_000_000;
 pub const CLAIM_AMOUNT: u64 = 5_000_000;
+/// `exchange_rate` returns assets per share scaled by this.
+pub const EXCHANGE_RATE_SCALE: u64 = 1_000_000_000;
+/// Chainlink accounts recorded by `initialize_price_config`; nothing is deployed at them.
+pub const CHAINLINK_PROGRAM: Pubkey = Pubkey::new_from_array([1; 32]);
+pub const CHAINLINK_VERIFIER: Pubkey = Pubkey::new_from_array([2; 32]);
+pub const CHAINLINK_ACCESS_CONTROLLER: Pubkey = Pubkey::new_from_array([3; 32]);
 
 pub fn mint_idl() -> &'static Idl {
     static IDL: OnceLock<Idl> = OnceLock::new();
@@ -147,6 +153,10 @@ pub fn token_balance(trident: &mut Trident, account: Pubkey) -> u64 {
         .unwrap_or(0)
 }
 
+pub fn token_owner(trident: &mut Trident, account: Pubkey) -> Pubkey {
+    trident.get_token_account(account).unwrap().account.owner
+}
+
 pub fn mint_supply(trident: &mut Trident, mint: Pubkey) -> u64 {
     trident.get_mint(mint).unwrap().mint.supply
 }
@@ -167,6 +177,12 @@ pub struct World {
     pub treasury: Pubkey,
     pub mint_vault: Pubkey,
     pub redeem_vault: Pubkey,
+    /// Replacement vaults for `update_vault_token_account` / `update_redeem_vault`, owned like the
+    /// originals (treasury / redeem vault authority PDA).
+    pub spare_mint_vault: Pubkey,
+    pub spare_redeem_vault: Pubkey,
+    /// A USDC account owned by neither the treasury nor the redeem vault authority.
+    pub foreign_vault: Pubkey,
     pub stake_vault: Pubkey,
     pub users: Vec<User>,
 }
@@ -186,7 +202,33 @@ pub const STAKE_SETUP: &[&str] = &[
     "initialize_last_reward_publication",
 ];
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// Instructions that `init` a singleton during setup, so any later call must fail.
+pub const ONE_SHOT: [(Program, &str); 7] = [
+    (Program::Mint, "initialize"),
+    (Program::Mint, "initialize_epoch_caps"),
+    (Program::Mint, "initialize_last_rewards_epoch"),
+    (Program::Stake, "initialize"),
+    (Program::Stake, "initialize_price_config"),
+    (Program::Stake, "initialize_stake_reward_config"),
+    (Program::Stake, "initialize_last_reward_publication"),
+];
+
+/// The singleton state accounts of both programs.
+pub struct StateAccounts {
+    pub config: Pubkey,
+    pub epoch_caps: Pubkey,
+    pub last_rewards_epoch: Pubkey,
+    pub vault_config: Pubkey,
+    pub allowed_programs: Pubkey,
+    pub programs_limit: Pubkey,
+    pub stake_config: Pubkey,
+    pub stake_vault_config: Pubkey,
+    pub reward_config: Pubkey,
+    pub last_publication: Pubkey,
+    pub price_config: Pubkey,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Program {
     Mint,
     Stake,
@@ -206,6 +248,48 @@ impl Program {
             Program::Stake => STAKE_SETUP,
         }
     }
+
+    pub fn of(program_id: &Pubkey) -> Option<Self> {
+        [Program::Mint, Program::Stake]
+            .into_iter()
+            .find(|p| p.idl().program_id == *program_id)
+    }
+}
+
+/// `<Program>::<instruction>` for a vault instruction, seen through `cpi_invoke_for_testing` to
+/// the instruction it relays; the program id for anything else.
+pub fn instruction_label(ix: &Instruction) -> String {
+    let Some(program) = Program::of(&ix.program_id) else {
+        return ix.program_id.to_string();
+    };
+    let idl = program.idl();
+    let name = |data: &[u8]| {
+        idl.instruction_for(data)
+            .map_or("<unknown>", |i| i.name.as_str())
+    };
+    let mut ix_name = name(&ix.data);
+    if ix_name == "cpi_invoke_for_testing" {
+        // Discriminator, then the relayed instruction data as a Borsh Vec<u8>.
+        ix_name = name(ix.data.get(12..).unwrap_or_default());
+    }
+    format!("{program:?}::{ix_name}")
+}
+
+/// Value a conversion view logs: `<name>: <x> shares = <value> assets` (or the reverse), or
+/// `exchange_rate: <value> (scaled by 1e9)`.
+pub fn view_value(logs: &str, name: &str) -> u64 {
+    let tag = format!("{name}: ");
+    let line = logs
+        .lines()
+        .find_map(|l| l.split_once(tag.as_str()).map(|(_, rest)| rest))
+        .unwrap_or_else(|| panic!("{name} logs its result:\n{logs}"));
+    let words: Vec<&str> = line.split(' ').collect();
+    let value = if name == "exchange_rate" {
+        words[0]
+    } else {
+        words[3]
+    };
+    value.parse().unwrap()
 }
 
 /// A call with the authorized signer and valid accounts. `accounts` lists only what the IDL
@@ -304,6 +388,14 @@ impl World {
         let treasury = trident.random_pubkey();
         let mint_vault = new_token_account(trident, &usdc_mint, &treasury);
         let redeem_vault = new_token_account(trident, &usdc_mint, &UPGRADE_AUTHORITY);
+        let spare_mint_vault = new_token_account(trident, &usdc_mint, &treasury);
+        let spare_redeem_vault = new_token_account(
+            trident,
+            &usdc_mint,
+            &pda(&[b"redeem_vault_authority"], &mint_id()),
+        );
+        let stranger = trident.random_pubkey();
+        let foreign_vault = new_token_account(trident, &usdc_mint, &stranger);
         let stake_vault = new_token_account(trident, &wylds_mint, &UPGRADE_AUTHORITY);
 
         let users = (0..users)
@@ -327,8 +419,43 @@ impl World {
             treasury,
             mint_vault,
             redeem_vault,
+            spare_mint_vault,
+            spare_redeem_vault,
+            foreign_vault,
             stake_vault,
             users,
+        }
+    }
+
+    pub fn state_accounts(&self) -> StateAccounts {
+        let mint = |account| {
+            self.call(Program::Mint, "register_allowed_external_mint_program")
+                .account(account)
+        };
+        let stake = |account| {
+            self.call(Program::Stake, "publish_rewards")
+                .account(account)
+        };
+        StateAccounts {
+            config: mint("config"),
+            epoch_caps: self
+                .call(Program::Mint, "update_max_epoch_cap")
+                .account("epoch_caps_config"),
+            last_rewards_epoch: self
+                .call(Program::Mint, "update_last_rewards_epoch")
+                .account("last_rewards_epoch"),
+            vault_config: self
+                .call(Program::Mint, "update_vault_token_account")
+                .account("vault_token_account_config"),
+            allowed_programs: mint("allowed_external_mint_programs"),
+            programs_limit: mint("external_mint_programs_limit_config"),
+            stake_config: stake("stake_config"),
+            stake_vault_config: stake("stake_vault_token_account_config"),
+            reward_config: stake("stake_reward_config"),
+            last_publication: stake("last_reward_publication"),
+            price_config: self
+                .call(Program::Stake, "deposit")
+                .account("stake_price_config"),
         }
     }
 
@@ -549,9 +676,9 @@ impl World {
         let pd = ("program_data", program_data(&stake_id()));
         let ua = ("signer", UPGRADE_AUTHORITY);
         let price_config_args = args(&(
-            Pubkey::new_from_array([1; 32]),
-            Pubkey::new_from_array([2; 32]),
-            Pubkey::new_from_array([3; 32]),
+            CHAINLINK_PROGRAM,
+            CHAINLINK_VERIFIER,
+            CHAINLINK_ACCESS_CONTROLLER,
             FEED_ID,
             PRICE_SCALE,
             PRICE_MAX_STALENESS,
@@ -603,16 +730,10 @@ impl World {
             "update_price_config" => (vec![ua, pd], price_config_args),
             "verify_price" => (
                 vec![
-                    (
-                        "chainlink_verifier_account",
-                        Pubkey::new_from_array([2; 32]),
-                    ),
-                    (
-                        "chainlink_access_controller",
-                        Pubkey::new_from_array([3; 32]),
-                    ),
+                    ("chainlink_verifier_account", CHAINLINK_VERIFIER),
+                    ("chainlink_access_controller", CHAINLINK_ACCESS_CONTROLLER),
                     ("chainlink_config_account", Pubkey::new_from_array([4; 32])),
-                    ("chainlink_program", Pubkey::new_from_array([1; 32])),
+                    ("chainlink_program", CHAINLINK_PROGRAM),
                     ("signer", REWARDS_ADMIN),
                 ],
                 args(&vec![0u8; 8]),
