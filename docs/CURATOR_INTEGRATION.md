@@ -224,7 +224,7 @@ await vaultMint.methods
   .rpc();
 ```
 
-After this call the user still holds the wYLDS, with `redeem_vault_authority` approved to burn `wyldsAmount`. One `RedemptionRequest` PDA exists per user (`RequestAlreadyExists` on a second request). The user pays its rent. Emits `RedemptionRequested`.
+After this call the user still holds the wYLDS, with `redeem_vault_authority` approved to burn `wyldsAmount`. One `RedemptionRequest` PDA exists per user. A second `request_redeem` fails while initializing that account, with the System Program error `AccountAlreadyInUse` (code 0: "an account with the same address already in use"). The user pays its rent. Emits `RedemptionRequested`.
 
 Moving those tokens, or approving a different delegate (an SPL account has one delegate), makes the request impossible to complete until the user cancels it.
 
@@ -548,9 +548,9 @@ if (wyldsAccount.isFrozen) {
 
 Each program has its own `paused` flag, set by that program's freeze administrators.
 
-While **vault-mint** is paused, `deposit`, `request_redeem`, `claim_rewards`, `create_rewards_epoch`, and `external_program_mint` fail with `ProtocolPaused`. `cancel_redeem` and `complete_redeem` still succeed.
+While **vault-mint** is paused, `deposit`, `request_redeem`, `claim_rewards`, `create_rewards_epoch`, and `external_program_mint` fail with `ProtocolPaused`. Stake `publish_rewards` mints through `external_program_mint`, so it fails with vault-mint's `ProtocolPaused` as well. `cancel_redeem` and `complete_redeem` still succeed.
 
-While a **stake pool** is paused, that pool's `deposit`, `redeem`, and `publish_rewards` fail. Other pools are unaffected. Quote views and account reads still succeed.
+While a **stake pool** is paused, that pool's `deposit`, `redeem`, and `publish_rewards` fail with the stake program's `ProtocolPaused`. That check runs before the mint CPI. Other pools are unaffected. Quote views and account reads still succeed.
 
 ```typescript
 const { paused } = await vaultMint.account.config.fetch(configPda);
@@ -604,13 +604,13 @@ vaultStake.addEventListener("RewardsPublished", (event) => {
 
 ## 10. Error Reference
 
-Anchor error names below are the ones curators hit on user and redemption flows.
+Errors below are the ones curators hit on user and redemption flows. Names are Anchor errors unless the row says otherwise.
 
 | Error | Program | Cause | Resolution |
 |-------|---------|-------|------------|
 | `ProtocolPaused` | Both | That program is paused | Wait for a freeze admin to unpause |
 | `DepositSelfTransfer` | vault-mint | USDC source is the deposit vault | Pass the user's own USDC account |
-| `RequestAlreadyExists` | vault-mint | A `RedemptionRequest` is already open | Wait for `complete_redeem`, or `cancel_redeem` |
+| `AccountAlreadyInUse` (code 0) | System Program, during vault-mint `request_redeem` | A `RedemptionRequest` is already open for this user | Wait for `complete_redeem`, or `cancel_redeem` |
 | `InsufficientBalance` | Both | Token account balance is below the requested amount | Lower the amount |
 | `InsufficientRedemptionBalance` | vault-mint | User no longer holds the requested wYLDS | Restore the tokens, or `cancel_redeem` |
 | `InsufficientVaultBalance` | Both | Redeem vault lacks USDC, or stake vault lacks wYLDS | Wait for the operator to fund it |
@@ -645,4 +645,4 @@ Solana charges a base signature fee plus rent for new accounts. This repo does n
 
 ---
 
-Last updated: 2026-10-09.
+Last updated: 2026-10-22.
