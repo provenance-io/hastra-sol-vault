@@ -69,8 +69,7 @@ const main = async () => {
         program.programId
     );
 
-
-    // The unbonding flow was removed. The ticket account is now optional:
+    // The unbonding flow was removed in v0.0.5. The ticket account is now optional:
     //   - If a legacy UnbondingTicket PDA exists on-chain, pass its address so the
     //     program closes it and returns rent to the signer.
     //   - If no ticket exists, pass program.programId as the Anchor 0.31 None sentinel
