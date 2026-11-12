@@ -3,6 +3,7 @@ import {Program} from "@coral-xyz/anchor";
 import {VaultMint} from "../../target/types/vault_mint";
 import {PublicKey} from "@solana/web3.js";
 import yargs from "yargs";
+import {parseAdministrators} from "../administrators";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
@@ -18,10 +19,7 @@ const args = yargs(process.argv.slice(2))
     .parseSync();
 
 const main = async () => {
-    const freezeAdministrators: PublicKey[] = (args.freeze_administrators.split(",")).map((s: string) => new anchor.web3.PublicKey(s));
-    if(freezeAdministrators.length > 5) {
-        throw new Error(`Number of freeze administrators (${freezeAdministrators.length}) exceeds maximum 5`);
-    }
+    const freezeAdministrators = parseAdministrators(args.freeze_administrators, "freeze_administrators");
 
     const [configPda, bump] = PublicKey.findProgramAddressSync([
         Buffer.from("config")
@@ -37,8 +35,6 @@ const main = async () => {
         BPF_LOADER_UPGRADEABLE_ID
     );
 
-    const mint = new PublicKey(args.mint);
-    const newAuthority = new PublicKey(args.new_authority);
     console.log("Config PDA:", configPda.toBase58());
     console.log("ProgramData PDA:", programData.toBase58());
     console.log("Freeze Administrators:", freezeAdministrators.map((a) => a.toBase58()));

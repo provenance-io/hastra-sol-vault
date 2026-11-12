@@ -3,6 +3,7 @@ import {Program} from "@coral-xyz/anchor";
 import {VaultMint} from "../../target/types/vault_mint";
 import {PublicKey} from "@solana/web3.js";
 import yargs from "yargs";
+import {parseAdministrators} from "../administrators";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
@@ -18,10 +19,7 @@ const args = yargs(process.argv.slice(2))
     .parseSync();
 
 const main = async () => {
-    const rewardsAdministrators: PublicKey[] = (args.rewards_administrators.split(",")).map((s: string) => new anchor.web3.PublicKey(s));
-    if(rewardsAdministrators.length > 5) {
-        throw new Error(`Number of rewards administrators (${rewardsAdministrators.length}) exceeds maximum 5`);
-    }
+    const rewardsAdministrators = parseAdministrators(args.rewards_administrators, "rewards_administrators");
 
     const [configPda, bump] = PublicKey.findProgramAddressSync([
         Buffer.from("config")

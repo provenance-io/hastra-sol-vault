@@ -3,6 +3,7 @@ import {Program} from "@coral-xyz/anchor";
 import {VaultStake} from "../../target/types/vault_stake";
 import {PublicKey} from "@solana/web3.js";
 import yargs from "yargs";
+import {parseAdministrators} from "../administrators";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
@@ -18,10 +19,7 @@ const args = yargs(process.argv.slice(2))
     .parseSync();
 
 const main = async () => {
-    const freezeAdministrators: PublicKey[] = (args.freeze_administrators.split(",")).map((s: string) => new anchor.web3.PublicKey(s));
-    if(freezeAdministrators.length > 5) {
-        throw new Error(`Number of freeze administrators (${freezeAdministrators.length}) exceeds maximum 5`);
-    }
+    const freezeAdministrators = parseAdministrators(args.freeze_administrators, "freeze_administrators");
 
     const [stakeConfigPda, bump] = PublicKey.findProgramAddressSync([
         Buffer.from("stake_config")
