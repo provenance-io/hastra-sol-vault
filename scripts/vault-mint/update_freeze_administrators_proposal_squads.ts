@@ -30,6 +30,7 @@ import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { VaultMint } from "../../target/types/vault_mint";
 import yargs from "yargs";
+import { parseAdministrators } from "../administrators";
 
 const provider = anchor.AnchorProvider.env();
 anchor.setProvider(provider);
@@ -82,26 +83,6 @@ if (args.program_id) {
     }
 }
 const program = new anchor.Program(resolvedIdl as anchor.Idl, provider) as Program<VaultMint>;
-
-function parseAdministrators(csv: string, label: string): PublicKey[] {
-    const keys = csv
-        .split(",")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0)
-        .map((s) => new PublicKey(s));
-    if (keys.length === 0) {
-        throw new Error(`${label} must contain at least one public key`);
-    }
-    if (keys.length > 5) {
-        throw new Error(`${label} length (${keys.length}) exceeds maximum 5`);
-    }
-    for (let i = 0; i < keys.length; i++) {
-        if (keys.slice(0, i).some((k) => k.equals(keys[i]))) {
-            throw new Error(`${label} contains duplicate key: ${keys[i].toBase58()}`);
-        }
-    }
-    return keys;
-}
 
 async function main() {
     const msPDA = new PublicKey(args.multisig_pda);
